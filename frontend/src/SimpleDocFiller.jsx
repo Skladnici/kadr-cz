@@ -56,7 +56,7 @@ const FIELD_DEFS = [
   ["birth_date", "Datum narození"],
   ["nationality", "Národnost"],
   ["doc_number", "Číslo dokladu"],
-  ["address", "Adresa"],
+  // "address" is handled separately below via <AddressBuilder> — not a plain text field.
   ["position", "Pozice"],
   ["workplace", "Místo výkonu práce"],
   ["salary", "Mzda / odměna"],
@@ -83,9 +83,196 @@ const FIELD_DEFS = [
   ["net_salary", "Čistá mzda (jen pro výplatní pásku)"],
 ];
 
+// Common Czech cities with their postal code (PSČ) — covers the large
+// majority of real addresses without needing any external lookup
+// service. Smaller towns aren't in this list; the person just types the
+// PSČ manually in that case, same as before.
+const CZ_CITY_PSC = {
+  "Praha": "100 00", "Praha 1": "110 00", "Praha 2": "120 00", "Praha 3": "130 00",
+  "Praha 4": "140 00", "Praha 5": "150 00", "Praha 6": "160 00", "Praha 7": "170 00",
+  "Praha 8": "180 00", "Praha 9": "190 00", "Praha 10": "100 00",
+  "Brno": "602 00", "Ostrava": "702 00", "Plzeň": "301 00", "Liberec": "460 01",
+  "Olomouc": "779 00", "České Budějovice": "370 01", "Hradec Králové": "500 02",
+  "Ústí nad Labem": "400 01", "Pardubice": "530 02", "Zlín": "760 01",
+  "Havířov": "736 01", "Kladno": "272 01", "Most": "434 01", "Opava": "746 01",
+  "Frýdek-Místek": "738 01", "Karviná": "733 01", "Jihlava": "586 01",
+  "Teplice": "415 01", "Děčín": "405 02", "Karlovy Vary": "360 01",
+  "Chomutov": "430 01", "Jablonec nad Nisou": "466 01", "Mladá Boleslav": "293 01",
+  "Prostějov": "796 01", "Přerov": "750 02", "Česká Lípa": "470 01",
+  "Třebíč": "674 01", "Třinec": "739 61", "Tábor": "390 02", "Znojmo": "669 02",
+  "Kolín": "280 02", "Příbram": "261 01", "Cheb": "350 02", "Trutnov": "541 01",
+};
+
+function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setAddressParts }) {
+  const setPart = (key, value) => setAddressParts((p) => ({ ...p, [key]: value }));
+
+  const cityMatch = addressCountry === "cz" && addressParts.city
+    ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
+    : null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40">
+      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Adresa</div>
+
+      <div className="flex gap-1.5 mb-3">
+        {[
+          ["cz", "Česká republika"],
+          ["ua", "Ukrajina"],
+          ["eu", "Jiná země EU"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setAddressCountry(key)}
+            className={`rounded-md px-2.5 py-1 text-[11.5px] font-medium border transition-colors
+              ${addressCountry === key ? "bg-[#101826] text-white border-[#101826]" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {addressCountry === "cz" && (
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block col-span-2">
+            <span className="text-[11px] text-slate-400">Ulice a číslo popisné</span>
+            <input
+              value={addressParts.street || ""}
+              onChange={(e) => setPart("street", e.target.value)}
+              placeholder="Vinohradská 45"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">Město</span>
+            <input
+              list="cz-cities"
+              value={addressParts.city || ""}
+              onChange={(e) => {
+                setPart("city", e.target.value);
+                const match = Object.keys(CZ_CITY_PSC).find(
+                  (c) => c.toLowerCase() === e.target.value.trim().toLowerCase()
+                );
+                if (match) setPart("psc", CZ_CITY_PSC[match]);
+              }}
+              placeholder="Praha"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+            <datalist id="cz-cities">
+              {Object.keys(CZ_CITY_PSC).map((c) => <option key={c} value={c} />)}
+            </datalist>
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">
+              PSČ {cityMatch && <span className="text-emerald-600">· doplněno automaticky</span>}
+            </span>
+            <input
+              value={addressParts.psc || ""}
+              onChange={(e) => setPart("psc", e.target.value)}
+              placeholder="100 00"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+        </div>
+      )}
+
+      {addressCountry === "ua" && (
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block col-span-2">
+            <span className="text-[11px] text-slate-400">Vulytsia, budynok (ulice, číslo)</span>
+            <input
+              value={addressParts.street || ""}
+              onChange={(e) => setPart("street", e.target.value)}
+              placeholder="вул. Хрещатик 10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">Misto (město)</span>
+            <input
+              value={addressParts.city || ""}
+              onChange={(e) => setPart("city", e.target.value)}
+              placeholder="Kyjev"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">Oblast</span>
+            <input
+              value={addressParts.region || ""}
+              onChange={(e) => setPart("region", e.target.value)}
+              placeholder="Kyjivska oblast"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block col-span-2">
+            <span className="text-[11px] text-slate-400">Indeks (PSČ)</span>
+            <input
+              value={addressParts.psc || ""}
+              onChange={(e) => setPart("psc", e.target.value)}
+              placeholder="01001"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+        </div>
+      )}
+
+      {addressCountry === "eu" && (
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block col-span-2">
+            <span className="text-[11px] text-slate-400">Ulice a číslo</span>
+            <input
+              value={addressParts.street || ""}
+              onChange={(e) => setPart("street", e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">Město</span>
+            <input
+              value={addressParts.city || ""}
+              onChange={(e) => setPart("city", e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] text-slate-400">PSČ</span>
+            <input
+              value={addressParts.psc || ""}
+              onChange={(e) => setPart("psc", e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+          <label className="block col-span-2">
+            <span className="text-[11px] text-slate-400">Země</span>
+            <input
+              value={addressParts.country || ""}
+              onChange={(e) => setPart("country", e.target.value)}
+              placeholder="Polsko, Slovensko, Německo…"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function composeAddress(country, parts) {
+  if (country === "cz") {
+    return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  }
+  if (country === "ua") {
+    return [parts.street, parts.city, parts.region, parts.psc].filter(Boolean).join(", ");
+  }
+  return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" "), parts.country].filter(Boolean).join(", ");
+}
+
 export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
+  const [addressCountry, setAddressCountry] = useState("cz");
+  const [addressParts, setAddressParts] = useState({});
   const [warnings, setWarnings] = useState([]);
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
@@ -130,7 +317,6 @@ export default function SimpleDocFiller() {
         birth_date: data.birth_date || "",
         nationality: data.nationality || "",
         doc_number: data.doc_number || "",
-        address: data.address && data.address !== "—" ? data.address : "",
         position: "",
         workplace: "",
         salary: "",
@@ -144,6 +330,17 @@ export default function SimpleDocFiller() {
         company_address: "",
         company_representative: "",
       });
+      // Recognized address is a single free-text string — pre-fill it into
+      // the street field of the address builder as a starting point; the
+      // person can split/correct it into city/PSČ manually. Default the
+      // country tab based on recognized nationality when possible.
+      const recognizedAddress = data.address && data.address !== "—" ? data.address : "";
+      setAddressParts(recognizedAddress ? { street: recognizedAddress } : {});
+      if (data.nationality && /ukrajin/i.test(data.nationality)) {
+        setAddressCountry("ua");
+      } else if (data.nationality && /česk|czech/i.test(data.nationality)) {
+        setAddressCountry("cz");
+      }
       setWarnings(data.warnings || []);
       setRawText(data.ocr_raw_text || "");
       setOcrMode(data.ocr_mode);
@@ -160,6 +357,8 @@ export default function SimpleDocFiller() {
 
   const skipUpload = () => {
     setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
+    setAddressParts({});
+    setAddressCountry("cz");
     setWarnings([]);
     setOcrMode(null);
     setStep(3);
@@ -172,7 +371,11 @@ export default function SimpleDocFiller() {
       const res = await fetch(`${API_BASE}/api/fill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ template_id: templateId, ...fields }),
+        body: JSON.stringify({
+          template_id: templateId,
+          ...fields,
+          address: composeAddress(addressCountry, addressParts),
+        }),
       });
       if (!res.ok) throw new Error("server error");
       const data = await res.json();
@@ -188,6 +391,8 @@ export default function SimpleDocFiller() {
   const reset = () => {
     setStep(1);
     setFields({});
+    setAddressParts({});
+    setAddressCountry("cz");
     setWarnings([]);
     setResult(null);
     setError(null);
@@ -331,6 +536,15 @@ export default function SimpleDocFiller() {
                     <option key={b.id} value={b.id}>{b.title}</option>
                   ))}
                 </select>
+              </div>
+
+              <div className="mb-3">
+                <AddressBuilder
+                  addressCountry={addressCountry}
+                  setAddressCountry={setAddressCountry}
+                  addressParts={addressParts}
+                  setAddressParts={setAddressParts}
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
