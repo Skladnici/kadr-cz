@@ -340,6 +340,39 @@ def _preprocess_for_ocr(image):
     return gray
 
 
+async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
+    """Free remote OCR via ocr.space — no billing account needed, just a
+    free API key from https://ocr.space/ocrapi (email signup, instant,
+    no card). Processing happens on their servers, not this one, which
+    solves both the speed and reliability problems of running Tesseract
+    locally on a memory/CPU-constrained free hosting instance."""
+    url = "https://api.ocr.space/parse/image"
+    data = {
+        "apikey": settings.OCR_SPACE_API_KEY,
+        "language": "cze",  # closest single-language match for CZ/SK docs;
+                             # engine 2 below still reads Latin-script text reasonably
+        "OCREngine": "2",
+        "scale": "true",
+        "isTable": "false",
+    }
+    files = {"file": (filename, image_bytes)}
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, data=data, files=files)
+        resp.raise_for_status()
+        result = resp.json()
+
+    if result.get("IsErroredOnProcessing"):
+        err = result.get("ErrorMessage") or result.get("ErrorDetails") or "unknown error"
+        print(f"[ocr] OCR.space error: {err}")
+        return ""
+
+    parsed = result.get("ParsedResults") or []
+    if not parsed:
+        return ""
+    return parsed[0].get("ParsedText", "")
+
+
 def _tesseract_ocr(image_bytes: bytes) -> str:
     """Free, local, no-API-key OCR using Tesseract — no billing account or
     API key needed at all. Less accurate than Google Vision but works out
@@ -402,6 +435,37 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
         return result
 
     mime, _ = mimetypes.guess_type(str(file_path))
+
+    if settings.OCR_MODE == "ocrspace":
+        if mime == "application/pdf":
+            result = _mock_extract(original_filename)
+            result["warnings"] = result.get("warnings", []) + [
+                "Rozpoznávání PDF v bezplatném režimu zatím není podporováno — zobrazena ukázková data."
+            ]
+            return result
+        try:
+            raw_text = await _ocr_space_ocr(image_bytes, original_filename)
+        except Exception as e:
+            print(f"[ocr] OCR.space request failed: {type(e).__name__}: {e}")
+            raw_text = ""
+        if not raw_text.strip():
+            # Graceful fallback: if the remote free API is unreachable or
+            # over its daily quota, try local Tesseract rather than
+            # failing outright, so the feature keeps working either way.
+            try:
+                raw_text = _tesseract_ocr(image_bytes)
+            except Exception:
+                raw_text = ""
+        if not raw_text.strip():
+            result = _mock_extract(original_filename)
+            result["warnings"] = ["Nepodařilo se přečíst text z dokumentu — zkuste ostřejší fotografii."]
+            return result
+        fields = _extract_fields_from_text(raw_text, quality, mode="ocrspace")
+        first, last = _parse_name_from_text(raw_text)
+        fields["first_name"] = first
+        fields["last_name"] = last
+        fields["ocr_raw_text"] = raw_text
+        return fields
 
     if settings.OCR_MODE == "local":
         if mime == "application/pdf":
