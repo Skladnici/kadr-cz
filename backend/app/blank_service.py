@@ -9,7 +9,7 @@ The filename (without extension) becomes the blank's internal id; a
 human-readable title is read from the first heading in the document if
 present, otherwise the filename is used.
 """
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -45,7 +45,14 @@ def _fmt_date(d) -> str:
     if not d:
         return ""
     if isinstance(d, str):
-        return d
+        # Frontend sends ISO format (YYYY-MM-DD) or the user may type
+        # dd.mm.yyyy directly — normalize either to Czech dd.mm.yyyy style.
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(d, fmt).strftime("%d.%m.%Y")
+            except ValueError:
+                continue
+        return d  # unrecognized format — show as typed rather than fail
     return d.strftime("%d.%m.%Y")
 
 
@@ -84,6 +91,13 @@ def fill_blank(template_id: str, fields: dict) -> Path:
         "ADRESA_FIRMY": fields.get("company_address", ""),
         "ZASTUPCE_FIRMY": fields.get("company_representative", ""),
         "DATUM_DNES": _fmt_date(date.today()),
+        # DPP-specific: foreign worker residence/visa info + auto years
+        "CISLO_VIZA": fields.get("visa_number", ""),
+        "PLATNOST_VIZA": _fmt_date(fields.get("visa_validity")) or fields.get("visa_validity", ""),
+        "DRUH_POBYTU": fields.get("residence_type", ""),
+        "MISTO_PODPISU": fields.get("signing_place", "Praze"),
+        "ROK_AKTUALNI": str(date.today().year),
+        "ROK_PRISTI": str(date.today().year + 1),
         # Ukončení pracovního poměru (termination)
         "DUVOD_UKONCENI": fields.get("termination_reason", ""),
         "POSLEDNI_DEN": _fmt_date(fields.get("last_working_day")),
