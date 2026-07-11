@@ -42,6 +42,7 @@ export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
   const [warnings, setWarnings] = useState([]);
+  const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
   const [error, setError] = useState(null);
   const [blanks, setBlanks] = useState([]);
@@ -91,6 +92,7 @@ export default function SimpleDocFiller() {
         company_representative: "",
       });
       setWarnings(data.warnings || []);
+      setRawText(data.ocr_raw_text || "");
       setOcrMode(data.ocr_mode);
       setStep(3);
     } catch (e) {
@@ -246,6 +248,19 @@ export default function SimpleDocFiller() {
                     </div>
                   ))}
                 </div>
+              )}
+
+              {rawText && rawText.trim() && (
+                <details className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60">
+                  <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-slate-600">
+                    Zobrazit rozpoznaný text z dokumentu (pro ruční kopírování)
+                  </summary>
+                  <textarea
+                    readOnly
+                    value={rawText}
+                    className="w-full h-24 px-3 py-2 text-[11.5px] font-mono text-slate-600 bg-white border-t border-slate-200 resize-none focus:outline-none"
+                  />
+                </details>
               )}
 
               <div className="mb-4">
