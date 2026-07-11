@@ -310,6 +310,7 @@ function composeAddress(country, parts) {
 export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
+  const [previewUrls, setPreviewUrls] = useState([]);
   const [addressCountry, setAddressCountry] = useState("cz");
   const [addressPartsByCountry, setAddressPartsByCountry] = useState({ cz: {}, ua: {}, eu: {} });
   const [warnings, setWarnings] = useState([]);
@@ -337,6 +338,24 @@ export default function SimpleDocFiller() {
     if (files.length === 0) return;
     setStep(2);
     setError(null);
+    // Show small thumbnails of what was uploaded, so the person can
+    // visually cross-check the recognized fields against the actual
+    // photo. PDFs and HEIC don't get a real thumbnail (browsers can't
+    // natively render either as an <img>) — just an icon placeholder.
+    const previews = files.map((f) => {
+      const isHeic = /heic|heif/i.test(f.type) || /\.hei[cf]$/i.test(f.name);
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
+      return {
+        name: f.name,
+        isPdf,
+        isHeic,
+        url: !isPdf && !isHeic && f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
+      };
+    });
+    setPreviewUrls((prev) => {
+      prev.forEach((p) => p.url && URL.revokeObjectURL(p.url));
+      return previews;
+    });
     try {
       const results = [];
       for (const file of files) {
@@ -418,6 +437,7 @@ export default function SimpleDocFiller() {
     setAddressCountry("cz");
     setWarnings([]);
     setOcrMode(null);
+    setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setStep(3);
   };
 
@@ -453,6 +473,7 @@ export default function SimpleDocFiller() {
     setWarnings([]);
     setResult(null);
     setError(null);
+    setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
   };
 
   const downloadUrl = (token) => `${API_BASE}/api/download/${token}`;
@@ -556,6 +577,23 @@ export default function SimpleDocFiller() {
           {/* Step 3: form */}
           {step === 3 && (
             <div className="p-7">
+              {previewUrls.length > 0 && (
+                <div className="mb-4 flex gap-2 flex-wrap">
+                  {previewUrls.map((p, i) => (
+                    <div key={i} className="relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0">
+                      {p.url ? (
+                        <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-slate-400">
+                          <FileText size={18} />
+                          <span className="text-[8px] leading-none">{p.isPdf ? "PDF" : "HEIC"}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {ocrMode === "mock" && (
                 <div className="mb-4 flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2">
                   <span className="text-[12px] text-emerald-700 font-medium">Údaje rozpoznány (demo data)</span>
