@@ -243,6 +243,26 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def _tesseract_ocr(image_bytes: bytes) -> str:
+    """Free, local, no-API-key OCR using Tesseract — no billing account or
+    API key needed at all. Less accurate than Google Vision but works out
+    of the box on any server. Requires the `tesseract-ocr` system package
+    (installed via Dockerfile) and `pytesseract` + `Pillow` Python packages."""
+    import pytesseract
+    from PIL import Image
+    import io
+
+    image = Image.open(io.BytesIO(image_bytes))
+    # Try Czech+Ukrainian+English combined if language packs are installed,
+    # fall back to English-only (default tesseract install) if not.
+    for langs in ("ces+ukr+eng", "eng"):
+        try:
+            return pytesseract.image_to_string(image, lang=langs)
+        except pytesseract.TesseractError:
+            continue
+    return ""
+
+
 async def recognize_document(file_path: Path, original_filename: str) -> dict:
     """
     Main entry point used by the API layer.
@@ -255,8 +275,31 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
         result = _mock_extract(original_filename)
         return result
 
-    # live mode
     mime, _ = mimetypes.guess_type(str(file_path))
+
+    if settings.OCR_MODE == "local":
+        if mime == "application/pdf":
+            result = _mock_extract(original_filename)
+            result["warnings"] = result.get("warnings", []) + [
+                "Rozpoznávání PDF v bezplatném režimu zatím není podporováno — zobrazena ukázková data."
+            ]
+            return result
+        try:
+            raw_text = _tesseract_ocr(image_bytes)
+        except Exception:
+            raw_text = ""
+        if not raw_text.strip():
+            result = _mock_extract(original_filename)
+            result["warnings"] = ["Nepodařilo se přečíst text z dokumentu — zkuste ostřejší fotografii."]
+            return result
+        fields = _extract_fields_from_text(raw_text, quality, mode="local")
+        first, last = _parse_name_from_text(raw_text)
+        fields["first_name"] = first
+        fields["last_name"] = last
+        fields["ocr_raw_text"] = raw_text
+        return fields
+
+    # live mode (Google Vision)
     if mime == "application/pdf":
         # Vision's images:annotate needs a rasterized image; for PDFs a
         # production build should use files:asyncBatchAnnotate instead.
