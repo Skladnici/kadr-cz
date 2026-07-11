@@ -1,10 +1,14 @@
 FROM python:3.11-slim
 
-# LibreOffice is used to convert generated .docx documents to PDF for
-# the "print" button. Optional at runtime — the app still works without
-# it, just without PDF export — but included so it works out of the box.
+# LibreOffice converts generated .docx to PDF (for the "print" button).
+# Tesseract provides free, local OCR (no API key or billing needed) —
+# used automatically when GOOGLE_VISION_API_KEY is not set.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice \
+    tesseract-ocr \
+    tesseract-ocr-ces \
+    tesseract-ocr-ukr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
