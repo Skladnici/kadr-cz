@@ -207,46 +207,25 @@ const UA_CITY_PSC = {
   "Вишгород / Vyšhorod": "07300", "Переяслав / Perejaslav": "08400",
 };
 
-function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPart }) {
-  const cityMatch = addressCountry === "cz" && addressParts.city
-    ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
+function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, originParts, setOriginPart }) {
+  const cityMatch = czParts.city
+    ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === czParts.city.trim().toLowerCase())
     : null;
-  const uaCityMatch = addressCountry === "ua" && addressParts.city
-    ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
+  const uaCityMatch = originCountry === "ua" && originParts.city
+    ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === originParts.city.trim().toLowerCase())
     : null;
 
   return (
-    <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40">
-      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Adresa</div>
-
-      <div className="flex gap-4 mb-3 border-b border-slate-200">
-        {[
-          ["cz", "Česká republika"],
-          ["ua", "Ukrajina"],
-          ["eu", "Jiná země EU"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setAddressCountry(key)}
-            className={`relative pb-2 text-[12.5px] font-medium transition-colors
-              ${addressCountry === key ? "text-[#0B1220]" : "text-slate-400 hover:text-slate-600"}`}
-          >
-            {label}
-            {addressCountry === key && (
-              <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#C9932E] rounded-full" />
-            )}
-          </button>
-        ))}
-      </div>
-
-      {addressCountry === "cz" && (
+    <div className="space-y-3">
+      {/* Block 1 — always Czech residence address */}
+      <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40">
+        <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Adresa pobytu v ČR</div>
         <div className="grid grid-cols-2 gap-3">
           <label className="block col-span-2">
             <span className="text-[11px] text-slate-400">Ulice a číslo popisné</span>
             <input
-              value={addressParts.street || ""}
-              onChange={(e) => setPart("street", e.target.value)}
+              value={czParts.street || ""}
+              onChange={(e) => setCzPart("street", e.target.value)}
               placeholder="Vinohradská 45"
               className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
@@ -255,13 +234,13 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             <span className="text-[11px] text-slate-400">Město</span>
             <input
               list="cz-cities"
-              value={addressParts.city || ""}
+              value={czParts.city || ""}
               onChange={(e) => {
-                setPart("city", e.target.value);
+                setCzPart("city", e.target.value);
                 const match = Object.keys(CZ_CITY_PSC).find(
                   (c) => c.toLowerCase() === e.target.value.trim().toLowerCase()
                 );
-                if (match) setPart("psc", CZ_CITY_PSC[match]);
+                if (match) setCzPart("psc", CZ_CITY_PSC[match]);
               }}
               placeholder="Praha"
               className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
@@ -275,105 +254,114 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               PSČ {cityMatch && <span className="text-emerald-600">· doplněno automaticky</span>}
             </span>
             <input
-              value={addressParts.psc || ""}
-              onChange={(e) => setPart("psc", e.target.value)}
+              value={czParts.psc || ""}
+              onChange={(e) => setCzPart("psc", e.target.value)}
               placeholder="100 00"
               className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
         </div>
-      )}
+      </div>
 
-      {addressCountry === "ua" && (
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block col-span-2">
-            <span className="text-[11px] text-slate-400">Vulytsia, budynok (ulice, číslo)</span>
-            <input
-              value={addressParts.street || ""}
-              onChange={(e) => setPart("street", e.target.value)}
-              placeholder="вул. Хрещатик 10"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-          <label className="block">
-            <span className="text-[11px] text-slate-400">Misto (město)</span>
-            <input
-              list="ua-cities"
-              value={addressParts.city || ""}
-              onChange={(e) => {
-                setPart("city", e.target.value);
-                const match = Object.keys(UA_CITY_PSC).find(
-                  (c) => c.toLowerCase() === e.target.value.trim().toLowerCase()
-                );
-                if (match) setPart("psc", UA_CITY_PSC[match]);
-              }}
-              placeholder="Kyjev"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-            <datalist id="ua-cities">
-              {Object.keys(UA_CITY_PSC).map((c) => <option key={c} value={c} />)}
-            </datalist>
-          </label>
-          <label className="block">
-            <span className="text-[11px] text-slate-400">Oblast</span>
-            <input
-              value={addressParts.region || ""}
-              onChange={(e) => setPart("region", e.target.value)}
-              placeholder="Kyjivska oblast"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-          <label className="block col-span-2">
-            <span className="text-[11px] text-slate-400">
-              Indeks (PSČ) {uaCityMatch && <span className="text-emerald-600">· doplněno automaticky</span>}
-            </span>
-            <input
-              value={addressParts.psc || ""}
-              onChange={(e) => setPart("psc", e.target.value)}
-              placeholder="01001"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
+      {/* Block 2 — home country address, country picked via short tabs */}
+      <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11px] uppercase tracking-wide text-slate-400">Adresa v zemi původu</div>
+          <div className="flex gap-1">
+            {[["ua", "UA"], ["eu", "EU"]].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setOriginCountry(key)}
+                className={`rounded-md px-2 py-0.5 text-[11px] font-medium border transition-colors
+                  ${originCountry === key ? "bg-[#0B1220] text-white border-[#0B1220]" : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-      )}
 
-      {addressCountry === "eu" && (
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block col-span-2">
-            <span className="text-[11px] text-slate-400">Ulice a číslo</span>
-            <input
-              value={addressParts.street || ""}
-              onChange={(e) => setPart("street", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-          <label className="block">
-            <span className="text-[11px] text-slate-400">Město</span>
-            <input
-              value={addressParts.city || ""}
-              onChange={(e) => setPart("city", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-          <label className="block">
-            <span className="text-[11px] text-slate-400">PSČ</span>
-            <input
-              value={addressParts.psc || ""}
-              onChange={(e) => setPart("psc", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-          <label className="block col-span-2">
-            <span className="text-[11px] text-slate-400">Země</span>
-            <input
-              value={addressParts.country || ""}
-              onChange={(e) => setPart("country", e.target.value)}
-              placeholder="Polsko, Slovensko, Německo…"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-            />
-          </label>
-        </div>
-      )}
+        {originCountry === "ua" ? (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block col-span-2">
+              <span className="text-[11px] text-slate-400">Vulytsia, budynok (ulice, číslo)</span>
+              <input
+                value={originParts.street || ""}
+                onChange={(e) => setOriginPart("street", e.target.value)}
+                placeholder="vul. Chreščatyk 10"
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-slate-400">Misto (město)</span>
+              <input
+                list="ua-cities"
+                value={originParts.city || ""}
+                onChange={(e) => {
+                  setOriginPart("city", e.target.value);
+                  const match = Object.keys(UA_CITY_PSC).find(
+                    (c) => c.toLowerCase() === e.target.value.trim().toLowerCase()
+                  );
+                  if (match) setOriginPart("psc", UA_CITY_PSC[match]);
+                }}
+                placeholder="Kyjev"
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+              <datalist id="ua-cities">
+                {Object.keys(UA_CITY_PSC).map((c) => <option key={c} value={c} />)}
+              </datalist>
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-slate-400">
+                Indeks {uaCityMatch && <span className="text-emerald-600">· auto</span>}
+              </span>
+              <input
+                value={originParts.psc || ""}
+                onChange={(e) => setOriginPart("psc", e.target.value)}
+                placeholder="01001"
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block col-span-2">
+              <span className="text-[11px] text-slate-400">Ulice a číslo</span>
+              <input
+                value={originParts.street || ""}
+                onChange={(e) => setOriginPart("street", e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-slate-400">Město</span>
+              <input
+                value={originParts.city || ""}
+                onChange={(e) => setOriginPart("city", e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-slate-400">PSČ</span>
+              <input
+                value={originParts.psc || ""}
+                onChange={(e) => setOriginPart("psc", e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+            <label className="block col-span-2">
+              <span className="text-[11px] text-slate-400">Země</span>
+              <input
+                value={originParts.country || ""}
+                onChange={(e) => setOriginPart("country", e.target.value)}
+                placeholder="Polsko, Slovensko, Německo…"
+                className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+              />
+            </label>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -550,12 +538,22 @@ function CompanyPicker({ fields, setFields }) {
   );
 }
 
-function composeAddress(country, parts) {
-  if (country === "cz") {
-    return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
-  }
+// Default statutory salary caps HR commonly uses when generating these
+// contract types — pre-fills the "Mzda" field but stays fully editable,
+// and only overwrites a previous *auto-filled* default (never a value
+// the person typed themselves) when switching between templates.
+const DEFAULT_SALARY_BY_TEMPLATE = {
+  dpp_template: "11 999",
+  hpp_template: "22 400",
+};
+
+function composeCzAddress(parts) {
+  return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+}
+
+function composeOriginAddress(country, parts) {
   if (country === "ua") {
-    return [parts.street, parts.city, parts.region, parts.psc].filter(Boolean).join(", ");
+    return [parts.street, parts.city, parts.psc].filter(Boolean).join(", ");
   }
   return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" "), parts.country].filter(Boolean).join(", ");
 }
@@ -564,8 +562,9 @@ export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
   const [previewUrls, setPreviewUrls] = useState([]);
-  const [addressCountry, setAddressCountry] = useState("cz");
-  const [addressPartsByCountry, setAddressPartsByCountry] = useState({ cz: {}, ua: {}, eu: {} });
+  const [czAddressParts, setCzAddressParts] = useState({});
+  const [originCountry, setOriginCountry] = useState("ua");
+  const [originAddressParts, setOriginAddressParts] = useState({});
   const [warnings, setWarnings] = useState([]);
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
@@ -612,7 +611,7 @@ export default function SimpleDocFiller() {
       visa_validity: pick("visa_validity"),
       position: "",
       workplace: "",
-      salary: "",
+      salary: DEFAULT_SALARY_BY_TEMPLATE[templateId] || "",
       hours_per_week: "",
       start_date: "",
       end_date: "",
@@ -625,24 +624,25 @@ export default function SimpleDocFiller() {
     });
     setDocNumberVerified(results.some((r) => r.doc_number_verified));
 
+    // Recognized address from a passport/visa is the person's home
+    // country info (birthplace/oblast etc.) — it never contains their
+    // Czech residence address, so it always goes into the "origin"
+    // block, never the CZ block (that one stays for manual entry).
     const recognizedAddress = pick("address");
     const mergedNationality = pick("nationality");
-    let guessedCountry = addressCountry;
-    if (/ukrajin/i.test(mergedNationality)) guessedCountry = "ua";
-    else if (/česk|czech/i.test(mergedNationality)) guessedCountry = "cz";
-    setAddressCountry(guessedCountry);
-    setAddressPartsByCountry((prev) => ({
-      ...prev,
-      [guessedCountry]: recognizedAddress
-        ? smartSplitAddress(recognizedAddress, guessedCountry)
-        : prev[guessedCountry],
-    }));
+    let guessedOriginCountry = originCountry;
+    if (/ukrajin/i.test(mergedNationality)) guessedOriginCountry = "ua";
+    else if (mergedNationality && !/česk|czech/i.test(mergedNationality)) guessedOriginCountry = "eu";
+    setOriginCountry(guessedOriginCountry);
+    if (recognizedAddress) {
+      setOriginAddressParts(smartSplitAddress(recognizedAddress, guessedOriginCountry));
+    }
 
     setWarnings(results.flatMap((r) => r.warnings || []));
     setRawText(results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"));
     setOcrMode(results[0]?.ocr_mode);
     setStep(3);
-  }, [addressCountry]);
+  }, [originCountry, templateId]);
 
   // Adds newly selected/dropped files to the pending queue and shows
   // their thumbnails right away — recognition itself only starts once
@@ -717,9 +717,13 @@ export default function SimpleDocFiller() {
   }, [pendingFiles, pastedText, applyRecognizedResults]);
 
   const skipUpload = () => {
-    setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
-    setAddressPartsByCountry({ cz: {}, ua: {}, eu: {} });
-    setAddressCountry("cz");
+    setFields({
+      ...Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])),
+      salary: DEFAULT_SALARY_BY_TEMPLATE[templateId] || "",
+    });
+    setCzAddressParts({});
+    setOriginCountry("ua");
+    setOriginAddressParts({});
     setWarnings([]);
     setOcrMode(null);
     setDocNumberVerified(false);
@@ -739,7 +743,8 @@ export default function SimpleDocFiller() {
         body: JSON.stringify({
           template_id: templateId,
           ...fields,
-          address: composeAddress(addressCountry, addressPartsByCountry[addressCountry] || {}),
+          address: composeCzAddress(czAddressParts),
+          address_origin: composeOriginAddress(originCountry, originAddressParts),
         }),
       });
       if (!res.ok) throw new Error("server error");
@@ -756,8 +761,9 @@ export default function SimpleDocFiller() {
   const reset = () => {
     setStep(1);
     setFields({});
-    setAddressPartsByCountry({ cz: {}, ua: {}, eu: {} });
-    setAddressCountry("cz");
+    setCzAddressParts({});
+    setOriginCountry("ua");
+    setOriginAddressParts({});
     setWarnings([]);
     setResult(null);
     setError(null);
@@ -997,7 +1003,25 @@ export default function SimpleDocFiller() {
                 <label className="text-[11px] uppercase tracking-wide text-slate-400">Typ dokumentu</label>
                 <select
                   value={templateId || ""}
-                  onChange={(e) => setTemplateId(e.target.value)}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setTemplateId(nextId);
+                    // Auto-fill the salary default for this contract type
+                    // — but only if the field is empty or still holds
+                    // another template's *default* value, never if the
+                    // person already typed their own amount.
+                    const knownDefaults = Object.values(DEFAULT_SALARY_BY_TEMPLATE);
+                    const nextDefault = DEFAULT_SALARY_BY_TEMPLATE[nextId];
+                    if (nextDefault) {
+                      setFields((f) => {
+                        const current = (f.salary || "").trim();
+                        if (!current || knownDefaults.includes(current)) {
+                          return { ...f, salary: nextDefault };
+                        }
+                        return f;
+                      });
+                    }
+                  }}
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
                   {blanks.map((b) => (
@@ -1008,15 +1032,12 @@ export default function SimpleDocFiller() {
 
               <div className="mb-3">
                 <AddressBuilder
-                  addressCountry={addressCountry}
-                  setAddressCountry={setAddressCountry}
-                  addressParts={addressPartsByCountry[addressCountry] || {}}
-                  setPart={(key, value) =>
-                    setAddressPartsByCountry((prev) => ({
-                      ...prev,
-                      [addressCountry]: { ...prev[addressCountry], [key]: value },
-                    }))
-                  }
+                  czParts={czAddressParts}
+                  setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
+                  originCountry={originCountry}
+                  setOriginCountry={setOriginCountry}
+                  originParts={originAddressParts}
+                  setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
                 />
               </div>
 
