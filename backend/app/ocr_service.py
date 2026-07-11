@@ -169,6 +169,40 @@ def _find_bilingual_date_tuples(text: str) -> list[tuple[int, int, int]]:
 PASSPORT_NUMBER_PATTERN = r"\b([A-Z]{1,2}\d{6,8})\b"
 
 
+def _find_visa_info(text: str) -> dict:
+    """Extracts visa number and expiry date from a Czech/Schengen visa
+    sticker. Two independent sources, used together for reliability:
+      1. The plain visa number printed near 'VIZUM/VISA' (6-10 digits).
+      2. The visa's own MRZ-style line at the bottom, which also encodes
+         the holder's birth date and the visa's expiry date — reading
+         the expiry from here is far more reliable than guessing from
+         printed (and often OCR-mangled) calendar dates on the sticker.
+    """
+    result = {}
+
+    if not re.search(r"\bVIZUM\b|\bVISA\b", text, re.IGNORECASE):
+        return result  # doesn't look like a visa document at all
+
+    m = re.search(r"VIZUM\s*/\s*VISA.*?\n.*?\n(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["visa_number"] = m.group(1)
+
+    m2 = re.search(r"(\d{8,10})\d?[A-Z]{3}(\d{6})\d[MF](\d{6})\d", text)
+    if m2:
+        if "visa_number" not in result:
+            result["visa_number"] = m2.group(1)
+        expiry_raw = m2.group(3)  # YYMMDD
+        try:
+            yy, mm, dd = int(expiry_raw[0:2]), int(expiry_raw[2:4]), int(expiry_raw[4:6])
+            year = _interpret_two_digit_year(yy, role="expiry")
+            date(year, mm, dd)  # validate
+            result["visa_validity"] = f"{dd:02d}.{mm:02d}.{year}"
+        except (ValueError, IndexError):
+            pass
+
+    return result
+
+
 def _find_doc_number(text: str) -> Optional[str]:
     for label in DOC_NUMBER_LABELS:
         m = re.search(label + r"[:\s]*\n?\s*([A-Z0-9]{5,12})", text, re.IGNORECASE)
@@ -238,6 +272,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
 
     doc_number = _find_doc_number(raw_text)
     address = _find_address(raw_text)
+    visa_info = _find_visa_info(raw_text)
 
     is_expired = False
     warnings = []
@@ -266,6 +301,8 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "birth_date": birth_date,
         "doc_number": doc_number,
         "address": address,
+        "visa_number": visa_info.get("visa_number"),
+        "visa_validity": visa_info.get("visa_validity"),
         "mrz_raw": mrz,
         "ocr_quality_score": quality,
         "ocr_confidence": confidence,
@@ -371,7 +408,12 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     if mrz_match:
         last = mrz_match.group(1).replace("<", " ").strip().title()
         first = mrz_match.group(2).replace("<", " ").strip().title()
-        return first, last
+        # OCR sometimes drops one of the two '<' separators, causing this
+        # regex to match the tail-end filler ("<<<<<...") instead of the
+        # real given name — resulting in an empty first name. Only trust
+        # this match if both parts look like real name fragments.
+        if last and first:
+            return first, last
 
     first = last = None
     for pattern, kind in NAME_LABEL_PATTERNS:
