@@ -347,30 +347,44 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     solves both the speed and reliability problems of running Tesseract
     locally on a memory/CPU-constrained free hosting instance."""
     url = "https://api.ocr.space/parse/image"
-    data = {
-        "apikey": settings.OCR_SPACE_API_KEY,
-        "language": "cze",  # closest single-language match for CZ/SK docs;
-                             # engine 2 below still reads Latin-script text reasonably
-        "OCREngine": "2",
-        "scale": "true",
-        "isTable": "false",
-    }
-    files = {"file": (filename, image_bytes)}
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, data=data, files=files)
-        resp.raise_for_status()
-        result = resp.json()
+    # OCR.space has two engines with different language support — Engine 2
+    # only supports a small language subset that excludes "cze"/"ukr", so
+    # we try Engine 1 (broad language support) first, then fall back to
+    # Engine 2 with English if that somehow fails too.
+    attempts = [
+        {"language": "cze", "OCREngine": "1"},
+        {"language": "eng", "OCREngine": "1"},
+        {"language": "eng", "OCREngine": "2"},
+    ]
 
-    if result.get("IsErroredOnProcessing"):
-        err = result.get("ErrorMessage") or result.get("ErrorDetails") or "unknown error"
-        print(f"[ocr] OCR.space error: {err}")
-        return ""
+    for attempt in attempts:
+        data = {
+            "apikey": settings.OCR_SPACE_API_KEY,
+            "scale": "true",
+            "isTable": "false",
+            **attempt,
+        }
+        files = {"file": (filename, image_bytes)}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, data=data, files=files)
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            print(f"[ocr] OCR.space request failed ({attempt}): {type(e).__name__}: {e}")
+            continue
 
-    parsed = result.get("ParsedResults") or []
-    if not parsed:
-        return ""
-    return parsed[0].get("ParsedText", "")
+        if result.get("IsErroredOnProcessing"):
+            err = result.get("ErrorMessage") or result.get("ErrorDetails") or "unknown error"
+            print(f"[ocr] OCR.space error ({attempt}): {err}")
+            continue
+
+        parsed = result.get("ParsedResults") or []
+        if parsed and parsed[0].get("ParsedText", "").strip():
+            return parsed[0]["ParsedText"]
+
+    return ""
 
 
 def _tesseract_ocr(image_bytes: bytes) -> str:
