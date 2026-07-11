@@ -69,7 +69,7 @@ const FIELD_DEFS = [
   ["company_dic", "DIČ"],
   ["company_address", "Adresa firmy"],
   ["company_representative", "Zástupce firmy"],
-  ["visa_number", "Číslo víza (jen pro cizince)"],
+  ["visa_number", "Série a číslo víza (jen pro cizince)"],
   ["visa_validity", "Platnost víza do (jen pro cizince)"],
   ["residence_type", "Druh pobytu na území ČR (jen pro cizince)"],
   ["signing_place", "Místo podpisu (výchozí: Praze)"],
@@ -219,7 +219,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
     <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40">
       <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Adresa</div>
 
-      <div className="flex gap-1.5 mb-3">
+      <div className="flex gap-4 mb-3 border-b border-slate-200">
         {[
           ["cz", "Česká republika"],
           ["ua", "Ukrajina"],
@@ -229,10 +229,13 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             key={key}
             type="button"
             onClick={() => setAddressCountry(key)}
-            className={`rounded-md px-2.5 py-1 text-[11.5px] font-medium border transition-colors
-              ${addressCountry === key ? "bg-[#0B1220] text-white border-[#0B1220]" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}
+            className={`relative pb-2 text-[12.5px] font-medium transition-colors
+              ${addressCountry === key ? "text-[#0B1220]" : "text-slate-400 hover:text-slate-600"}`}
           >
             {label}
+            {addressCountry === key && (
+              <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#AF3524] rounded-full" />
+            )}
           </button>
         ))}
       </div>
@@ -392,6 +395,117 @@ function splitRecognizedAddress(raw) {
     .replace(/\s{2,}/g, " ")
     .trim();
   return { street, psc };
+}
+
+// Saved company profiles persist in this browser (localStorage) so HR
+// staff don't have to retype the same employer's IČO/DIČ/address on
+// every single contract — pick one from the dropdown to auto-fill, or
+// save the currently typed values as a new (or updated) profile.
+const COMPANIES_KEY = "kadr_companies_v1";
+
+function loadCompanies() {
+  try {
+    const raw = localStorage.getItem(COMPANIES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCompanies(list) {
+  try {
+    localStorage.setItem(COMPANIES_KEY, JSON.stringify(list));
+  } catch {
+    // localStorage unavailable (private browsing etc.) — fail silently,
+    // the person can still fill fields manually, just without saving.
+  }
+}
+
+function CompanyPicker({ fields, setFields }) {
+  const [companies, setCompanies] = useState(() => loadCompanies());
+  const [selectedId, setSelectedId] = useState("");
+
+  const applyCompany = (c) => {
+    setFields((f) => ({
+      ...f,
+      company_name: c.name || "",
+      company_ico: c.ico || "",
+      company_dic: c.dic || "",
+      company_address: c.address || "",
+      company_representative: c.representative || "",
+    }));
+  };
+
+  const handleSelect = (id) => {
+    setSelectedId(id);
+    if (!id) return;
+    const c = companies.find((c) => c.id === id);
+    if (c) applyCompany(c);
+  };
+
+  const handleSaveCurrent = () => {
+    if (!fields.company_name?.trim()) return;
+    const existingIdx = selectedId ? companies.findIndex((c) => c.id === selectedId) : -1;
+    const profile = {
+      id: existingIdx >= 0 ? companies[existingIdx].id : `c${Date.now()}`,
+      name: fields.company_name || "",
+      ico: fields.company_ico || "",
+      dic: fields.company_dic || "",
+      address: fields.company_address || "",
+      representative: fields.company_representative || "",
+    };
+    const next = existingIdx >= 0
+      ? companies.map((c, i) => (i === existingIdx ? profile : c))
+      : [...companies, profile];
+    setCompanies(next);
+    saveCompanies(next);
+    setSelectedId(profile.id);
+  };
+
+  const handleDelete = () => {
+    if (!selectedId) return;
+    const next = companies.filter((c) => c.id !== selectedId);
+    setCompanies(next);
+    saveCompanies(next);
+    setSelectedId("");
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40 mb-3">
+      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Uložené firmy</div>
+      <div className="flex gap-2 items-center flex-wrap">
+        <select
+          value={selectedId}
+          onChange={(e) => handleSelect(e.target.value)}
+          className="flex-1 min-w-[160px] rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+        >
+          <option value="">— Vybrat uloženou firmu —</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleSaveCurrent}
+          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+        >
+          {selectedId ? "Aktualizovat" : "Uložit jako novou"}
+        </button>
+        {selectedId && (
+          <button
+            type="button"
+            onClick={handleDelete}
+            className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50"
+          >
+            Smazat
+          </button>
+        )}
+      </div>
+      <p className="mt-1.5 text-[10.5px] text-slate-400">
+        Firmy se ukládají jen v tomto prohlížeči, ne na serveru.
+      </p>
+    </div>
+  );
 }
 
 function composeAddress(country, parts) {
@@ -768,6 +882,8 @@ export default function SimpleDocFiller() {
                   }
                 />
               </div>
+
+              <CompanyPicker fields={fields} setFields={setFields} />
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
                 {FIELD_DEFS.map(([key, label]) => (
