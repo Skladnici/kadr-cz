@@ -1076,7 +1076,15 @@ export default function SimpleDocFiller() {
               </div>
 
               <div className="mt-6 flex justify-between items-center">
-                <button onClick={() => setStep(1)} className="inline-flex items-center gap-1.5 text-[13px] text-slate-500 hover:text-[#0B1220]">
+                <button
+                  onClick={() => {
+                    setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
+                    setPendingFiles([]);
+                    setPastedText("");
+                    setStep(1);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-[13px] text-slate-500 hover:text-[#0B1220]"
+                >
                   <ArrowLeft size={14} /> Zpět
                 </button>
                 <button
