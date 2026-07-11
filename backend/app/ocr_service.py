@@ -252,13 +252,33 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
     from PIL import Image
     import io
 
-    image = Image.open(io.BytesIO(image_bytes))
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        pass  # HEIC support unavailable; non-HEIC images still work fine.
+
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        image.load()
+        # Always force a real conversion, even if mode is already "RGB" —
+        # some loaders (e.g. HEIC) return a mode="RGB" wrapper object that
+        # isn't a genuine PIL.Image and that pytesseract rejects. .convert()
+        # always returns a fresh, plain PIL.Image regardless of source mode.
+        image = image.convert("RGB")
+    except Exception as e:
+        print(f"[ocr] Failed to open image: {type(e).__name__}: {e}")
+        return ""
+
     # Try Czech+Ukrainian+English combined if language packs are installed,
-    # fall back to English-only (default tesseract install) if not.
-    for langs in ("ces+ukr+eng", "eng"):
+    # fall back to English-only, then to tesseract's bare default.
+    for langs in ("ces+ukr+eng", "eng", None):
         try:
-            return pytesseract.image_to_string(image, lang=langs)
-        except pytesseract.TesseractError:
+            if langs:
+                return pytesseract.image_to_string(image, lang=langs)
+            return pytesseract.image_to_string(image)
+        except Exception as e:
+            print(f"[ocr] Tesseract failed with lang={langs}: {type(e).__name__}: {e}")
             continue
     return ""
 
