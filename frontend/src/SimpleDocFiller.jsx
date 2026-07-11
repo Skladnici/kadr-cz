@@ -570,7 +570,7 @@ export default function SimpleDocFiller() {
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
   const [docNumberVerified, setDocNumberVerified] = useState(false);
-  const [uploadMode, setUploadMode] = useState("file"); // "file" | "text"
+  const [pendingFiles, setPendingFiles] = useState([]);
   const [pastedText, setPastedText] = useState("");
   const [lightboxUrl, setLightboxUrl] = useState(null);
   const [error, setError] = useState(null);
@@ -644,15 +644,14 @@ export default function SimpleDocFiller() {
     setStep(3);
   }, [addressCountry]);
 
-  const handleFiles = useCallback(async (fileList) => {
+  // Adds newly selected/dropped files to the pending queue and shows
+  // their thumbnails right away — recognition itself only starts once
+  // the person clicks "Rozpoznat a pokračovat", so they can add several
+  // photos (and/or paste text) before triggering the actual processing.
+  const addPendingFiles = useCallback((fileList) => {
     const files = Array.from(fileList || []).filter(Boolean);
     if (files.length === 0) return;
-    setStep(2);
     setError(null);
-    // Show small thumbnails of what was uploaded, so the person can
-    // visually cross-check the recognized fields against the actual
-    // photo. PDFs and HEIC don't get a real thumbnail (browsers can't
-    // natively render either as an <img>) — just an icon placeholder.
     const previews = files.map((f) => {
       const isHeic = /heic|heif/i.test(f.type) || /\.hei[cf]$/i.test(f.name);
       const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
@@ -663,13 +662,26 @@ export default function SimpleDocFiller() {
         url: !isPdf && !isHeic && f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
       };
     });
+    setPendingFiles((prev) => [...prev, ...files]);
+    setPreviewUrls((prev) => [...prev, ...previews]);
+  }, []);
+
+  const removePendingFile = useCallback((index) => {
     setPreviewUrls((prev) => {
-      prev.forEach((p) => p.url && URL.revokeObjectURL(p.url));
-      return previews;
+      const removed = prev[index];
+      if (removed?.url) URL.revokeObjectURL(removed.url);
+      return prev.filter((_, i) => i !== index);
     });
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleConfirmUpload = useCallback(async () => {
+    if (pendingFiles.length === 0 && !pastedText.trim()) return;
+    setStep(2);
+    setError(null);
     try {
       const results = [];
-      for (const file of files) {
+      for (const file of pendingFiles) {
         const compressed = await compressImageInBrowser(file);
         const formData = new FormData();
         formData.append("file", compressed);
@@ -684,6 +696,15 @@ export default function SimpleDocFiller() {
         if (!res.ok) throw new Error("server error");
         results.push(await res.json());
       }
+      if (pastedText.trim()) {
+        const res = await fetch(`${API_BASE}/api/recognize-text`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: pastedText }),
+        });
+        if (!res.ok) throw new Error("server error");
+        results.push(await res.json());
+      }
       applyRecognizedResults(results);
     } catch (e) {
       if (e.name === "AbortError") {
@@ -693,27 +714,7 @@ export default function SimpleDocFiller() {
       }
       setStep(1);
     }
-  }, [applyRecognizedResults]);
-
-  const handlePastedText = useCallback(async () => {
-    if (!pastedText.trim()) return;
-    setStep(2);
-    setError(null);
-    setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
-    try {
-      const res = await fetch(`${API_BASE}/api/recognize-text`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: pastedText }),
-      });
-      if (!res.ok) throw new Error("server error");
-      const data = await res.json();
-      applyRecognizedResults([data]);
-    } catch (e) {
-      setError(`Nepodařilo se zpracovat vložený text. Zkontrolujte, zda backend běží na ${API_BASE}.`);
-      setStep(1);
-    }
-  }, [pastedText, applyRecognizedResults]);
+  }, [pendingFiles, pastedText, applyRecognizedResults]);
 
   const skipUpload = () => {
     setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
@@ -723,6 +724,8 @@ export default function SimpleDocFiller() {
     setOcrMode(null);
     setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
+    setPendingFiles([]);
+    setPastedText("");
     setStep(3);
   };
 
@@ -760,6 +763,8 @@ export default function SimpleDocFiller() {
     setError(null);
     setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
+    setPendingFiles([]);
+    setPastedText("");
   };
 
   const downloadUrl = (token) => `${API_BASE}/api/download/${token}`;
@@ -836,81 +841,85 @@ export default function SimpleDocFiller() {
               <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
-                automaticky. Můžete nahrát i více souborů najednou (např. pas + vízum).
+                automaticky. Můžete přidat více souborů i text zároveň (např. pas + vízum).
               </p>
 
-              <div className="flex gap-4 mt-4 border-b border-slate-200">
-                {[["file", "Nahrát soubory"], ["text", "Vložit text"]].map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setUploadMode(key)}
-                    className={`relative pb-2 text-[12.5px] font-medium transition-colors ${
-                      uploadMode === key ? "text-[#0B1220]" : "text-slate-400 hover:text-slate-600"
-                    }`}
-                  >
-                    {label}
-                    {uploadMode === key && (
-                      <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#C9932E] rounded-full" />
-                    )}
-                  </button>
-                ))}
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); addPendingFiles(e.dataTransfer.files); }}
+                className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-10 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
+              >
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
+                  <Upload size={18} className="text-slate-400" />
+                </div>
+                <div className="text-center">
+                  <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
+                  <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze přidat i více najednou</div>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".jpg,.jpeg,.png,.heic,.pdf"
+                  className="hidden"
+                  onChange={(e) => { addPendingFiles(e.target.files); e.target.value = ""; }}
+                />
               </div>
 
-              {uploadMode === "file" ? (
-                <>
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
-                    className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-12 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
-                  >
-                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
-                      <Upload size={18} className="text-slate-400" />
+              {previewUrls.length > 0 && (
+                <div className="mt-4 flex gap-2 flex-wrap">
+                  {previewUrls.map((p, i) => (
+                    <div key={i} className="relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group">
+                      {p.url ? (
+                        <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-slate-400">
+                          <FileText size={18} />
+                          <span className="text-[8px] leading-none">{p.isPdf ? "PDF" : "HEIC"}</span>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removePendingFile(i)}
+                        className="absolute top-0.5 right-0.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Odebrat"
+                      >
+                        <X size={10} />
+                      </button>
                     </div>
-                    <div className="text-center">
-                      <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
-                      <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze vybrat více souborů najednou</div>
-                    </div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept=".jpg,.jpeg,.png,.heic,.pdf"
-                      className="hidden"
-                      onChange={(e) => handleFiles(e.target.files)}
-                    />
-                  </div>
-
-                  <button
-                    onClick={skipUpload}
-                    className="mt-4 w-full text-center text-[12.5px] text-slate-500 hover:text-[#0B1220] py-1"
-                  >
-                    Přeskočit a vyplnit ručně →
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="mt-4 text-[12px] text-slate-500">
-                    Vložte text z dokladu (např. zkopírovaný z fotky nebo zprávy) — systém z něj
-                    stejně rozpozná a předvyplní údaje.
-                  </p>
-                  <textarea
-                    value={pastedText}
-                    onChange={(e) => setPastedText(e.target.value)}
-                    placeholder="Vložte sem text dokladu…"
-                    rows={7}
-                    className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
-                  />
-                  <button
-                    onClick={handlePastedText}
-                    disabled={!pastedText.trim()}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#0B1220] px-4 py-2.5 text-[13px] font-medium text-white hover:bg-[#16243A] disabled:opacity-40"
-                  >
-                    Rozpoznat text <ArrowRight size={14} />
-                  </button>
-                </>
+                  ))}
+                </div>
               )}
+
+              <details className="mt-4">
+                <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-[#0B1220]">
+                  Nebo vložit text dokladu ručně
+                </summary>
+                <textarea
+                  value={pastedText}
+                  onChange={(e) => setPastedText(e.target.value)}
+                  placeholder="Vložte sem text dokladu…"
+                  rows={5}
+                  className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
+                />
+              </details>
+
+              <div className="mt-5 flex items-center gap-2.5">
+                <button
+                  onClick={handleConfirmUpload}
+                  disabled={pendingFiles.length === 0 && !pastedText.trim()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1220] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#16243A] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Rozpoznat a pokračovat <ArrowRight size={14} />
+                </button>
+                <button
+                  onClick={skipUpload}
+                  className="text-[12.5px] text-slate-500 hover:text-[#0B1220] py-1"
+                >
+                  Přeskočit a vyplnit ručně
+                </button>
+              </div>
             </div>
           )}
 
