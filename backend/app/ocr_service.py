@@ -183,9 +183,18 @@ def _find_visa_info(text: str) -> dict:
     if not re.search(r"\bVIZUM\b|\bVISA\b", text, re.IGNORECASE):
         return result  # doesn't look like a visa document at all
 
-    m = re.search(r"VIZUM\s*/\s*VISA.*?\n.*?\n(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
+    m = re.search(r"VIZUM\s*/\s*VISA\s*\n\s*([A-Z]{3})\s*\n\s*(\d{6,10})", text, re.IGNORECASE)
     if m:
-        result["visa_number"] = m.group(1)
+        result["visa_number"] = f"{m.group(1).upper()}{m.group(2)}"
+    else:
+        # Series line not found right where expected — still capture the
+        # bare number, and separately look for a 3-letter series code
+        # (CZE, POL, SVK…) anywhere nearby to prefix it with.
+        m_num = re.search(r"VIZUM\s*/\s*VISA.*?\n.*?\n(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
+        m_series = re.search(r"\b(CZE|POL|SVK|DEU|AUT|HUN)\b", text)
+        if m_num:
+            prefix = m_series.group(1) if m_series else ""
+            result["visa_number"] = f"{prefix}{m_num.group(1)}"
 
     m2 = re.search(r"(\d{8,10})\d?[A-Z]{3}(\d{6})\d[MF](\d{6})\d", text)
     if m2:
