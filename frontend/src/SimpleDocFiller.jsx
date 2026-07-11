@@ -397,6 +397,48 @@ function splitRecognizedAddress(raw) {
   return { street, psc };
 }
 
+// Tries to spot a known city name embedded in the recognized address
+// text and split it out into its own field, using the same city lists
+// that power the manual autocomplete — so a recognized address ends up
+// with city + PSČ already separated, not just dumped into "street".
+function smartSplitAddress(raw, countryGuess) {
+  const base = splitRecognizedAddress(raw);
+  if (!base.street) return base;
+
+  const cityTable = countryGuess === "ua" ? UA_CITY_PSC : countryGuess === "cz" ? CZ_CITY_PSC : null;
+  if (!cityTable) return base;
+
+  const lowerStreet = base.street.toLowerCase();
+  let bestMatch = null;
+  let bestKey = null;
+  for (const cityName of Object.keys(cityTable)) {
+    // City keys may be "Cyrillic / Latin" (Ukraine) or a plain Czech
+    // name — check every segment, since recognized address text is
+    // usually in Latin transliteration even for Ukrainian addresses.
+    for (const part of cityName.split(" / ").map((p) => p.trim())) {
+      if (part.length >= 3 && lowerStreet.includes(part.toLowerCase())) {
+        if (!bestMatch || part.length > bestMatch.length) {
+          bestMatch = part;
+          bestKey = cityName;
+        }
+      }
+    }
+  }
+  if (!bestMatch) return base;
+
+  const idx = lowerStreet.indexOf(bestMatch.toLowerCase());
+  const street = (base.street.slice(0, idx) + base.street.slice(idx + bestMatch.length))
+    .replace(/[,\s]+$/, "")
+    .replace(/^[,\s]+/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return {
+    street,
+    city: bestMatch,
+    psc: base.psc || cityTable[bestKey],
+  };
+}
+
 // Saved company profiles persist in this browser (localStorage) so HR
 // staff don't have to retype the same employer's IČO/DIČ/address on
 // every single contract — pick one from the dropdown to auto-fill, or
@@ -428,7 +470,7 @@ function CompanyPicker({ fields, setFields }) {
   const applyCompany = (c) => {
     setFields((f) => ({
       ...f,
-      company_name: c.name || "",
+      company_name: (c.name || "").toUpperCase(),
       company_ico: c.ico || "",
       company_dic: c.dic || "",
       company_address: c.address || "",
@@ -528,6 +570,9 @@ export default function SimpleDocFiller() {
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
   const [docNumberVerified, setDocNumberVerified] = useState(false);
+  const [uploadMode, setUploadMode] = useState("file"); // "file" | "text"
+  const [pastedText, setPastedText] = useState("");
+  const [lightboxUrl, setLightboxUrl] = useState(null);
   const [error, setError] = useState(null);
   const [blanks, setBlanks] = useState([]);
   const [templateId, setTemplateId] = useState(null);
@@ -544,6 +589,60 @@ export default function SimpleDocFiller() {
       })
       .catch(() => setError(`Nepodařilo se načíst seznam formulářů. Zkontrolujte, zda backend běží na ${API_BASE}.`));
   }, []);
+
+  // Shared by both the file-upload path and the paste-text path: takes
+  // an array of /api/recognize-shaped results and merges them into the
+  // form's fields, address, and warnings — so pasting text goes through
+  // exactly the same field-extraction and auto-fill logic as a photo.
+  const applyRecognizedResults = useCallback((results) => {
+    const pick = (key) => {
+      for (const r of results) {
+        if (r[key] && r[key] !== "—") return r[key];
+      }
+      return "";
+    };
+
+    setFields({
+      first_name: pick("first_name").toUpperCase(),
+      last_name: pick("last_name").toUpperCase(),
+      birth_date: pick("birth_date"),
+      nationality: pick("nationality"),
+      doc_number: pick("doc_number"),
+      visa_number: pick("visa_number"),
+      visa_validity: pick("visa_validity"),
+      position: "",
+      workplace: "",
+      salary: "",
+      hours_per_week: "",
+      start_date: "",
+      end_date: "",
+      bank_account: "",
+      company_name: "",
+      company_ico: "",
+      company_dic: "",
+      company_address: "",
+      company_representative: "",
+    });
+    setDocNumberVerified(results.some((r) => r.doc_number_verified));
+
+    const recognizedAddress = pick("address");
+    const mergedNationality = pick("nationality");
+    let guessedCountry = addressCountry;
+    if (/ukrajin/i.test(mergedNationality)) guessedCountry = "ua";
+    else if (/česk|czech/i.test(mergedNationality)) guessedCountry = "cz";
+    setAddressCountry(guessedCountry);
+    setAddressPartsByCountry((prev) => ({
+      ...prev,
+      [guessedCountry]: recognizedAddress
+        ? smartSplitAddress(recognizedAddress, guessedCountry)
+        : prev[guessedCountry],
+    }));
+
+    setWarnings(results.flatMap((r) => r.warnings || []));
+    setRawText(results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"));
+    setOcrMode(results[0]?.ocr_mode);
+    setStep(3);
+  }, [addressCountry]);
 
   const handleFiles = useCallback(async (fileList) => {
     const files = Array.from(fileList || []).filter(Boolean);
@@ -585,57 +684,7 @@ export default function SimpleDocFiller() {
         if (!res.ok) throw new Error("server error");
         results.push(await res.json());
       }
-
-      // Merge multiple documents (e.g. passport + visa page): for each
-      // field, take the first non-empty value found across all uploaded
-      // files, so missing info on one document is filled in by another.
-      const pick = (key) => {
-        for (const r of results) {
-          if (r[key] && r[key] !== "—") return r[key];
-        }
-        return "";
-      };
-
-      setFields({
-        first_name: pick("first_name"),
-        last_name: pick("last_name"),
-        birth_date: pick("birth_date"),
-        nationality: pick("nationality"),
-        doc_number: pick("doc_number"),
-        visa_number: pick("visa_number"),
-        visa_validity: pick("visa_validity"),
-        position: "",
-        workplace: "",
-        salary: "",
-        hours_per_week: "",
-        start_date: "",
-        end_date: "",
-        bank_account: "",
-        company_name: "",
-        company_ico: "",
-        company_dic: "",
-        company_address: "",
-        company_representative: "",
-      });
-      setDocNumberVerified(results.some((r) => r.doc_number_verified));
-
-      const recognizedAddress = pick("address");
-      const mergedNationality = pick("nationality");
-      let guessedCountry = addressCountry;
-      if (/ukrajin/i.test(mergedNationality)) guessedCountry = "ua";
-      else if (/česk|czech/i.test(mergedNationality)) guessedCountry = "cz";
-      setAddressCountry(guessedCountry);
-      setAddressPartsByCountry((prev) => ({
-        ...prev,
-        [guessedCountry]: recognizedAddress
-          ? splitRecognizedAddress(recognizedAddress)
-          : prev[guessedCountry],
-      }));
-
-      setWarnings(results.flatMap((r) => r.warnings || []));
-      setRawText(results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"));
-      setOcrMode(results[0]?.ocr_mode);
-      setStep(3);
+      applyRecognizedResults(results);
     } catch (e) {
       if (e.name === "AbortError") {
         setError("Rozpoznávání trvá příliš dlouho (přes 60 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
@@ -644,7 +693,27 @@ export default function SimpleDocFiller() {
       }
       setStep(1);
     }
-  }, []);
+  }, [applyRecognizedResults]);
+
+  const handlePastedText = useCallback(async () => {
+    if (!pastedText.trim()) return;
+    setStep(2);
+    setError(null);
+    setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
+    try {
+      const res = await fetch(`${API_BASE}/api/recognize-text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pastedText }),
+      });
+      if (!res.ok) throw new Error("server error");
+      const data = await res.json();
+      applyRecognizedResults([data]);
+    } catch (e) {
+      setError(`Nepodařilo se zpracovat vložený text. Zkontrolujte, zda backend běží na ${API_BASE}.`);
+      setStep(1);
+    }
+  }, [pastedText, applyRecognizedResults]);
 
   const skipUpload = () => {
     setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
@@ -770,35 +839,78 @@ export default function SimpleDocFiller() {
                 automaticky. Můžete nahrát i více souborů najednou (např. pas + vízum).
               </p>
 
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
-                className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-12 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
-              >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
-                  <Upload size={18} className="text-slate-400" />
-                </div>
-                <div className="text-center">
-                  <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
-                  <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze vybrat více souborů najednou</div>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".jpg,.jpeg,.png,.heic,.pdf"
-                  className="hidden"
-                  onChange={(e) => handleFiles(e.target.files)}
-                />
+              <div className="flex gap-4 mt-4 border-b border-slate-200">
+                {[["file", "Nahrát soubory"], ["text", "Vložit text"]].map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setUploadMode(key)}
+                    className={`relative pb-2 text-[12.5px] font-medium transition-colors ${
+                      uploadMode === key ? "text-[#0B1220]" : "text-slate-400 hover:text-slate-600"
+                    }`}
+                  >
+                    {label}
+                    {uploadMode === key && (
+                      <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#C9932E] rounded-full" />
+                    )}
+                  </button>
+                ))}
               </div>
 
-              <button
-                onClick={skipUpload}
-                className="mt-4 w-full text-center text-[12.5px] text-slate-500 hover:text-[#0B1220] py-1"
-              >
-                Přeskočit a vyplnit ručně →
-              </button>
+              {uploadMode === "file" ? (
+                <>
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
+                    className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-12 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
+                      <Upload size={18} className="text-slate-400" />
+                    </div>
+                    <div className="text-center">
+                      <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
+                      <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze vybrat více souborů najednou</div>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept=".jpg,.jpeg,.png,.heic,.pdf"
+                      className="hidden"
+                      onChange={(e) => handleFiles(e.target.files)}
+                    />
+                  </div>
+
+                  <button
+                    onClick={skipUpload}
+                    className="mt-4 w-full text-center text-[12.5px] text-slate-500 hover:text-[#0B1220] py-1"
+                  >
+                    Přeskočit a vyplnit ručně →
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="mt-4 text-[12px] text-slate-500">
+                    Vložte text z dokladu (např. zkopírovaný z fotky nebo zprávy) — systém z něj
+                    stejně rozpozná a předvyplní údaje.
+                  </p>
+                  <textarea
+                    value={pastedText}
+                    onChange={(e) => setPastedText(e.target.value)}
+                    placeholder="Vložte sem text dokladu…"
+                    rows={7}
+                    className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
+                  />
+                  <button
+                    onClick={handlePastedText}
+                    disabled={!pastedText.trim()}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#0B1220] px-4 py-2.5 text-[13px] font-medium text-white hover:bg-[#16243A] disabled:opacity-40"
+                  >
+                    Rozpoznat text <ArrowRight size={14} />
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -824,7 +936,13 @@ export default function SimpleDocFiller() {
               {previewUrls.length > 0 && (
                 <div className="mb-4 flex gap-2 flex-wrap">
                   {previewUrls.map((p, i) => (
-                    <div key={i} className="relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0">
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => p.url && setLightboxUrl(p.url)}
+                      className={`relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
+                      title={p.url ? "Klikněte pro zvětšení" : p.name}
+                    >
                       {p.url ? (
                         <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
                       ) : (
@@ -833,7 +951,7 @@ export default function SimpleDocFiller() {
                           <span className="text-[8px] leading-none">{p.isPdf ? "PDF" : "HEIC"}</span>
                         </div>
                       )}
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -898,6 +1016,7 @@ export default function SimpleDocFiller() {
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
                 {FIELD_DEFS.map(([key, label]) => {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
+                  const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
                   return (
                     <label key={key} className="block">
@@ -911,7 +1030,12 @@ export default function SimpleDocFiller() {
                       </span>
                       <input
                         value={fields[key] || ""}
-                        onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
+                        onChange={(e) =>
+                          setFields((f) => ({
+                            ...f,
+                            [key]: isUppercase ? e.target.value.toUpperCase() : e.target.value,
+                          }))
+                        }
                         style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
                         className={`mt-1 w-full rounded-md border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
                           ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
@@ -991,6 +1115,25 @@ export default function SimpleDocFiller() {
           Žádná data se neukládají — vše probíhá jednorázově.
         </p>
       </div>
+
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <img
+            src={lightboxUrl}
+            alt="Náhled dokumentu"
+            className="max-h-full max-w-full rounded-lg shadow-2xl object-contain"
+          />
+          <button
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-5 right-5 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          >
+            <X size={18} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
