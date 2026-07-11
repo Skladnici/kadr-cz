@@ -384,6 +384,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "expiry_date": expiry_date,
         "birth_date": birth_date,
         "doc_number": doc_number,
+        "doc_number_verified": bool(mrz_doc_number and doc_number_verified),
         "address": address,
         "visa_number": visa_info.get("visa_number"),
         "visa_validity": visa_info.get("visa_validity"),
