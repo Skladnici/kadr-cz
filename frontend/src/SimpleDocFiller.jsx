@@ -4,6 +4,47 @@ import {
   Printer, Loader2, ArrowRight, ArrowLeft, ScanLine, RotateCcw
 } from "lucide-react";
 
+// Compresses/resizes an image in the browser before upload — this cuts
+// the actual network transfer time (often the real bottleneck on mobile
+// connections with multi-MB phone photos), on top of any server-side
+// compression that happens afterwards. HEIC files are passed through
+// unchanged since most browsers can't decode HEIC via <canvas>.
+function compressImageInBrowser(file, maxDimension = 1800, quality = 0.82) {
+  return new Promise((resolve) => {
+    const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+    if (isHeic || !file.type.startsWith("image/")) {
+      resolve(file); // let the backend handle HEIC/unsupported types as-is
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      let { width, height } = img;
+      if (Math.max(width, height) > maxDimension) {
+        const scale = maxDimension / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) { resolve(file); return; }
+          resolve(new File([blob], file.name.replace(/\.\w+$/, ".jpg"), { type: "image/jpeg" }));
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => resolve(file); // fall back to original on any decode issue
+    img.src = url;
+  });
+}
+
 const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   ? window.__HR_API_BASE__
   : "http://localhost:8000";
@@ -66,9 +107,17 @@ export default function SimpleDocFiller() {
     setStep(2);
     setError(null);
     try {
+      const compressed = await compressImageInBrowser(file);
       const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch(`${API_BASE}/api/recognize`, { method: "POST", body: formData });
+      formData.append("file", compressed);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s max
+      const res = await fetch(`${API_BASE}/api/recognize`, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
       if (!res.ok) throw new Error("server error");
       const data = await res.json();
       setFields({
@@ -96,7 +145,11 @@ export default function SimpleDocFiller() {
       setOcrMode(data.ocr_mode);
       setStep(3);
     } catch (e) {
-      setError(`Nepodařilo se rozpoznat dokument. Zkontrolujte, zda backend běží na ${API_BASE}.`);
+      if (e.name === "AbortError") {
+        setError("Rozpoznávání trvá příliš dlouho (přes 60 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
+      } else {
+        setError(`Nepodařilo se rozpoznat dokument. Zkontrolujte, zda backend běží na ${API_BASE}.`);
+      }
       setStep(1);
     }
   }, []);
