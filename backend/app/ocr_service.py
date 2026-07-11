@@ -265,6 +265,29 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     return first, last
 
 
+def _preprocess_for_ocr(image):
+    """Improves OCR accuracy on real-world phone photos (as opposed to
+    flat scans, which Tesseract was originally designed for). Applies:
+    grayscale, contrast boost, upscaling for small images, and sharpening.
+    This is pure PIL — no extra dependencies, negligible cost."""
+    from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+
+    gray = ImageOps.grayscale(image)
+
+    # Upscale small photos — Tesseract does much better with more pixels
+    # per character. Phone photos of documents are often downsized by
+    # the browser before upload.
+    w, h = gray.size
+    if max(w, h) < 1800:
+        scale = 1800 / max(w, h)
+        gray = gray.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    gray = ImageOps.autocontrast(gray, cutoff=1)
+    gray = ImageEnhance.Sharpness(gray).enhance(1.8)
+    gray = ImageEnhance.Contrast(gray).enhance(1.3)
+    return gray
+
+
 def _tesseract_ocr(image_bytes: bytes) -> str:
     """Free, local, no-API-key OCR using Tesseract — no billing account or
     API key needed at all. Less accurate than Google Vision but works out
@@ -288,17 +311,21 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
         # isn't a genuine PIL.Image and that pytesseract rejects. .convert()
         # always returns a fresh, plain PIL.Image regardless of source mode.
         image = image.convert("RGB")
+        image = _preprocess_for_ocr(image)
     except Exception as e:
-        print(f"[ocr] Failed to open image: {type(e).__name__}: {e}")
+        print(f"[ocr] Failed to open/preprocess image: {type(e).__name__}: {e}")
         return ""
 
     # Try Czech+Ukrainian+English combined if language packs are installed,
     # fall back to English-only, then to tesseract's bare default.
+    # --psm 6 assumes a single uniform block of text, which suits ID
+    # documents/contracts better than Tesseract's default page-layout mode.
+    config = "--psm 6"
     for langs in ("ces+ukr+eng", "eng", None):
         try:
             if langs:
-                return pytesseract.image_to_string(image, lang=langs)
-            return pytesseract.image_to_string(image)
+                return pytesseract.image_to_string(image, lang=langs, config=config)
+            return pytesseract.image_to_string(image, config=config)
         except Exception as e:
             print(f"[ocr] Tesseract failed with lang={langs}: {type(e).__name__}: {e}")
             continue
