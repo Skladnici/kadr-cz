@@ -11,14 +11,21 @@ class Settings:
     APP_NAME = "KADR.CZ — Rychlé vyplnění dokumentů"
 
     GOOGLE_VISION_API_KEY: str = os.getenv("GOOGLE_VISION_API_KEY", "")
-    # "live" = Google Vision (needs API key + billing account)
-    # "local" = free Tesseract OCR running on the server, no key/card needed (default)
-    # "mock" = fixed demo data, only used if explicitly forced via OCR_MODE_OVERRIDE
+    OCR_SPACE_API_KEY: str = os.getenv("OCR_SPACE_API_KEY", "")
+    # Engine priority:
+    # "live"     = Google Vision — best accuracy, needs billing account
+    # "ocrspace" = OCR.space free API — no card, no billing, processing
+    #              happens on their servers (not this weak free instance),
+    #              so it's both faster and lighter than local Tesseract
+    # "local"    = Tesseract running on this server — free, no signup at
+    #              all, but slow/heavy on a free-tier instance
     _override = os.getenv("OCR_MODE_OVERRIDE", "")
-    if _override in ("live", "local", "mock"):
+    if _override in ("live", "ocrspace", "local", "mock"):
         OCR_MODE: str = _override
     elif GOOGLE_VISION_API_KEY:
         OCR_MODE: str = "live"
+    elif OCR_SPACE_API_KEY:
+        OCR_MODE: str = "ocrspace"
     else:
         OCR_MODE: str = "local"
 
