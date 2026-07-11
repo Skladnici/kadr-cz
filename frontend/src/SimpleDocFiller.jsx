@@ -278,6 +278,25 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
   );
 }
 
+// Splits a free-text recognized address into a street part and a postal
+// code, when one can be confidently found — so the PSČ/indeks field gets
+// auto-filled too, not just the street field.
+function splitRecognizedAddress(raw) {
+  if (!raw) return { street: "" };
+  // Ukrainian postal codes: 5 digits. Czech: "NNN NN" (with or without space).
+  const czMatch = raw.match(/\b(\d{3}\s?\d{2})\b/);
+  const uaMatch = raw.match(/\b(\d{5})\b/);
+  const match = czMatch || uaMatch;
+  if (!match) return { street: raw.trim() };
+  const psc = match[1].replace(/\s+/g, czMatch ? " " : "");
+  const street = (raw.slice(0, match.index) + raw.slice(match.index + match[0].length))
+    .replace(/[,\s]+$/, "")
+    .replace(/^[,\s]+/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return { street, psc };
+}
+
 function composeAddress(country, parts) {
   if (country === "cz") {
     return [parts.street, [parts.psc, parts.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
@@ -374,7 +393,9 @@ export default function SimpleDocFiller() {
       setAddressCountry(guessedCountry);
       setAddressPartsByCountry((prev) => ({
         ...prev,
-        [guessedCountry]: recognizedAddress ? { street: recognizedAddress } : prev[guessedCountry],
+        [guessedCountry]: recognizedAddress
+          ? splitRecognizedAddress(recognizedAddress)
+          : prev[guessedCountry],
       }));
 
       setWarnings(results.flatMap((r) => r.warnings || []));
