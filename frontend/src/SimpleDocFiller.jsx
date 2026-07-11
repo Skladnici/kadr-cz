@@ -88,9 +88,13 @@ const FIELD_DEFS = [
 // service. Smaller towns aren't in this list; the person just types the
 // PSČ manually in that case, same as before.
 const CZ_CITY_PSC = {
-  "Praha": "100 00", "Praha 1": "110 00", "Praha 2": "120 00", "Praha 3": "130 00",
-  "Praha 4": "140 00", "Praha 5": "150 00", "Praha 6": "160 00", "Praha 7": "170 00",
-  "Praha 8": "180 00", "Praha 9": "190 00", "Praha 10": "100 00",
+  "Praha": "100 00",
+  "Praha 1": "110 00", "Praha 2": "120 00", "Praha 3": "130 00", "Praha 4": "140 00",
+  "Praha 5": "150 00", "Praha 6": "160 00", "Praha 7": "170 00", "Praha 8": "180 00",
+  "Praha 9": "190 00", "Praha 10": "100 00", "Praha 11": "149 00", "Praha 12": "143 00",
+  "Praha 13": "155 00", "Praha 14": "198 00", "Praha 15": "109 00", "Praha 16": "165 00",
+  "Praha 17": "163 00", "Praha 18": "199 00", "Praha 19": "197 00", "Praha 20": "193 00",
+  "Praha 21": "190 16", "Praha 22": "104 00",
   "Brno": "602 00", "Ostrava": "702 00", "Plzeň": "301 00", "Liberec": "460 01",
   "Olomouc": "779 00", "České Budějovice": "370 01", "Hradec Králové": "500 02",
   "Ústí nad Labem": "400 01", "Pardubice": "530 02", "Zlín": "760 01",
@@ -101,11 +105,27 @@ const CZ_CITY_PSC = {
   "Prostějov": "796 01", "Přerov": "750 02", "Česká Lípa": "470 01",
   "Třebíč": "674 01", "Třinec": "739 61", "Tábor": "390 02", "Znojmo": "669 02",
   "Kolín": "280 02", "Příbram": "261 01", "Cheb": "350 02", "Trutnov": "541 01",
+  "Vsetín": "755 01", "Kroměříž": "767 01", "Litoměřice": "412 01",
+  "Písek": "397 01", "Uherské Hradiště": "686 01", "Šumperk": "787 01",
+  "Nový Jičín": "741 01", "Chrudim": "537 01", "Klatovy": "339 01",
+  "Vyškov": "682 01", "Jindřichův Hradec": "377 01", "Břeclav": "690 02",
+  "Rakovník": "269 01", "Strakonice": "386 01", "Havlíčkův Brod": "580 01",
+  "Hodonín": "695 01", "Bruntál": "792 01", "Vlašim": "258 01",
+  "Sokolov": "356 01", "Kutná Hora": "284 01", "Beroun": "266 01",
+  "Blansko": "678 01", "Louny": "440 01", "Náchod": "547 01",
+  "Svitavy": "568 02", "Jičín": "506 01", "Domažlice": "344 01",
+  "Rokycany": "337 01", "Litvínov": "436 01", "Krnov": "794 01",
+  "Kopřivnice": "742 21", "Otrokovice": "765 02", "Valašské Meziříčí": "757 01",
+  "Rychnov nad Kněžnou": "516 01", "Semily": "513 01", "Žďár nad Sázavou": "591 01",
+  "Nymburk": "288 02", "Benešov": "256 01", "Kralupy nad Vltavou": "278 01",
+  "Neratovice": "277 11", "Roudnice nad Labem": "413 01", "Varnsdorf": "407 47",
+  "Frýdlant": "464 01", "Rumburk": "408 01", "Vrchlabí": "543 01",
+  "Kadaň": "432 01", "Žatec": "438 01", "Aš": "352 01",
+  "Kyjov": "697 01", "Uherský Brod": "688 01", "Hranice": "753 01",
+  "Studénka": "742 13", "Orlová": "735 14", "Bohumín": "735 81",
 };
 
-function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setAddressParts }) {
-  const setPart = (key, value) => setAddressParts((p) => ({ ...p, [key]: value }));
-
+function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPart }) {
   const cityMatch = addressCountry === "cz" && addressParts.city
     ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
     : null;
@@ -272,7 +292,7 @@ export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
   const [addressCountry, setAddressCountry] = useState("cz");
-  const [addressParts, setAddressParts] = useState({});
+  const [addressPartsByCountry, setAddressPartsByCountry] = useState({ cz: {}, ua: {}, eu: {} });
   const [warnings, setWarnings] = useState([]);
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
@@ -293,30 +313,45 @@ export default function SimpleDocFiller() {
       .catch(() => setError(`Nepodařilo se načíst seznam formulářů. Zkontrolujte, zda backend běží na ${API_BASE}.`));
   }, []);
 
-  const handleFile = useCallback(async (file) => {
-    if (!file) return;
+  const handleFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []).filter(Boolean);
+    if (files.length === 0) return;
     setStep(2);
     setError(null);
     try {
-      const compressed = await compressImageInBrowser(file);
-      const formData = new FormData();
-      formData.append("file", compressed);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s max
-      const res = await fetch(`${API_BASE}/api/recognize`, {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (!res.ok) throw new Error("server error");
-      const data = await res.json();
+      const results = [];
+      for (const file of files) {
+        const compressed = await compressImageInBrowser(file);
+        const formData = new FormData();
+        formData.append("file", compressed);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s max per file
+        const res = await fetch(`${API_BASE}/api/recognize`, {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (!res.ok) throw new Error("server error");
+        results.push(await res.json());
+      }
+
+      // Merge multiple documents (e.g. passport + visa page): for each
+      // field, take the first non-empty value found across all uploaded
+      // files, so missing info on one document is filled in by another.
+      const pick = (key) => {
+        for (const r of results) {
+          if (r[key] && r[key] !== "—") return r[key];
+        }
+        return "";
+      };
+
       setFields({
-        first_name: data.first_name || "",
-        last_name: data.last_name || "",
-        birth_date: data.birth_date || "",
-        nationality: data.nationality || "",
-        doc_number: data.doc_number || "",
+        first_name: pick("first_name"),
+        last_name: pick("last_name"),
+        birth_date: pick("birth_date"),
+        nationality: pick("nationality"),
+        doc_number: pick("doc_number"),
         position: "",
         workplace: "",
         salary: "",
@@ -330,20 +365,21 @@ export default function SimpleDocFiller() {
         company_address: "",
         company_representative: "",
       });
-      // Recognized address is a single free-text string — pre-fill it into
-      // the street field of the address builder as a starting point; the
-      // person can split/correct it into city/PSČ manually. Default the
-      // country tab based on recognized nationality when possible.
-      const recognizedAddress = data.address && data.address !== "—" ? data.address : "";
-      setAddressParts(recognizedAddress ? { street: recognizedAddress } : {});
-      if (data.nationality && /ukrajin/i.test(data.nationality)) {
-        setAddressCountry("ua");
-      } else if (data.nationality && /česk|czech/i.test(data.nationality)) {
-        setAddressCountry("cz");
-      }
-      setWarnings(data.warnings || []);
-      setRawText(data.ocr_raw_text || "");
-      setOcrMode(data.ocr_mode);
+
+      const recognizedAddress = pick("address");
+      const mergedNationality = pick("nationality");
+      let guessedCountry = addressCountry;
+      if (/ukrajin/i.test(mergedNationality)) guessedCountry = "ua";
+      else if (/česk|czech/i.test(mergedNationality)) guessedCountry = "cz";
+      setAddressCountry(guessedCountry);
+      setAddressPartsByCountry((prev) => ({
+        ...prev,
+        [guessedCountry]: recognizedAddress ? { street: recognizedAddress } : prev[guessedCountry],
+      }));
+
+      setWarnings(results.flatMap((r) => r.warnings || []));
+      setRawText(results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"));
+      setOcrMode(results[0]?.ocr_mode);
       setStep(3);
     } catch (e) {
       if (e.name === "AbortError") {
@@ -357,7 +393,7 @@ export default function SimpleDocFiller() {
 
   const skipUpload = () => {
     setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
-    setAddressParts({});
+    setAddressPartsByCountry({ cz: {}, ua: {}, eu: {} });
     setAddressCountry("cz");
     setWarnings([]);
     setOcrMode(null);
@@ -374,7 +410,7 @@ export default function SimpleDocFiller() {
         body: JSON.stringify({
           template_id: templateId,
           ...fields,
-          address: composeAddress(addressCountry, addressParts),
+          address: composeAddress(addressCountry, addressPartsByCountry[addressCountry] || {}),
         }),
       });
       if (!res.ok) throw new Error("server error");
@@ -391,7 +427,7 @@ export default function SimpleDocFiller() {
   const reset = () => {
     setStep(1);
     setFields({});
-    setAddressParts({});
+    setAddressPartsByCountry({ cz: {}, ua: {}, eu: {} });
     setAddressCountry("cz");
     setWarnings([]);
     setResult(null);
@@ -442,30 +478,32 @@ export default function SimpleDocFiller() {
           {/* Step 1: upload */}
           {step === 1 && (
             <div className="p-7">
-              <h2 className="text-[16px] font-semibold text-[#101826]">Nahrajte doklad</h2>
+              <h2 className="text-[16px] font-semibold text-[#101826]">Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
-                Pas, ID karta, povolení k pobytu — systém rozpozná a předvyplní údaje automaticky.
+                Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
+                automaticky. Můžete nahrát i více souborů najednou (např. pas + vízum).
               </p>
 
               <div
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }}
+                onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
                 className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-12 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
                   <Upload size={18} className="text-slate-400" />
                 </div>
                 <div className="text-center">
-                  <div className="text-[13px] font-medium text-[#101826]">Přetáhněte soubor nebo klikněte</div>
-                  <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF</div>
+                  <div className="text-[13px] font-medium text-[#101826]">Přetáhněte soubory nebo klikněte</div>
+                  <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze vybrat více souborů najednou</div>
                 </div>
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   accept=".jpg,.jpeg,.png,.heic,.pdf"
                   className="hidden"
-                  onChange={(e) => handleFile(e.target.files?.[0])}
+                  onChange={(e) => handleFiles(e.target.files)}
                 />
               </div>
 
@@ -542,8 +580,13 @@ export default function SimpleDocFiller() {
                 <AddressBuilder
                   addressCountry={addressCountry}
                   setAddressCountry={setAddressCountry}
-                  addressParts={addressParts}
-                  setAddressParts={setAddressParts}
+                  addressParts={addressPartsByCountry[addressCountry] || {}}
+                  setPart={(key, value) =>
+                    setAddressPartsByCountry((prev) => ({
+                      ...prev,
+                      [addressCountry]: { ...prev[addressCountry], [key]: value },
+                    }))
+                  }
                 />
               </div>
 
