@@ -340,6 +340,32 @@ def _preprocess_for_ocr(image):
     return gray
 
 
+def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
+    """OCR.space's free tier rejects files over ~1MB with a generic
+    'errored in parsing' message. Real phone photos are often 3-8MB, so
+    we resize and re-compress to fit comfortably under that limit before
+    sending — this alone often fixes silent parsing failures."""
+    from PIL import Image
+    import io
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        return image_bytes  # let the caller's error handling deal with it
+
+    w, h = img.size
+    if max(w, h) > 1800:
+        scale = 1800 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        if len(buf.getvalue()) <= max_size_kb * 1024:
+            return buf.getvalue()
+    return buf.getvalue()  # smallest attempt, even if still over budget
+
+
 async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     """Free remote OCR via ocr.space — no billing account needed, just a
     free API key from https://ocr.space/ocrapi (email signup, instant,
@@ -347,6 +373,8 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     solves both the speed and reliability problems of running Tesseract
     locally on a memory/CPU-constrained free hosting instance."""
     url = "https://api.ocr.space/parse/image"
+    image_bytes = _compress_for_upload(image_bytes)
+    filename = "upload.jpg"  # always send as a plain, unambiguous jpeg now
 
     # OCR.space has two engines with different language support — Engine 2
     # only supports a small language subset that excludes "cze"/"ukr", so
@@ -365,7 +393,7 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
             "isTable": "false",
             **attempt,
         }
-        files = {"file": (filename, image_bytes)}
+        files = {"file": (filename, image_bytes, "image/jpeg")}
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(url, data=data, files=files)
