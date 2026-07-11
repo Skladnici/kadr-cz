@@ -97,6 +97,7 @@ class FillRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     address: Optional[str] = None
+    address_origin: Optional[str] = None
     birth_date: Optional[str] = None
     doc_number: Optional[str] = None
     nationality: Optional[str] = None
