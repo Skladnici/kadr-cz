@@ -130,11 +130,48 @@ DOC_NUMBER_LABELS = [
 ]
 
 
+MONTH_ABBR = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _find_bilingual_dates(text: str) -> list[tuple[str, "date"]]:
+    """Ukrainian/CIS passports show dates as 'DD <Cyrillic-month>/<Latin
+    month abbr> YY' (e.g. '05 KBI/APR 81'). This extracts and converts
+    them to normal dd.mm.yyyy strings, in the order they appear on the
+    document (birth date, then issue date, then expiry date)."""
+    results = []
+    for m in re.finditer(r"(\d{1,2})\s+[^\s/]+/([A-Za-z]{3})\s+(\d{2})", text):
+        day, mon_abbr, yy = m.groups()
+        month = MONTH_ABBR.get(mon_abbr.lower())
+        if not month:
+            continue
+        yy_int = int(yy)
+        # Passports are usually valid ≤10 years and people are usually
+        # under ~100 — treat years within the next 5 as 20XX, else 19XX.
+        year = 2000 + yy_int if yy_int <= (date.today().year % 100) + 5 else 1900 + yy_int
+        try:
+            parsed = date(year, month, int(day))
+            results.append((f"{int(day):02d}.{month:02d}.{year}", parsed))
+        except ValueError:
+            continue
+    return results
+
+
+PASSPORT_NUMBER_PATTERN = r"\b([A-Z]{1,2}\d{6,8})\b"
+
+
 def _find_doc_number(text: str) -> Optional[str]:
     for label in DOC_NUMBER_LABELS:
         m = re.search(label + r"[:\s]*\n?\s*([A-Z0-9]{5,12})", text, re.IGNORECASE)
         if m:
             return m.group(1).upper()
+    # ICAO-style passport number: 1-2 letters followed by 6-8 digits
+    # (e.g. "FY401825") — reliable pattern across most passport formats.
+    m = re.search(PASSPORT_NUMBER_PATTERN, text)
+    if m:
+        return m.group(1)
     # Fallback: a standalone alphanumeric token with both letters and
     # digits, 6-10 chars, is a decent generic heuristic for ID numbers.
     m = re.search(r"\b(?=[A-Z0-9]{6,10}\b)(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,10}\b", text)
@@ -159,6 +196,21 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     birth_date = _find_labeled_date(raw_text, [r"Datum narození", r"Date of birth", r"Nar\."])
     expiry_date = _find_labeled_date(raw_text, [r"Platnost do", r"Date of expiry", r"Expiry"])
     issue_date = _find_labeled_date(raw_text, [r"Datum vydání", r"Date of issue"])
+
+    # No labeled dates found (common on Ukrainian/CIS passports where OCR
+    # mangles the Cyrillic labels) — fall back to the bilingual
+    # 'DD MON/MON YY' date format and assign by chronological order:
+    # oldest date = birth, then issue, then expiry.
+    if not (birth_date or issue_date or expiry_date):
+        bilingual = _find_bilingual_dates(raw_text)
+        if bilingual:
+            bilingual.sort(key=lambda pair: pair[1])
+            if len(bilingual) >= 1:
+                birth_date = bilingual[0][0]
+            if len(bilingual) >= 2:
+                issue_date = bilingual[1][0]
+            if len(bilingual) >= 3:
+                expiry_date = bilingual[2][0]
 
     # Fall back to positional guessing only if labels weren't found —
     # better than nothing, but labeled matches above are preferred.
@@ -314,6 +366,22 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
                 first = value
             else:
                 last = value
+    if first and last:
+        return first, last
+
+    # Ukrainian/CIS-style passports show each name field twice: OCR-garbled
+    # Cyrillic, then "/", then a clean Latin transliteration — e.g.
+    # "РОМАНЧУК/ROMANCHUK" (surname) followed on the next line by
+    # "ІВАННА/IVANNA" (given name). The Latin half after "/" is reliable
+    # even when Tesseract/OCR.space garbles the Cyrillic half into
+    # nonsense, since Latin-script OCR is far more accurate. Order on the
+    # document is always surname first, then given name.
+    slash_names = re.findall(r"^[^\n/]{2,25}/([A-Z]{2,25})\s*$", text, re.MULTILINE)
+    if len(slash_names) >= 2:
+        return slash_names[1].title(), slash_names[0].title()
+    if len(slash_names) == 1 and not (first or last):
+        return None, slash_names[0].title()
+
     return first, last
 
 
