@@ -87,6 +87,11 @@ const FIELD_DEFS = [
 // majority of real addresses without needing any external lookup
 // service. Smaller towns aren't in this list; the person just types the
 // PSČ manually in that case, same as before.
+// Practical, sizeable set of Czech towns/city districts with PSČ — not
+// the full official ~15,000-entry postal registry (that would need a
+// real downloaded dataset), but covers the large majority of real
+// addresses HR staff will type. Anything not listed here is simply
+// typed in manually, same as before.
 const CZ_CITY_PSC = {
   "Praha": "100 00",
   "Praha 1": "110 00", "Praha 2": "120 00", "Praha 3": "130 00", "Praha 4": "140 00",
@@ -123,11 +128,91 @@ const CZ_CITY_PSC = {
   "Kadaň": "432 01", "Žatec": "438 01", "Aš": "352 01",
   "Kyjov": "697 01", "Uherský Brod": "688 01", "Hranice": "753 01",
   "Studénka": "742 13", "Orlová": "735 14", "Bohumín": "735 81",
+  "Boskovice": "680 01", "Kuřim": "664 34", "Ivančice": "664 91",
+  "Slavkov u Brna": "684 01", "Tišnov": "666 01", "Rosice": "665 01",
+  "Adamov": "679 04", "Rájec-Jestřebí": "679 02", "Letovice": "679 61",
+  "Moravský Krumlov": "672 01", "Miroslav": "671 72", "Pohořelice": "691 23",
+  "Dačice": "380 01", "Telč": "588 56", "Kamenice nad Lipou": "394 70",
+  "Pelhřimov": "393 01", "Humpolec": "396 01", "Chotěboř": "583 01",
+  "Světlá nad Sázavou": "582 91", "Ledeč nad Sázavou": "584 01",
+  "Chlumec nad Cidlinou": "503 51", "Nový Bydžov": "504 01",
+  "Dvůr Králové nad Labem": "544 01", "Broumov": "550 01",
+  "Police nad Metují": "549 54", "Hostinné": "543 71",
+  "Turnov": "511 01", "Český Dub": "463 43", "Železný Brod": "468 22",
+  "Nová Paka": "509 01", "Hořice": "508 01", "Lomnice nad Popelkou": "512 51",
+  "Sedlčany": "264 01", "Dobříš": "263 01", "Hořovice": "268 01",
+  "Zdice": "267 51", "Mníšek pod Brdy": "252 10", "Jílové u Prahy": "254 01",
+  "Říčany": "251 01", "Brandýs nad Labem-Stará Boleslav": "250 01",
+  "Čelákovice": "250 88", "Lysá nad Labem": "289 22", "Poděbrady": "290 01",
+  "Sadská": "289 12", "Milovice": "289 23", "Bakov nad Jizerou": "294 01",
+  "Bělá pod Bezdězem": "294 21", "Dobrovice": "294 41", "Mšeno": "277 35",
+  "Mělník": "276 01", "Kladruby": "349 61", "Stříbro": "349 01",
+  "Přeštice": "334 01", "Nepomuk": "335 01", "Blovice": "336 01",
+  "Nýřany": "330 23", "Stod": "333 01", "Horšovský Týn": "346 01",
+  "Sušice": "342 01", "Horažďovice": "341 01", "Kašperské Hory": "341 92",
+  "Vimperk": "385 01", "Prachatice": "383 01", "Netolice": "384 11",
+  "Vodňany": "389 01", "Trhové Sviny": "374 01", "Kaplice": "382 41",
+  "Český Krumlov": "381 01", "Lipno nad Vltavou": "382 78",
+  "Třeboň": "379 01", "Suchdol nad Lužnicí": "378 06", "Nová Bystřice": "378 33",
+  "Milevsko": "399 01", "Bechyně": "391 65", "Sezimovo Ústí": "391 02",
+  "Soběslav": "392 01", "Veselí nad Lužnicí": "391 81",
+  "Bystřice nad Pernštejnem": "593 01", "Nové Město na Moravě": "592 31",
+  "Velké Meziříčí": "594 01", "Náměšť nad Oslavou": "675 71",
+  "Moravské Budějovice": "676 02", "Jemnice": "675 31",
+  "Slavonice": "378 81", "Jaroměřice nad Rokytnou": "675 51",
+  "Bzenec": "696 81", "Veselí nad Moravou": "698 01",
+  "Strážnice": "696 62", "Uherský Ostroh": "687 24",
+  "Bojkovice": "687 71", "Luhačovice": "763 26", "Slavičín": "763 21",
+  "Valašské Klobouky": "766 01", "Rožnov pod Radhoštěm": "756 61",
+  "Frenštát pod Radhoštěm": "744 01", "Bílovec": "743 01",
+  "Fulnek": "742 45", "Odry": "742 35", "Vítkov": "749 01",
+  "Hlučín": "748 01", "Kravaře": "747 21", "Hať": "747 16",
+};
+
+// Ukrainian oblast capitals and major cities with the central poshtovyi
+// indeks (postal code) for that city. Same practical, non-exhaustive
+// approach as the Czech list above.
+const UA_CITY_PSC = {
+  "Київ / Kyjev": "01001", "Харків / Charkiv": "61001", "Одеса / Oděsa": "65001",
+  "Дніпро / Dnipro": "49000", "Донецьк / Doněck": "83001", "Запоріжжя / Zaporižžja": "69001",
+  "Львів / Lvov": "79000", "Кривий Ріг / Kryvyj Rih": "50000", "Миколаїв / Mykolajiv": "54000",
+  "Маріуполь / Mariupol": "87500", "Луганськ / Luhansk": "91000", "Вінниця / Vinnycja": "21000",
+  "Макіївка / Makijivka": "86100", "Севастополь / Sevastopol": "99000",
+  "Сімферополь / Simferopol": "95000", "Херсон / Cherson": "73000",
+  "Полтава / Poltava": "36000", "Чернігів / Černihiv": "14000",
+  "Черкаси / Čerkasy": "18000", "Хмельницький / Chmelnyckyj": "29000",
+  "Чернівці / Černivci": "58000", "Житомир / Žytomyr": "10000",
+  "Суми / Sumy": "40000", "Рівне / Rivne": "33000",
+  "Івано-Франківськ / Ivano-Frankivsk": "76000", "Тернопіль / Ternopil": "46000",
+  "Луцьк / Luck": "43000", "Ужгород / Užhorod": "88000",
+  "Кропивницький / Kropyvnyckyj": "25000", "Кременчук / Kremenčuk": "39600",
+  "Біла Церква / Bila Cerkva": "09100", "Мелітополь / Melitopol": "72300",
+  "Краматорськ / Kramatorsk": "84300", "Бердянськ / Berdjansk": "71100",
+  "Слов'янськ / Slovjansk": "84100", "Умань / Uman": "20300",
+  "Кам'янське / Kamjanske": "51900", "Алчевськ / Alčevsk": "94200",
+  "Павлоград / Pavlohrad": "51400", "Сєвєродонецьк / Sjevjerodoneck": "93400",
+  "Дрогобич / Drohobyč": "82100", "Бориспіль / Boryspil": "08300",
+  "Нікополь / Nikopol": "53200", "Конотоп / Konotop": "41600",
+  "Бердичів / Berdyčiv": "13300", "Шостка / Šostka": "41100",
+  "Новомосковськ / Novomoskovsk": "51200", "Ізмаїл / Izmajil": "68600",
+  "Коломия / Kolomyja": "78200", "Коростень / Korosten": "11500",
+  "Бровари / Brovary": "07400", "Мукачево / Mukačevo": "89600",
+  "Ковель / Kovel": "45000", "Нововолинськ / Novovolynsk": "45400",
+  "Стрий / Stryj": "82400", "Червоноград / Červonohrad": "80100",
+  "Калуш / Kaluš": "77300", "Долина / Dolyna": "77500",
+  "Здолбунів / Zdolbuniv": "35700", "Дубно / Dubno": "35600",
+  "Сарни / Sarny": "34500", "Новоград-Волинський / Novohrad-Volynskyj": "11700",
+  "Обухів / Obuchiv": "08700", "Ірпінь / Irpin": "08200",
+  "Буча / Buča": "08292", "Фастів / Fastiv": "08500",
+  "Вишгород / Vyšhorod": "07300", "Переяслав / Perejaslav": "08400",
 };
 
 function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPart }) {
   const cityMatch = addressCountry === "cz" && addressParts.city
     ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
+    : null;
+  const uaCityMatch = addressCountry === "ua" && addressParts.city
+    ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === addressParts.city.trim().toLowerCase())
     : null;
 
   return (
@@ -145,7 +230,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             type="button"
             onClick={() => setAddressCountry(key)}
             className={`rounded-md px-2.5 py-1 text-[11.5px] font-medium border transition-colors
-              ${addressCountry === key ? "bg-[#101826] text-white border-[#101826]" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}
+              ${addressCountry === key ? "bg-[#0B1220] text-white border-[#0B1220]" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}
           >
             {label}
           </button>
@@ -160,7 +245,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               value={addressParts.street || ""}
               onChange={(e) => setPart("street", e.target.value)}
               placeholder="Vinohradská 45"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block">
@@ -176,7 +261,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
                 if (match) setPart("psc", CZ_CITY_PSC[match]);
               }}
               placeholder="Praha"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
             <datalist id="cz-cities">
               {Object.keys(CZ_CITY_PSC).map((c) => <option key={c} value={c} />)}
@@ -190,7 +275,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               value={addressParts.psc || ""}
               onChange={(e) => setPart("psc", e.target.value)}
               placeholder="100 00"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
         </div>
@@ -204,17 +289,27 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               value={addressParts.street || ""}
               onChange={(e) => setPart("street", e.target.value)}
               placeholder="вул. Хрещатик 10"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block">
             <span className="text-[11px] text-slate-400">Misto (město)</span>
             <input
+              list="ua-cities"
               value={addressParts.city || ""}
-              onChange={(e) => setPart("city", e.target.value)}
+              onChange={(e) => {
+                setPart("city", e.target.value);
+                const match = Object.keys(UA_CITY_PSC).find(
+                  (c) => c.toLowerCase() === e.target.value.trim().toLowerCase()
+                );
+                if (match) setPart("psc", UA_CITY_PSC[match]);
+              }}
               placeholder="Kyjev"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
+            <datalist id="ua-cities">
+              {Object.keys(UA_CITY_PSC).map((c) => <option key={c} value={c} />)}
+            </datalist>
           </label>
           <label className="block">
             <span className="text-[11px] text-slate-400">Oblast</span>
@@ -222,16 +317,18 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               value={addressParts.region || ""}
               onChange={(e) => setPart("region", e.target.value)}
               placeholder="Kyjivska oblast"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block col-span-2">
-            <span className="text-[11px] text-slate-400">Indeks (PSČ)</span>
+            <span className="text-[11px] text-slate-400">
+              Indeks (PSČ) {uaCityMatch && <span className="text-emerald-600">· doplněno automaticky</span>}
+            </span>
             <input
               value={addressParts.psc || ""}
               onChange={(e) => setPart("psc", e.target.value)}
               placeholder="01001"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
         </div>
@@ -244,7 +341,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             <input
               value={addressParts.street || ""}
               onChange={(e) => setPart("street", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block">
@@ -252,7 +349,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             <input
               value={addressParts.city || ""}
               onChange={(e) => setPart("city", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block">
@@ -260,7 +357,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
             <input
               value={addressParts.psc || ""}
               onChange={(e) => setPart("psc", e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
           <label className="block col-span-2">
@@ -269,7 +366,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
               value={addressParts.country || ""}
               onChange={(e) => setPart("country", e.target.value)}
               placeholder="Polsko, Slovensko, Německo…"
-              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+              className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
         </div>
@@ -481,16 +578,37 @@ export default function SimpleDocFiller() {
   const downloadUrl = (token) => `${API_BASE}/api/download/${token}`;
 
   return (
-    <div className="min-h-screen w-full bg-[#F7F8FA] flex items-start justify-center py-10 px-4" style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif" }}>
+    <div
+      className="min-h-screen w-full flex items-start justify-center py-10 px-4"
+      style={{
+        fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
+        backgroundColor: "#FAFAF7",
+        backgroundImage:
+          "radial-gradient(circle at 1px 1px, rgba(11,18,32,0.05) 1px, transparent 0)",
+        backgroundSize: "22px 22px",
+      }}
+    >
       <div className="w-full max-w-xl">
         {/* Header */}
-        <div className="flex items-center gap-2.5 mb-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[#C0392B] text-white">
-            <ScanLine size={18} strokeWidth={2.25} />
+        <div className="flex items-center gap-3 mb-7">
+          <div
+            className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white"
+            style={{
+              background: "radial-gradient(circle at 30% 30%, #C4442F, #8F2A1C)",
+              border: "1.5px dashed rgba(255,255,255,0.55)",
+              transform: "rotate(-6deg)",
+            }}
+          >
+            <ScanLine size={19} strokeWidth={2.25} />
           </div>
           <div>
-            <div className="text-[15px] font-semibold text-[#101826]">KADR.CZ</div>
-            <div className="text-[11.5px] text-slate-500">Rychlé vyplnění dokumentů</div>
+            <div
+              className="text-[19px] font-semibold tracking-tight text-[#0B1220] leading-none"
+              style={{ fontFamily: "'Fraunces', serif" }}
+            >
+              KADR.CZ
+            </div>
+            <div className="text-[11.5px] text-slate-500 mt-1">Rychlé vyplnění dokumentů</div>
           </div>
         </div>
 
@@ -501,18 +619,18 @@ export default function SimpleDocFiller() {
             const state = step > n ? "done" : step === n ? "active" : "todo";
             return (
               <div key={label} className="flex items-center gap-2 flex-1">
-                <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium
-                  ${state === "done" ? "bg-emerald-500 text-white" : state === "active" ? "bg-[#101826] text-white" : "bg-slate-200 text-slate-400"}`}>
+                <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium transition-colors
+                  ${state === "done" ? "bg-emerald-600 text-white" : state === "active" ? "bg-[#0B1220] text-white" : "bg-slate-200 text-slate-400"}`}>
                   {state === "done" ? <Check size={12} /> : n}
                 </div>
-                <span className={`text-[11.5px] ${state === "todo" ? "text-slate-400" : "text-[#101826] font-medium"} hidden sm:inline`}>{label}</span>
-                {n < 4 && <div className="flex-1 h-px bg-slate-200" />}
+                <span className={`text-[11.5px] ${state === "todo" ? "text-slate-400" : "text-[#0B1220] font-medium"} hidden sm:inline`}>{label}</span>
+                {n < 4 && <div className={`flex-1 h-px ${state === "done" ? "bg-[#AF3524]/40" : "bg-slate-200"}`} />}
               </div>
             );
           })}
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] overflow-hidden">
           {error && (
             <div className="m-5 mb-0 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-[12.5px] text-red-700">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
@@ -522,7 +640,7 @@ export default function SimpleDocFiller() {
           {/* Step 1: upload */}
           {step === 1 && (
             <div className="p-7">
-              <h2 className="text-[16px] font-semibold text-[#101826]">Nahrajte doklady</h2>
+              <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Fraunces', serif" }}>Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
                 automaticky. Můžete nahrát i více souborů najednou (např. pas + vízum).
@@ -538,7 +656,7 @@ export default function SimpleDocFiller() {
                   <Upload size={18} className="text-slate-400" />
                 </div>
                 <div className="text-center">
-                  <div className="text-[13px] font-medium text-[#101826]">Přetáhněte soubory nebo klikněte</div>
+                  <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
                   <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · lze vybrat více souborů najednou</div>
                 </div>
                 <input
@@ -553,7 +671,7 @@ export default function SimpleDocFiller() {
 
               <button
                 onClick={skipUpload}
-                className="mt-4 w-full text-center text-[12.5px] text-slate-500 hover:text-[#101826] py-1"
+                className="mt-4 w-full text-center text-[12.5px] text-slate-500 hover:text-[#0B1220] py-1"
               >
                 Přeskočit a vyplnit ručně →
               </button>
@@ -566,9 +684,9 @@ export default function SimpleDocFiller() {
               <div className="flex flex-col items-center justify-center gap-4 py-14">
                 <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden">
                   <FileText size={26} className="text-slate-300" />
-                  <div className="absolute left-0 right-0 h-0.5 bg-[#C0392B]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
+                  <div className="absolute left-0 right-0 h-0.5 bg-[#AF3524]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
                 </div>
-                <div className="flex items-center gap-2 text-[13px] font-medium text-[#101826]">
+                <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220]">
                   <Loader2 size={14} className="animate-spin text-slate-400" /> Rozpoznávám dokument…
                 </div>
               </div>
@@ -629,7 +747,7 @@ export default function SimpleDocFiller() {
                 <select
                   value={templateId || ""}
                   onChange={(e) => setTemplateId(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#101826] focus:outline-none focus:ring-2 focus:ring-[#101826]/10"
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
                   {blanks.map((b) => (
                     <option key={b.id} value={b.id}>{b.title}</option>
@@ -658,20 +776,20 @@ export default function SimpleDocFiller() {
                     <input
                       value={fields[key] || ""}
                       onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
-                      className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] text-[#101826] focus:outline-none focus:ring-2 focus:ring-[#101826]/10 focus:border-slate-300"
+                      className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
                     />
                   </label>
                 ))}
               </div>
 
               <div className="mt-6 flex justify-between items-center">
-                <button onClick={() => setStep(1)} className="inline-flex items-center gap-1.5 text-[13px] text-slate-500 hover:text-[#101826]">
+                <button onClick={() => setStep(1)} className="inline-flex items-center gap-1.5 text-[13px] text-slate-500 hover:text-[#0B1220]">
                   <ArrowLeft size={14} /> Zpět
                 </button>
                 <button
                   onClick={handleGenerate}
                   disabled={loading || !templateId}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#C0392B] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#A93226] disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#AF3524] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#8F2A1C] disabled:opacity-60"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
                   {loading ? "Generuji…" : "Vytvořit dokument"}
@@ -682,36 +800,49 @@ export default function SimpleDocFiller() {
 
           {/* Step 4: done */}
           {step === 4 && result && (
-            <div className="p-8 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-white">
-                <Check size={24} />
+            <div>
+              {/* Signature: a torn-stub perforation, echoing an official
+                  document/boarding-pass tear line — used once, here, as
+                  the one deliberate flourish in an otherwise quiet UI. */}
+              <div className="relative flex items-center px-8 pt-2">
+                <div className="flex-1 border-t-2 border-dashed border-slate-200" />
               </div>
-              <h2 className="mt-4 text-[16px] font-semibold text-[#101826]">Dokument je hotový</h2>
-              <p className="mt-1 text-[13px] text-slate-500">Stáhněte si soubor nebo ho rovnou vytiskněte.</p>
+              <div className="p-8 pt-6 text-center">
+                <div
+                  className="mx-auto flex h-14 w-14 items-center justify-center rounded-full text-white"
+                  style={{ background: "radial-gradient(circle at 30% 30%, #22a35f, #157a45)" }}
+                >
+                  <Check size={24} />
+                </div>
+                <h2 className="mt-4 text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Fraunces', serif" }}>
+                  Dokument je hotový
+                </h2>
+                <p className="mt-1 text-[13px] text-slate-500">Stáhněte si soubor nebo ho rovnou vytiskněte.</p>
 
-              <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                <a
-                  href={downloadUrl(result.docx_token)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  <Download size={15} /> Stáhnout Word
-                </a>
-                {result.pdf_token && (
+                <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   <a
-                    href={downloadUrl(result.pdf_token)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50"
+                    href={downloadUrl(result.docx_token)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                   >
-                    <Printer size={15} /> Otevřít / Tisk (PDF)
+                    <Download size={15} /> Stáhnout Word
                   </a>
-                )}
-                <button
-                  onClick={reset}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#101826] px-4 py-3 text-[13px] font-medium text-white hover:bg-[#1C2A3F]"
-                >
-                  <RotateCcw size={15} /> Nový dokument
-                </button>
+                  {result.pdf_token && (
+                    <a
+                      href={downloadUrl(result.pdf_token)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                    >
+                      <Printer size={15} /> Otevřít / Tisk (PDF)
+                    </a>
+                  )}
+                  <button
+                    onClick={reset}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0B1220] px-4 py-3 text-[13px] font-medium text-white hover:bg-[#16243A] transition-colors"
+                  >
+                    <RotateCcw size={15} /> Nový dokument
+                  </button>
+                </div>
               </div>
             </div>
           )}
