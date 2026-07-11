@@ -433,8 +433,15 @@ def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
     import io
 
     try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError:
+        pass  # non-HEIC images still work fine without this
+
+    try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception:
+    except Exception as e:
+        print(f"[ocr] _compress_for_upload failed to decode image: {type(e).__name__}: {e}")
         return image_bytes  # let the caller's error handling deal with it
 
     w, h = img.size
@@ -465,7 +472,7 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     # we try Engine 1 (broad language support) first, then fall back to
     # Engine 2 with English if that somehow fails too.
     attempts = [
-        {"language": "cze", "OCREngine": "1"},
+        {"language": "auto", "OCREngine": "2"},
         {"language": "eng", "OCREngine": "1"},
         {"language": "eng", "OCREngine": "2"},
     ]
