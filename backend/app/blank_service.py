@@ -76,6 +76,7 @@ def fill_blank(template_id: str, fields: dict) -> Path:
         "JMENO": fields.get("first_name", ""),
         "PRIJMENI": fields.get("last_name", ""),
         "ADRESA": fields.get("address", ""),
+        "ADRESA_PUVODU": fields.get("address_origin", ""),
         "DATUM_NAROZENI": _fmt_date(fields.get("birth_date")),
         "CISLO_DOKLADU": fields.get("doc_number", ""),
         "STATNI_PRISLUSNOST": fields.get("nationality", ""),
