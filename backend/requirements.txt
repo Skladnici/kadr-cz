@@ -8,3 +8,4 @@ python-docx==1.1.2
 docxtpl==0.18.0
 pytesseract==0.3.13
 Pillow==10.4.0
+pillow-heif==0.18.0
