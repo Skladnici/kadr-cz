@@ -84,11 +84,21 @@ DATE_PATTERNS = [
 ]
 
 
+def _is_plausible_year(y: int) -> bool:
+    """Rejects nonsense 'years' produced when OCR runs two unrelated
+    numbers together (e.g. '1831' from '18' + '31-03-27' merging) —
+    real documents only ever have years in this realistic window."""
+    return 1920 <= y <= 2100
+
+
 def _find_dates(text: str) -> list[str]:
     found = []
     for pattern in DATE_PATTERNS:
         for m in re.finditer(pattern, text):
-            found.append(m.group(0))
+            groups = m.groups()
+            year = int(groups[2]) if len(groups[2]) == 4 else int(groups[0])
+            if _is_plausible_year(year):
+                found.append(m.group(0))
     return found
 
 
@@ -338,13 +348,22 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         if len(tuples) >= 3:
             expiry_date = _fmt(*tuples[2], role="expiry")
 
+    # Visa documents don't reliably carry printed dates in the same
+    # layout as passports/ID cards, so guessing an expiry from "whatever
+    # date-like text appears on the page" is unreliable and risks
+    # picking up garbage. We already read the visa's real validity from
+    # its own MRZ line (see visa_info below) — skip the generic
+    # positional date-guessing entirely for visas.
+    is_visa = bool(re.search(r"\bVIZUM\b|\bVISA\b", raw_text, re.IGNORECASE))
+
     # Fall back to positional guessing only if labels weren't found —
     # better than nothing, but labeled matches above are preferred.
-    remaining_dates = [d for d in dates if d not in (birth_date, expiry_date, issue_date)]
-    if not issue_date and remaining_dates:
-        issue_date = remaining_dates[0]
-    if not expiry_date and len(remaining_dates) >= 2:
-        expiry_date = remaining_dates[1]
+    if not is_visa:
+        remaining_dates = [d for d in dates if d not in (birth_date, expiry_date, issue_date)]
+        if not issue_date and remaining_dates:
+            issue_date = remaining_dates[0]
+        if not expiry_date and len(remaining_dates) >= 2:
+            expiry_date = remaining_dates[1]
 
     # Prefer the MRZ-derived document number — it self-verifies via a
     # checksum, unlike text found elsewhere on the page. Only fall back
@@ -361,9 +380,12 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
             f"Číslo dokladu ({doc_number}) se nepodařilo ověřit kontrolním součtem "
             "— zkontrolujte prosím ručně podle fotografie."
         )
-    if expiry_date:
+    # For visas, check expiry against the MRZ-derived visa validity
+    # rather than the (unreliable) generic expiry_date field.
+    expiry_to_check = visa_info.get("visa_validity") if is_visa else expiry_date
+    if expiry_to_check:
         try:
-            parsed = _parse_any_date(expiry_date)
+            parsed = _parse_any_date(expiry_to_check)
             if parsed and parsed < date.today():
                 is_expired = True
                 warnings.append("Doklad je propadlý — platnost skončila.")
@@ -492,7 +514,16 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     """
     mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", text)
     if mrz_match:
-        last = mrz_match.group(1).replace("<", " ").strip().title()
+        raw_last = mrz_match.group(1)
+        # Standard MRZ has no separator between the 3-letter country code
+        # and the surname that follows it ("P<UKRMOKHNIA<<VASYL..."), so
+        # our regex captures them glued together ("UKRMOKHNIA"). Strip a
+        # recognized country code from the front if present.
+        for code in ("UKR", "CZE", "POL", "SVK", "DEU", "AUT", "HUN", "ROU", "MDA"):
+            if raw_last.startswith(code) and len(raw_last) > len(code):
+                raw_last = raw_last[len(code):]
+                break
+        last = raw_last.replace("<", " ").strip().title()
         first = mrz_match.group(2).replace("<", " ").strip().title()
         # OCR sometimes drops one of the two '<' separators, causing this
         # regex to match the tail-end filler ("<<<<<...") instead of the
