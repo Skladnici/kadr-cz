@@ -12,6 +12,7 @@ present, otherwise the filename is used.
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+import uuid
 
 from docx import Document as DocxDocument
 from docxtpl import DocxTemplate
@@ -113,7 +114,8 @@ def fill_blank(template_id: str, fields: dict) -> Path:
 
     safe_last = (fields.get("last_name") or "dokument").replace(" ", "_")
     safe_first = (fields.get("first_name") or "").replace(" ", "_")
-    out_name = f"{template_id}_{safe_last}_{safe_first}.docx".strip("_") + ""
+    unique = uuid.uuid4().hex[:6]
+    out_name = f"{template_id}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
     out_path = settings.GENERATED_DIR / out_name
     doc.save(str(out_path))
     return out_path
