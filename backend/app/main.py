@@ -137,4 +137,9 @@ def download(filename: str):
         "application/pdf" if filename.endswith(".pdf")
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    return FileResponse(path, filename=filename, media_type=media_type)
+    # Explicitly forbid caching — filenames are deterministic (based on
+    # employee name), so without this a browser can silently serve a
+    # stale cached copy after the template was updated, even though the
+    # server is generating fresh content on every request.
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    return FileResponse(path, filename=filename, media_type=media_type, headers=headers)
