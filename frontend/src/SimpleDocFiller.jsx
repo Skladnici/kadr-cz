@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
   Upload, FileText, Check, AlertTriangle, X, Download,
-  Printer, Loader2, ArrowRight, ArrowLeft, ScanLine, RotateCcw
+  Printer, Loader2, ArrowRight, ArrowLeft, ScanLine, RotateCcw, ShieldCheck
 } from "lucide-react";
 
 // Compresses/resizes an image in the browser before upload — this cuts
@@ -234,7 +234,7 @@ function AddressBuilder({ addressCountry, setAddressCountry, addressParts, setPa
           >
             {label}
             {addressCountry === key && (
-              <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#AF3524] rounded-full" />
+              <span className="absolute left-0 right-0 -bottom-px h-[2px] bg-[#C9932E] rounded-full" />
             )}
           </button>
         ))}
@@ -527,6 +527,7 @@ export default function SimpleDocFiller() {
   const [warnings, setWarnings] = useState([]);
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
+  const [docNumberVerified, setDocNumberVerified] = useState(false);
   const [error, setError] = useState(null);
   const [blanks, setBlanks] = useState([]);
   const [templateId, setTemplateId] = useState(null);
@@ -616,6 +617,7 @@ export default function SimpleDocFiller() {
         company_address: "",
         company_representative: "",
       });
+      setDocNumberVerified(results.some((r) => r.doc_number_verified));
 
       const recognizedAddress = pick("address");
       const mergedNationality = pick("nationality");
@@ -650,6 +652,7 @@ export default function SimpleDocFiller() {
     setAddressCountry("cz");
     setWarnings([]);
     setOcrMode(null);
+    setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setStep(3);
   };
@@ -686,6 +689,7 @@ export default function SimpleDocFiller() {
     setWarnings([]);
     setResult(null);
     setError(null);
+    setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
   };
 
@@ -697,28 +701,21 @@ export default function SimpleDocFiller() {
       style={{
         fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
         backgroundColor: "#FAFAF7",
-        backgroundImage:
-          "radial-gradient(circle at 1px 1px, rgba(11,18,32,0.05) 1px, transparent 0)",
-        backgroundSize: "22px 22px",
       }}
     >
       <div className="w-full max-w-xl">
         {/* Header */}
         <div className="flex items-center gap-3 mb-7">
           <div
-            className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white"
-            style={{
-              background: "radial-gradient(circle at 30% 30%, #C4442F, #8F2A1C)",
-              border: "1.5px dashed rgba(255,255,255,0.55)",
-              transform: "rotate(-6deg)",
-            }}
+            className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+            style={{ background: "linear-gradient(135deg, #E8B84B, #C9932E)" }}
           >
-            <ScanLine size={19} strokeWidth={2.25} />
+            <ShieldCheck size={18} strokeWidth={2.25} className="text-[#0B1220]" />
           </div>
           <div>
             <div
-              className="text-[19px] font-semibold tracking-tight text-[#0B1220] leading-none"
-              style={{ fontFamily: "'Fraunces', serif" }}
+              className="text-[16px] font-semibold tracking-tight text-[#0B1220] leading-none"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
             >
               KADR.CZ
             </div>
@@ -727,19 +724,32 @@ export default function SimpleDocFiller() {
         </div>
 
         {/* Step tracker */}
-        <div className="flex items-center gap-2 mb-6">
+        <div className="flex items-center gap-1.5 mb-6">
           {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
             const n = i + 1;
             const state = step > n ? "done" : step === n ? "active" : "todo";
             return (
-              <div key={label} className="flex items-center gap-2 flex-1">
-                <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-medium transition-colors
-                  ${state === "done" ? "bg-emerald-600 text-white" : state === "active" ? "bg-[#0B1220] text-white" : "bg-slate-200 text-slate-400"}`}>
-                  {state === "done" ? <Check size={12} /> : n}
-                </div>
-                <span className={`text-[11.5px] ${state === "todo" ? "text-slate-400" : "text-[#0B1220] font-medium"} hidden sm:inline`}>{label}</span>
-                {n < 4 && <div className={`flex-1 h-px ${state === "done" ? "bg-[#AF3524]/40" : "bg-slate-200"}`} />}
-              </div>
+              <div
+                key={label}
+                className={`flex-1 h-[3px] rounded-full transition-colors ${
+                  state === "done" || state === "active" ? "bg-[#C9932E]" : "bg-slate-200"
+                }`}
+                title={label}
+              />
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between mb-6 -mt-4 px-0.5">
+          {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
+            const n = i + 1;
+            const state = step > n ? "done" : step === n ? "active" : "todo";
+            return (
+              <span
+                key={label}
+                className={`text-[10.5px] ${state === "todo" ? "text-slate-400" : "text-[#0B1220] font-medium"}`}
+              >
+                {label}
+              </span>
             );
           })}
         </div>
@@ -754,7 +764,7 @@ export default function SimpleDocFiller() {
           {/* Step 1: upload */}
           {step === 1 && (
             <div className="p-7">
-              <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Fraunces', serif" }}>Nahrajte doklady</h2>
+              <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
                 automaticky. Můžete nahrát i více souborů najednou (např. pas + vízum).
@@ -798,7 +808,7 @@ export default function SimpleDocFiller() {
               <div className="flex flex-col items-center justify-center gap-4 py-14">
                 <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden">
                   <FileText size={26} className="text-slate-300" />
-                  <div className="absolute left-0 right-0 h-0.5 bg-[#AF3524]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
+                  <div className="absolute left-0 right-0 h-0.5 bg-[#C9932E]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
                 </div>
                 <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220]">
                   <Loader2 size={14} className="animate-spin text-slate-400" /> Rozpoznávám dokument…
@@ -886,16 +896,29 @@ export default function SimpleDocFiller() {
               <CompanyPicker fields={fields} setFields={setFields} />
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
-                {FIELD_DEFS.map(([key, label]) => (
-                  <label key={key} className="block">
-                    <span className="text-[11px] uppercase tracking-wide text-slate-400">{label}</span>
-                    <input
-                      value={fields[key] || ""}
-                      onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
-                      className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
-                    />
-                  </label>
-                ))}
+                {FIELD_DEFS.map(([key, label]) => {
+                  const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
+                  const showVerified = key === "doc_number" && docNumberVerified && fields[key];
+                  return (
+                    <label key={key} className="block">
+                      <span className="text-[11px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
+                        {label}
+                        {showVerified && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[#EAF3DE] text-[#3B6D11] text-[9.5px] font-medium px-1.5 py-0.5 normal-case tracking-normal">
+                            <Check size={9} strokeWidth={3} /> Ověřeno kontrolním součtem
+                          </span>
+                        )}
+                      </span>
+                      <input
+                        value={fields[key] || ""}
+                        onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
+                        style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
+                        className={`mt-1 w-full rounded-md border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
+                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
+                      />
+                    </label>
+                  );
+                })}
               </div>
 
               <div className="mt-6 flex justify-between items-center">
@@ -905,7 +928,7 @@ export default function SimpleDocFiller() {
                 <button
                   onClick={handleGenerate}
                   disabled={loading || !templateId}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#AF3524] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#8F2A1C] disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#C9932E] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#A97A24] disabled:opacity-60"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
                   {loading ? "Generuji…" : "Vytvořit dokument"}
@@ -930,7 +953,7 @@ export default function SimpleDocFiller() {
                 >
                   <Check size={24} />
                 </div>
-                <h2 className="mt-4 text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Fraunces', serif" }}>
+                <h2 className="mt-4 text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
                   Dokument je hotový
                 </h2>
                 <p className="mt-1 text-[13px] text-slate-500">Stáhněte si soubor nebo ho rovnou vytiskněte.</p>
