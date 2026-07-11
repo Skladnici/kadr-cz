@@ -404,10 +404,12 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
 def _preprocess_for_ocr(image):
     """Improves OCR accuracy on real-world phone photos (as opposed to
     flat scans, which Tesseract was originally designed for). Applies:
-    grayscale, contrast boost, upscaling for small images, and sharpening.
-    This is pure PIL — no extra dependencies, negligible cost."""
+    auto-crop of excess background, grayscale, contrast boost, upscaling
+    for small images, and sharpening. This is pure PIL — no extra
+    dependencies, negligible cost."""
     from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
+    image = _auto_crop_document(image)
     gray = ImageOps.grayscale(image)
 
     # Upscale small photos — Tesseract does much better with more pixels
@@ -422,6 +424,63 @@ def _preprocess_for_ocr(image):
     gray = ImageEnhance.Sharpness(gray).enhance(1.8)
     gray = ImageEnhance.Contrast(gray).enhance(1.3)
     return gray
+
+
+def _auto_crop_document(img):
+    """Trims excess background (table, shadows, empty margin) around a
+    photographed document, effectively 'zooming in' on the actual content
+    before OCR — helps when a document is small relative to the whole
+    photo. Deliberately conservative: only crops when confident there's
+    a large, genuinely uniform margin, and never crops more than a modest
+    amount, so it can't accidentally cut off real document content.
+    Tries both polarities (document darker than background, or lighter),
+    since real photos vary — a light ID card on a dark desk is just as
+    common as a dark passport cover on a light table."""
+    from PIL import ImageOps
+
+    try:
+        gray = ImageOps.grayscale(img)
+        w, h = img.size
+
+        def _bbox_for(threshold, darker_is_content):
+            if darker_is_content:
+                bw = gray.point(lambda x: 255 if x < threshold else 0)
+            else:
+                bw = gray.point(lambda x: 255 if x > threshold else 0)
+            return bw.getbbox()
+
+        candidates = []
+        for darker_is_content in (True, False):
+            bbox = _bbox_for(200, darker_is_content)
+            if not bbox:
+                continue
+            left, top, right, bottom = bbox
+            area_ratio = ((right - left) * (bottom - top)) / (w * h)
+            # A confident crop trims a real margin but doesn't shrink to a
+            # tiny fragment (which would mean we only caught some text or
+            # noise, not the actual document boundary).
+            if 0.20 <= area_ratio <= 0.90:
+                candidates.append((area_ratio, bbox))
+
+        if not candidates:
+            return img
+
+        # Prefer the candidate that trims the LEAST (safest choice) when
+        # both polarities produce a plausible result, to minimize risk of
+        # cutting off real content.
+        candidates.sort(key=lambda c: -c[0])
+        _, (left, top, right, bottom) = candidates[0]
+
+        content_w, content_h = right - left, bottom - top
+        pad_x, pad_y = int(content_w * 0.06), int(content_h * 0.06)
+        left = max(0, left - pad_x)
+        top = max(0, top - pad_y)
+        right = min(w, right + pad_x)
+        bottom = min(h, bottom + pad_y)
+        return img.crop((left, top, right, bottom))
+    except Exception as e:
+        print(f"[ocr] auto-crop skipped: {type(e).__name__}: {e}")
+        return img
 
 
 def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
@@ -443,6 +502,8 @@ def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
     except Exception as e:
         print(f"[ocr] _compress_for_upload failed to decode image: {type(e).__name__}: {e}")
         return image_bytes  # let the caller's error handling deal with it
+
+    img = _auto_crop_document(img)
 
     w, h = img.size
     if max(w, h) > 1800:
