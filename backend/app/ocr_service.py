@@ -212,6 +212,72 @@ def _find_visa_info(text: str) -> dict:
     return result
 
 
+# --- MRZ checksum verification (ICAO 9303 standard) ---
+# Every passport's machine-readable zone includes a check digit for the
+# document number — the same mechanism real passport-control scanners
+# use to catch misreads. We use it to *verify* our OCR result, and where
+# it doesn't check out, try correcting the single most likely OCR
+# confusion (0/O, 1/I, 5/S, 8/B, 2/Z, 6/G) until the checksum matches.
+_OCR_CONFUSIONS = {
+    "0": ["O", "Q", "D"], "O": ["0"],
+    "1": ["I", "L"], "I": ["1"], "L": ["1"],
+    "5": ["S"], "S": ["5"],
+    "8": ["B"], "B": ["8"],
+    "2": ["Z"], "Z": ["2"],
+    "6": ["G"], "G": ["6"],
+}
+
+
+def _icao_check_digit(s: str) -> int:
+    weights = [7, 3, 1]
+    total = 0
+    for i, c in enumerate(s):
+        if c.isdigit():
+            v = int(c)
+        elif c == "<":
+            v = 0
+        elif c.isalpha():
+            v = ord(c.upper()) - 55
+        else:
+            v = 0
+        total += v * weights[i % 3]
+    return total % 10
+
+
+def _verify_and_correct(raw: str, check_char: str) -> tuple[str, bool]:
+    """Returns (value, is_verified). If the checksum already matches,
+    trusts the OCR result as-is. If not, tries a single-character fix
+    for the most common OCR digit/letter mixups; if that resolves the
+    checksum, returns the corrected value as verified. Otherwise returns
+    the original, unverified — the caller should warn the user to
+    double-check it by eye rather than silently trusting a bad read."""
+    if not check_char.isdigit():
+        return raw, False
+    expected = int(check_char)
+    if _icao_check_digit(raw) == expected:
+        return raw, True
+    for i, c in enumerate(raw):
+        for alt in _OCR_CONFUSIONS.get(c, []):
+            candidate = raw[:i] + alt + raw[i + 1:]
+            if _icao_check_digit(candidate) == expected:
+                return candidate, True
+    return raw, False
+
+
+def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool]:
+    """Reads the document number straight from the MRZ's own field +
+    check digit, rather than guessing from printed (often smudged or
+    glare-affected) text elsewhere on the page — this is the same field
+    real e-passport gates rely on, and it self-verifies via checksum."""
+    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}\d{6}\d[MF<]\d{6}\d", text)
+    if not m:
+        return None, False
+    raw, check = m.group(1), m.group(2)
+    corrected, verified = _verify_and_correct(raw, check)
+    doc_number = corrected.replace("<", "").strip()
+    return (doc_number or None), verified
+
+
 def _find_doc_number(text: str) -> Optional[str]:
     for label in DOC_NUMBER_LABELS:
         m = re.search(label + r"[:\s]*\n?\s*([A-Z0-9]{5,12})", text, re.IGNORECASE)
@@ -279,12 +345,21 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     if not expiry_date and len(remaining_dates) >= 2:
         expiry_date = remaining_dates[1]
 
-    doc_number = _find_doc_number(raw_text)
+    # Prefer the MRZ-derived document number — it self-verifies via a
+    # checksum, unlike text found elsewhere on the page. Only fall back
+    # to the generic label/pattern search if there's no MRZ to read.
+    mrz_doc_number, doc_number_verified = _extract_passport_number_from_mrz(raw_text)
+    doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
     visa_info = _find_visa_info(raw_text)
 
     is_expired = False
     warnings = []
+    if mrz_doc_number and not doc_number_verified:
+        warnings.append(
+            f"Číslo dokladu ({doc_number}) se nepodařilo ověřit kontrolním součtem "
+            "— zkontrolujte prosím ručně podle fotografie."
+        )
     if expiry_date:
         try:
             parsed = _parse_any_date(expiry_date)
