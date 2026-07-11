@@ -136,26 +136,33 @@ MONTH_ABBR = {
 }
 
 
-def _find_bilingual_dates(text: str) -> list[tuple[str, "date"]]:
+def _interpret_two_digit_year(yy: int, role: str) -> int:
+    """Converts a 2-digit year to 4 digits, using a different plausible
+    window depending on the field's role — birth dates can be up to a
+    century old, while issue/expiry dates are always near the present
+    (documents are valid for a limited number of years)."""
+    current_yy = date.today().year % 100
+    if role == "birth":
+        # Birth years: assume 21st century unless that would be a future
+        # date, in which case it must be 20th century.
+        return 2000 + yy if yy <= current_yy else 1900 + yy
+    # issue/expiry: passports/permits are valid up to ~10-15 years —
+    # anything within that window of "now" is almost certainly 20XX.
+    return 2000 + yy if yy <= current_yy + 15 else 1900 + yy
+
+
+def _find_bilingual_date_tuples(text: str) -> list[tuple[int, int, int]]:
     """Ukrainian/CIS passports show dates as 'DD <Cyrillic-month>/<Latin
-    month abbr> YY' (e.g. '05 KBI/APR 81'). This extracts and converts
-    them to normal dd.mm.yyyy strings, in the order they appear on the
-    document (birth date, then issue date, then expiry date)."""
+    month abbr> YY' (e.g. '05 KBI/APR 81'). Returns (day, month, 2-digit
+    year) tuples in the order they appear on the document — which is
+    reliably birth date, then issue date, then expiry date, so callers
+    can assign roles by position rather than by guessing from the value."""
     results = []
     for m in re.finditer(r"(\d{1,2})\s+[^\s/]+/([A-Za-z]{3})\s+(\d{2})", text):
         day, mon_abbr, yy = m.groups()
         month = MONTH_ABBR.get(mon_abbr.lower())
-        if not month:
-            continue
-        yy_int = int(yy)
-        # Passports are usually valid ≤10 years and people are usually
-        # under ~100 — treat years within the next 5 as 20XX, else 19XX.
-        year = 2000 + yy_int if yy_int <= (date.today().year % 100) + 5 else 1900 + yy_int
-        try:
-            parsed = date(year, month, int(day))
-            results.append((f"{int(day):02d}.{month:02d}.{year}", parsed))
-        except ValueError:
-            continue
+        if month:
+            results.append((int(day), month, int(yy)))
     return results
 
 
@@ -199,18 +206,27 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
 
     # No labeled dates found (common on Ukrainian/CIS passports where OCR
     # mangles the Cyrillic labels) — fall back to the bilingual
-    # 'DD MON/MON YY' date format and assign by chronological order:
-    # oldest date = birth, then issue, then expiry.
+    # 'DD MON/MON YY' format. These always appear in a fixed document
+    # order (birth, then issue, then expiry), so we assign by position
+    # rather than by sorting values, which avoids ambiguity when a
+    # 2-digit year could plausibly belong to either century.
     if not (birth_date or issue_date or expiry_date):
-        bilingual = _find_bilingual_dates(raw_text)
-        if bilingual:
-            bilingual.sort(key=lambda pair: pair[1])
-            if len(bilingual) >= 1:
-                birth_date = bilingual[0][0]
-            if len(bilingual) >= 2:
-                issue_date = bilingual[1][0]
-            if len(bilingual) >= 3:
-                expiry_date = bilingual[2][0]
+        tuples = _find_bilingual_date_tuples(raw_text)
+
+        def _fmt(day, month, yy, role):
+            year = _interpret_two_digit_year(yy, role)
+            try:
+                date(year, month, day)  # validates the date is real
+                return f"{day:02d}.{month:02d}.{year}"
+            except ValueError:
+                return None
+
+        if len(tuples) >= 1:
+            birth_date = _fmt(*tuples[0], role="birth")
+        if len(tuples) >= 2:
+            issue_date = _fmt(*tuples[1], role="issue")
+        if len(tuples) >= 3:
+            expiry_date = _fmt(*tuples[2], role="expiry")
 
     # Fall back to positional guessing only if labels weren't found —
     # better than nothing, but labeled matches above are preferred.
