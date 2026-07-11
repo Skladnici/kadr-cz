@@ -190,19 +190,26 @@ def _find_visa_info(text: str) -> dict:
     """
     result = {}
 
-    if not re.search(r"\bVIZUM\b|\bVISA\b", text, re.IGNORECASE):
+    if not re.search(r"\bV[IÍ]ZUM\b|\bVISA\b", text, re.IGNORECASE):
         return result  # doesn't look like a visa document at all
 
-    m = re.search(r"VIZUM\s*/\s*VISA\s+([A-Z]{3})\s+(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
+    # Most reliable source for the series: the visa's own MRZ line always
+    # starts with "V" + a subtype char + the 3-letter issuing country
+    # code (e.g. "VDCZEMOKHNIA<<VASYL..." → CZE) — far more robust than
+    # scanning printed text, which OCR often garbles differently ("CZE"
+    # misread as "CLE" etc).
+    mrz_series = re.search(r"^V[A-Z<]([A-Z]{3})", text, re.MULTILINE)
+
+    m = re.search(r"V[IÍ]ZUM\s*/\s*VISA\s+([A-Z]{3})\s+(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
     if m:
         result["visa_number"] = f"{m.group(1).upper()}{m.group(2)}"
     else:
         # Series line not found right next to VIZUM/VISA — still capture
-        # the bare number anywhere reasonably nearby, and separately look
-        # for a 3-letter series code (CZE, POL, SVK…) anywhere in the
-        # text to prefix it with.
-        m_num = re.search(r"VIZUM\s*/\s*VISA[\s\S]{0,40}?(\d{6,10})", text, re.IGNORECASE)
-        m_series = re.search(r"\b(CZE|POL|SVK|DEU|AUT|HUN)\b", text)
+        # the bare number anywhere reasonably nearby, and prefix it with
+        # the MRZ-derived series if we found one, else fall back to
+        # scanning printed text for a standalone series code.
+        m_num = re.search(r"V[IÍ]ZUM\s*/\s*VISA[\s\S]{0,40}?(\d{6,10})", text, re.IGNORECASE)
+        m_series = mrz_series or re.search(r"\b(CZE|POL|SVK|DEU|AUT|HUN)\b", text)
         if m_num:
             prefix = m_series.group(1) if m_series else ""
             result["visa_number"] = f"{prefix}{m_num.group(1)}"
@@ -354,7 +361,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # picking up garbage. We already read the visa's real validity from
     # its own MRZ line (see visa_info below) — skip the generic
     # positional date-guessing entirely for visas.
-    is_visa = bool(re.search(r"\bVIZUM\b|\bVISA\b", raw_text, re.IGNORECASE))
+    is_visa = bool(re.search(r"\bV[IÍ]ZUM\b|\bVISA\b", raw_text, re.IGNORECASE))
 
     # Fall back to positional guessing only if labels weren't found —
     # better than nothing, but labeled matches above are preferred.
