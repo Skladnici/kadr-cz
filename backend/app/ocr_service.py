@@ -232,15 +232,37 @@ async def _vision_ocr(image_bytes: bytes) -> str:
         return ""
 
 
+NAME_LABEL_PATTERNS = [
+    # (label regex, group meaning)
+    (r"(?:Příjmení|Surname)\s*[:\-]?\s*\n?\s*([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ][A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ\s]{1,30})", "last"),
+    (r"(?:Jméno|Given name)s?\s*[:\-]?\s*\n?\s*([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ][A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ\s]{1,30})", "first"),
+]
+
+
 def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
-    """Best-effort name extraction: looks for MRZ 'SURNAME<<GIVEN' pattern
-    first (most reliable), falls back to nothing (left for manual entry)."""
+    """Best-effort name extraction, in order of reliability:
+    1. MRZ 'SURNAME<<GIVEN' pattern (passports) — most reliable.
+    2. Labelled fields 'Jméno'/'Příjmení' or 'Given name'/'Surname'
+       (Czech ID cards, residence permits — bilingual labels).
+    3. Nothing found — left for manual entry; the raw recognized text is
+       still shown to the user so they can copy it themselves.
+    """
     mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", text)
     if mrz_match:
         last = mrz_match.group(1).replace("<", " ").strip().title()
         first = mrz_match.group(2).replace("<", " ").strip().title()
         return first, last
-    return None, None
+
+    first = last = None
+    for pattern, kind in NAME_LABEL_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            value = m.group(1).strip().split("\n")[0].strip().title()
+            if kind == "first":
+                first = value
+            else:
+                last = value
+    return first, last
 
 
 def _tesseract_ocr(image_bytes: bytes) -> str:
