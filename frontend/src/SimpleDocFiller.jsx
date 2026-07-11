@@ -390,6 +390,8 @@ export default function SimpleDocFiller() {
         birth_date: pick("birth_date"),
         nationality: pick("nationality"),
         doc_number: pick("doc_number"),
+        visa_number: pick("visa_number"),
+        visa_validity: pick("visa_validity"),
         position: "",
         workplace: "",
         salary: "",
