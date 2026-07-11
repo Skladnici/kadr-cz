@@ -68,6 +68,30 @@ async def recognize(file: UploadFile = File(...)):
     return extracted
 
 
+class RecognizeTextRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/recognize-text")
+async def recognize_text(payload: RecognizeTextRequest):
+    """Runs the same field-extraction rules used for photos, but on text
+    the person pastes in directly — useful when they already have the
+    document's text (e.g. copied from a chat message or email) instead
+    of a photo to upload."""
+    from app.ocr_service import _extract_fields_from_text, _parse_name_from_text
+
+    text = payload.text or ""
+    if not text.strip():
+        raise HTTPException(400, "Vložený text je prázdný")
+
+    fields = _extract_fields_from_text(text, quality=100, mode="pasted-text")
+    first, last = _parse_name_from_text(text)
+    fields["first_name"] = first
+    fields["last_name"] = last
+    fields["ocr_raw_text"] = text
+    return fields
+
+
 class FillRequest(BaseModel):
     template_id: str
     first_name: Optional[str] = None
