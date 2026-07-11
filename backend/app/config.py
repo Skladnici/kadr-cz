@@ -11,7 +11,16 @@ class Settings:
     APP_NAME = "KADR.CZ — Rychlé vyplnění dokumentů"
 
     GOOGLE_VISION_API_KEY: str = os.getenv("GOOGLE_VISION_API_KEY", "")
-    OCR_MODE: str = "live" if GOOGLE_VISION_API_KEY else "mock"
+    # "live" = Google Vision (needs API key + billing account)
+    # "local" = free Tesseract OCR running on the server, no key/card needed (default)
+    # "mock" = fixed demo data, only used if explicitly forced via OCR_MODE_OVERRIDE
+    _override = os.getenv("OCR_MODE_OVERRIDE", "")
+    if _override in ("live", "local", "mock"):
+        OCR_MODE: str = _override
+    elif GOOGLE_VISION_API_KEY:
+        OCR_MODE: str = "live"
+    else:
+        OCR_MODE: str = "local"
 
     UPLOAD_DIR: Path = BASE_DIR / "uploads"
     GENERATED_DIR: Path = BASE_DIR / "generated"
