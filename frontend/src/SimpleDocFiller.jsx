@@ -81,7 +81,7 @@ export default function SimpleDocFiller() {
         workplace: "",
         salary: "",
         hours_per_week: "",
-        start_date: new Date().toISOString().slice(0, 10),
+        start_date: "",
         end_date: "",
         bank_account: "",
         company_name: "",
@@ -101,7 +101,6 @@ export default function SimpleDocFiller() {
 
   const skipUpload = () => {
     setFields(Object.fromEntries(FIELD_DEFS.map(([k]) => [k, ""])));
-    setFields((f) => ({ ...f, start_date: new Date().toISOString().slice(0, 10) }));
     setWarnings([]);
     setOcrMode(null);
     setStep(3);
