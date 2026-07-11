@@ -112,6 +112,43 @@ def _quality_score(image_bytes: bytes) -> int:
     return 92
 
 
+def _find_labeled_date(text: str, label_patterns: list[str]) -> Optional[str]:
+    """Finds a date that appears near a specific label (e.g. 'Datum narození'),
+    rather than just grabbing dates in document order — much more reliable
+    once real (non-MRZ) documents are involved, since dates can appear in
+    any order on the page."""
+    for label in label_patterns:
+        m = re.search(label + r"[:\s]*\n?\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4})", text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+DOC_NUMBER_LABELS = [
+    r"(?:Č\.?\s*dokladu|Číslo dokladu|Doklad\s*č|Document\s*(?:No|Number))",
+    r"(?:Č\.?\s*OP|Rodné\s*číslo)",
+]
+
+
+def _find_doc_number(text: str) -> Optional[str]:
+    for label in DOC_NUMBER_LABELS:
+        m = re.search(label + r"[:\s]*\n?\s*([A-Z0-9]{5,12})", text, re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+    # Fallback: a standalone alphanumeric token with both letters and
+    # digits, 6-10 chars, is a decent generic heuristic for ID numbers.
+    m = re.search(r"\b(?=[A-Z0-9]{6,10}\b)(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,10}\b", text)
+    return m.group(0) if m else None
+
+
+ADDRESS_LABEL = r"(?:Adresa|Trvalý pobyt|Bydliště|Address)"
+
+
+def _find_address(text: str) -> Optional[str]:
+    m = re.search(ADDRESS_LABEL + r"[:\s]*\n?\s*([^\n]{5,60})", text, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
 def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     doc_type = _detect_doc_type(raw_text)
     country = _detect_country(raw_text)
@@ -119,8 +156,20 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     dates = _find_dates(raw_text)
     mrz = _parse_mrz(raw_text)
 
-    issue_date = dates[0] if len(dates) >= 1 else None
-    expiry_date = dates[1] if len(dates) >= 2 else None
+    birth_date = _find_labeled_date(raw_text, [r"Datum narození", r"Date of birth", r"Nar\."])
+    expiry_date = _find_labeled_date(raw_text, [r"Platnost do", r"Date of expiry", r"Expiry"])
+    issue_date = _find_labeled_date(raw_text, [r"Datum vydání", r"Date of issue"])
+
+    # Fall back to positional guessing only if labels weren't found —
+    # better than nothing, but labeled matches above are preferred.
+    remaining_dates = [d for d in dates if d not in (birth_date, expiry_date, issue_date)]
+    if not issue_date and remaining_dates:
+        issue_date = remaining_dates[0]
+    if not expiry_date and len(remaining_dates) >= 2:
+        expiry_date = remaining_dates[1]
+
+    doc_number = _find_doc_number(raw_text)
+    address = _find_address(raw_text)
 
     is_expired = False
     warnings = []
@@ -146,6 +195,9 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "document_language": language,
         "issue_date": issue_date,
         "expiry_date": expiry_date,
+        "birth_date": birth_date,
+        "doc_number": doc_number,
+        "address": address,
         "mrz_raw": mrz,
         "ocr_quality_score": quality,
         "ocr_confidence": confidence,
@@ -306,26 +358,31 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
     try:
         image = Image.open(io.BytesIO(image_bytes))
         image.load()
-        # Always force a real conversion, even if mode is already "RGB" —
-        # some loaders (e.g. HEIC) return a mode="RGB" wrapper object that
-        # isn't a genuine PIL.Image and that pytesseract rejects. .convert()
-        # always returns a fresh, plain PIL.Image regardless of source mode.
         image = image.convert("RGB")
+
+        # Cap the incoming image size BEFORE any processing. Real phone
+        # photos can be huge (4000x3000px+) — on a memory-constrained free
+        # server, processing that at full resolution can exhaust RAM and
+        # hang indefinitely. 2000px on the long side is more than enough
+        # detail for OCR and keeps memory/CPU use bounded and fast.
+        w, h = image.size
+        if max(w, h) > 1500:
+            scale = 1500 / max(w, h)
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
         image = _preprocess_for_ocr(image)
     except Exception as e:
         print(f"[ocr] Failed to open/preprocess image: {type(e).__name__}: {e}")
         return ""
 
-    # Try Czech+Ukrainian+English combined if language packs are installed,
-    # fall back to English-only, then to tesseract's bare default.
-    # --psm 6 assumes a single uniform block of text, which suits ID
-    # documents/contracts better than Tesseract's default page-layout mode.
+    # Use the combined Czech+Ukrainian+English model first — needed to
+    # correctly read Czech diacritics (é, ř, š, etc.) on real documents.
+    # Only fall back to English-only if that genuinely fails to run
+    # (e.g. missing language data), not just because the result looks odd.
     config = "--psm 6"
-    for langs in ("ces+ukr+eng", "eng", None):
+    for langs in ("ces+ukr+eng", "eng"):
         try:
-            if langs:
-                return pytesseract.image_to_string(image, lang=langs, config=config)
-            return pytesseract.image_to_string(image, config=config)
+            return pytesseract.image_to_string(image, lang=langs, config=config)
         except Exception as e:
             print(f"[ocr] Tesseract failed with lang={langs}: {type(e).__name__}: {e}")
             continue
