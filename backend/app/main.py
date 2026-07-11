@@ -88,6 +88,10 @@ class FillRequest(BaseModel):
     company_dic: Optional[str] = None
     company_address: Optional[str] = None
     company_representative: Optional[str] = None
+    visa_number: Optional[str] = None
+    visa_validity: Optional[str] = None
+    residence_type: Optional[str] = None
+    signing_place: Optional[str] = None
     termination_reason: Optional[str] = None
     last_working_day: Optional[str] = None
     pay_period: Optional[str] = None
