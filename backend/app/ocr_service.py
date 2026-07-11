@@ -183,14 +183,15 @@ def _find_visa_info(text: str) -> dict:
     if not re.search(r"\bVIZUM\b|\bVISA\b", text, re.IGNORECASE):
         return result  # doesn't look like a visa document at all
 
-    m = re.search(r"VIZUM\s*/\s*VISA\s*\n\s*([A-Z]{3})\s*\n\s*(\d{6,10})", text, re.IGNORECASE)
+    m = re.search(r"VIZUM\s*/\s*VISA\s+([A-Z]{3})\s+(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
     if m:
         result["visa_number"] = f"{m.group(1).upper()}{m.group(2)}"
     else:
-        # Series line not found right where expected — still capture the
-        # bare number, and separately look for a 3-letter series code
-        # (CZE, POL, SVK…) anywhere nearby to prefix it with.
-        m_num = re.search(r"VIZUM\s*/\s*VISA.*?\n.*?\n(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
+        # Series line not found right next to VIZUM/VISA — still capture
+        # the bare number anywhere reasonably nearby, and separately look
+        # for a 3-letter series code (CZE, POL, SVK…) anywhere in the
+        # text to prefix it with.
+        m_num = re.search(r"VIZUM\s*/\s*VISA[\s\S]{0,40}?(\d{6,10})", text, re.IGNORECASE)
         m_series = re.search(r"\b(CZE|POL|SVK|DEU|AUT|HUN)\b", text)
         if m_num:
             prefix = m_series.group(1) if m_series else ""
@@ -519,11 +520,22 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     # even when Tesseract/OCR.space garbles the Cyrillic half into
     # nonsense, since Latin-script OCR is far more accurate. Order on the
     # document is always surname first, then given name.
-    slash_names = re.findall(r"^[^\n/]{2,25}/([A-Z]{2,25})\s*$", text, re.MULTILINE)
+    # Ukrainian/CIS-style passports show each name field twice: OCR-garbled
+    # Cyrillic, then "/", then a clean Latin transliteration — e.g.
+    # "РОМАНЧУК/ROMANCHUK" (surname) followed on the next line by
+    # "ІВАННА/IVANNA" (given name) — two separate lines. Other documents
+    # (like some Ukrainian passports) print "SURNAME/GIVEN" already
+    # correctly transliterated on a single line instead. We can't tell
+    # these apart by looking at the characters (OCR often turns Cyrillic
+    # into Latin lookalikes either way) — but we *can* tell by how many
+    # such lines exist: two lines means the two-line format; exactly one
+    # line means that line already contains the full surname/given pair.
+    slash_names = re.findall(r"^([^\n/]{2,25})/([A-Z]{2,25})\s*$", text, re.MULTILINE)
     if len(slash_names) >= 2:
-        return slash_names[1].title(), slash_names[0].title()
+        return slash_names[1][1].title(), slash_names[0][1].title()
     if len(slash_names) == 1 and not (first or last):
-        return None, slash_names[0].title()
+        left, right = slash_names[0]
+        return right.title(), left.title()
 
     return first, last
 
