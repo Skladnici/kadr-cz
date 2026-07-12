@@ -25,10 +25,18 @@ from app.blank_service import list_templates, fill_blank, convert_to_pdf
 
 app = FastAPI(title=settings.APP_NAME)
 
+# Defense in depth: allow_credentials=True is required so the browser will
+# send the Basic Auth header cross-origin for /api/companies. Never combine
+# that with a wildcard origin — Starlette would reflect the caller's Origin
+# header instead of literally sending "*", which lets any website read
+# credentialed responses from a visitor's browser. If CORS_ORIGINS somehow
+# still contains "*", force credentials off rather than allow that combo.
+_cors_allow_credentials = "*" not in settings.CORS_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
