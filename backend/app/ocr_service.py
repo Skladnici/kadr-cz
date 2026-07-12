@@ -378,6 +378,17 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     mrz_doc_number, doc_number_verified = _extract_passport_number_from_mrz(raw_text)
     doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
+
+    # If nothing about this text looks like an actual ID document (no
+    # MRZ, no recognized doc type, no doc number) and it's short — the
+    # person probably just typed a plain address directly into the
+    # "paste text" box (e.g. "Kyjev, Tarasa Ševčenka 10"), not a scanned
+    # document. Use the whole text as the address in that case, instead
+    # of leaving it empty just because it has no "Adresa:" label.
+    looks_like_document = bool(mrz or doc_number or is_visa) or doc_type != "Neznámý dokument"
+    if not address and not looks_like_document and 0 < len(raw_text.strip()) < 200:
+        address = raw_text.strip().replace("\n", ", ")
+
     visa_info = _find_visa_info(raw_text)
 
     is_expired = False
