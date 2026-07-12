@@ -10,6 +10,7 @@ no database. Run:
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -168,3 +169,93 @@ def download(filename: str):
     # server is generating fresh content on every request.
     headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
     return FileResponse(path, filename=filename, media_type=media_type, headers=headers)
+
+
+# ---------------------------------------------------------------- Companies
+# Shared across everyone who uses the site — stored in a free Supabase
+# Postgres database (not localStorage), so the same list of saved
+# companies shows up no matter which computer/browser someone opens the
+# site from. If Supabase isn't configured (env vars empty), these
+# endpoints return a clear error rather than crashing.
+
+class CompanyIn(BaseModel):
+    name: str
+    ico: Optional[str] = None
+    dic: Optional[str] = None
+    address: Optional[str] = None
+    representative: Optional[str] = None
+
+
+def _supabase_headers():
+    return {
+        "apikey": settings.SUPABASE_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _require_supabase():
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        raise HTTPException(
+            503,
+            "Sdílené firmy nejsou nastavené — chybí SUPABASE_URL / SUPABASE_KEY na serveru.",
+        )
+
+
+@app.get("/api/companies")
+async def list_companies():
+    _require_supabase()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/companies",
+            headers=_supabase_headers(),
+            params={"select": "*", "order": "name.asc"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp.json()
+
+
+@app.post("/api/companies", status_code=201)
+async def create_company(payload: CompanyIn):
+    _require_supabase()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{settings.SUPABASE_URL}/rest/v1/companies",
+            headers={**_supabase_headers(), "Prefer": "return=representation"},
+            json=payload.model_dump(),
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    result = resp.json()
+    return result[0] if isinstance(result, list) else result
+
+
+@app.put("/api/companies/{company_id}")
+async def update_company(company_id: str, payload: CompanyIn):
+    _require_supabase()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(
+            f"{settings.SUPABASE_URL}/rest/v1/companies",
+            headers={**_supabase_headers(), "Prefer": "return=representation"},
+            params={"id": f"eq.{company_id}"},
+            json=payload.model_dump(),
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    result = resp.json()
+    return result[0] if isinstance(result, list) else result
+
+
+@app.delete("/api/companies/{company_id}", status_code=204)
+async def delete_company(company_id: str):
+    _require_supabase()
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{settings.SUPABASE_URL}/rest/v1/companies",
+            headers=_supabase_headers(),
+            params={"id": f"eq.{company_id}"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return None
