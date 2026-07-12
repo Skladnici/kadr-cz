@@ -718,8 +718,12 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     no card). Processing happens on their servers, not this one, which
     solves both the speed and reliability problems of running Tesseract
     locally on a memory/CPU-constrained free hosting instance."""
+    import time
     url = "https://api.ocr.space/parse/image"
+
+    t_compress = time.time()
     image_bytes = _compress_for_upload(image_bytes)
+    print(f"[timing]   compress: {time.time()-t_compress:.1f}s, result={len(image_bytes)/1024:.0f}KB")
     filename = "upload.jpg"  # always send as a plain, unambiguous jpeg now
 
     # OCR.space has two engines with different language support — Engine 2
@@ -740,13 +744,15 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
             **attempt,
         }
         files = {"file": (filename, image_bytes, "image/jpeg")}
+        t_attempt = time.time()
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(url, data=data, files=files)
                 resp.raise_for_status()
                 result = resp.json()
+            print(f"[timing]   attempt {attempt}: {time.time()-t_attempt:.1f}s")
         except Exception as e:
-            print(f"[ocr] OCR.space request failed ({attempt}): {type(e).__name__}: {e}")
+            print(f"[timing]   attempt {attempt} FAILED after {time.time()-t_attempt:.1f}s: {type(e).__name__}: {e}")
             continue
 
         if result.get("IsErroredOnProcessing"):
@@ -815,8 +821,12 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
     Main entry point used by the API layer.
     Returns a flat dict matching schemas.ExtractedFields.
     """
+    import time
+    t0 = time.time()
+
     image_bytes = file_path.read_bytes()
     quality = _quality_score(image_bytes)
+    print(f"[timing] file read: {time.time()-t0:.1f}s, size={len(image_bytes)/1024:.0f}KB")
 
     if settings.OCR_MODE == "mock":
         result = _mock_extract(original_filename)
@@ -832,7 +842,9 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             ]
             return result
         try:
+            t1 = time.time()
             raw_text = await _ocr_space_ocr(image_bytes, original_filename)
+            print(f"[timing] OCR.space total: {time.time()-t1:.1f}s, got {len(raw_text)} chars")
         except Exception as e:
             print(f"[ocr] OCR.space request failed: {type(e).__name__}: {e}")
             raw_text = ""
@@ -841,18 +853,23 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             # over its daily quota, try local Tesseract rather than
             # failing outright, so the feature keeps working either way.
             try:
+                t2 = time.time()
                 raw_text = _tesseract_ocr(image_bytes)
-            except Exception:
+                print(f"[timing] Tesseract fallback: {time.time()-t2:.1f}s, got {len(raw_text)} chars")
+            except Exception as e:
+                print(f"[timing] Tesseract fallback failed: {type(e).__name__}: {e}")
                 raw_text = ""
         if not raw_text.strip():
             result = _mock_extract(original_filename)
             result["warnings"] = ["Nepodařilo se přečíst text z dokumentu — zkuste ostřejší fotografii."]
+            print(f"[timing] TOTAL (fell back to mock): {time.time()-t0:.1f}s")
             return result
         fields = _extract_fields_from_text(raw_text, quality, mode="ocrspace")
         first, last = _parse_name_from_text(raw_text)
         fields["first_name"] = first
         fields["last_name"] = last
         fields["ocr_raw_text"] = raw_text
+        print(f"[timing] TOTAL: {time.time()-t0:.1f}s")
         return fields
 
     if settings.OCR_MODE == "local":
