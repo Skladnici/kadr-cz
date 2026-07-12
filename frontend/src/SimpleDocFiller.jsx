@@ -502,29 +502,27 @@ function smartSplitAddress(raw, countryGuess) {
 // staff don't have to retype the same employer's IČO/DIČ/address on
 // every single contract — pick one from the dropdown to auto-fill, or
 // save the currently typed values as a new (or updated) profile.
-const COMPANIES_KEY = "kadr_companies_v1";
-
-function loadCompanies() {
-  try {
-    const raw = localStorage.getItem(COMPANIES_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCompanies(list) {
-  try {
-    localStorage.setItem(COMPANIES_KEY, JSON.stringify(list));
-  } catch {
-    // localStorage unavailable (private browsing etc.) — fail silently,
-    // the person can still fill fields manually, just without saving.
-  }
-}
+// Stored server-side (Supabase) so the same list shows up for everyone
+// using the site, on any computer — not just this browser.
 
 function CompanyPicker({ fields, setFields }) {
-  const [companies, setCompanies] = useState(() => loadCompanies());
+  const [companies, setCompanies] = useState([]);
   const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const loadCompanies = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/companies`);
+      if (!res.ok) throw new Error("failed");
+      setCompanies(await res.json());
+      setError(null);
+    } catch {
+      setError("Sdílené firmy se nepodařilo načíst ze serveru.");
+    }
+  }, []);
+
+  useEffect(() => { loadCompanies(); }, [loadCompanies]);
 
   const applyCompany = (c) => {
     setFields((f) => ({
@@ -544,36 +542,57 @@ function CompanyPicker({ fields, setFields }) {
     if (c) applyCompany(c);
   };
 
-  const handleSaveCurrent = () => {
+  const handleSaveCurrent = async () => {
     if (!fields.company_name?.trim()) return;
-    const existingIdx = selectedId ? companies.findIndex((c) => c.id === selectedId) : -1;
+    setLoading(true);
+    setError(null);
     const profile = {
-      id: existingIdx >= 0 ? companies[existingIdx].id : `c${Date.now()}`,
       name: fields.company_name || "",
       ico: fields.company_ico || "",
       dic: fields.company_dic || "",
       address: fields.company_address || "",
       representative: fields.company_representative || "",
     };
-    const next = existingIdx >= 0
-      ? companies.map((c, i) => (i === existingIdx ? profile : c))
-      : [...companies, profile];
-    setCompanies(next);
-    saveCompanies(next);
-    setSelectedId(profile.id);
+    try {
+      const res = await fetch(
+        selectedId ? `${API_BASE}/api/companies/${selectedId}` : `${API_BASE}/api/companies`,
+        {
+          method: selectedId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profile),
+        }
+      );
+      if (!res.ok) throw new Error("failed");
+      const saved = await res.json();
+      await loadCompanies();
+      setSelectedId(saved.id);
+    } catch {
+      setError("Uložení se nezdařilo — zkontrolujte, zda je server dostupný.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedId) return;
-    const next = companies.filter((c) => c.id !== selectedId);
-    setCompanies(next);
-    saveCompanies(next);
-    setSelectedId("");
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("failed");
+      setSelectedId("");
+      await loadCompanies();
+    } catch {
+      setError("Smazání se nezdařilo — zkontrolujte, zda je server dostupný.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40 mb-3">
-      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Uložené firmy</div>
+      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Sdílené firmy</div>
+      {error && <p className="mb-2 text-[11.5px] text-red-600">{error}</p>}
       <div className="flex gap-2 items-center flex-wrap">
         <select
           value={selectedId}
@@ -588,7 +607,8 @@ function CompanyPicker({ fields, setFields }) {
         <button
           type="button"
           onClick={handleSaveCurrent}
-          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+          disabled={loading}
+          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap disabled:opacity-50"
         >
           {selectedId ? "Aktualizovat" : "Uložit jako novou"}
         </button>
@@ -596,14 +616,15 @@ function CompanyPicker({ fields, setFields }) {
           <button
             type="button"
             onClick={handleDelete}
-            className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50"
+            disabled={loading}
+            className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
           >
             Smazat
           </button>
         )}
       </div>
       <p className="mt-1.5 text-[10.5px] text-slate-400">
-        Firmy se ukládají jen v tomto prohlížeči, ne na serveru.
+        Firmy jsou uložené na serveru — vidí je kdokoliv, kdo tento web používá.
       </p>
     </div>
   );
