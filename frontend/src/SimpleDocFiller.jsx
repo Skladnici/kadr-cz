@@ -4,53 +4,11 @@ import {
   Printer, Loader2, ArrowRight, ArrowLeft, ScanLine, RotateCcw, ShieldCheck, MapPin
 } from "lucide-react";
 
-// Compresses/resizes an image in the browser before upload — this cuts
-// the actual network transfer time (often the real bottleneck on mobile
-// connections with multi-MB phone photos), on top of any server-side
-// compression that happens afterwards. HEIC files are passed through
-// unchanged since most browsers can't decode HEIC via <canvas>.
-function compressImageInBrowser(file, maxDimension = 1800, quality = 0.82) {
-  const compress = new Promise((resolve) => {
-    const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
-    if (isHeic || !file.type.startsWith("image/")) {
-      resolve(file); // let the backend handle HEIC/unsupported types as-is
-      return;
-    }
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      let { width, height } = img;
-      if (Math.max(width, height) > maxDimension) {
-        const scale = maxDimension / Math.max(width, height);
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, width, height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) { resolve(file); return; }
-          resolve(new File([blob], file.name.replace(/\.\w+$/, ".jpg"), { type: "image/jpeg" }));
-        },
-        "image/jpeg",
-        quality
-      );
-    };
-    img.onerror = () => resolve(file); // fall back to original on any decode issue
-    img.src = url;
-  });
-
-  // Safety net: if browser-side compression somehow hangs (no onload AND
-  // no onerror firing — seen on some odd image files/browsers), never
-  // block the upload forever. Fall back to the original, uncompressed
-  // file after 10s so the request still goes out.
-  const timeout = new Promise((resolve) => setTimeout(() => resolve(file), 10000));
-  return Promise.race([compress, timeout]);
-}
+// NOTE: browser-side compression was removed here — it caused uploads to
+// hang indefinitely for certain files (observed with photos forwarded
+// through messaging apps), even with a timeout safety net in place. The
+// backend already compresses/resizes images reliably and quickly before
+// OCR, so sending the original file directly is both simpler and safer.
 
 const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   ? window.__HR_API_BASE__
@@ -781,11 +739,9 @@ export default function SimpleDocFiller() {
     try {
       const results = [];
       for (const file of pendingFiles) {
-        console.log("[upload] compressing", file.name, file.size, "bytes");
-        const compressed = await compressImageInBrowser(file);
-        console.log("[upload] compressed, sending", compressed.size, "bytes to", `${API_BASE}/api/recognize`);
+        console.log("[upload] sending", file.name, file.size, "bytes to", `${API_BASE}/api/recognize`);
         const formData = new FormData();
-        formData.append("file", compressed);
+        formData.append("file", file);
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s max per file
         const res = await fetch(`${API_BASE}/api/recognize`, {
