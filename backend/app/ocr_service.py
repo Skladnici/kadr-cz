@@ -691,12 +691,18 @@ def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
         print(f"[ocr] _compress_for_upload failed to decode image: {type(e).__name__}: {e}")
         return image_bytes  # let the caller's error handling deal with it
 
-    img = _auto_crop_document(img)
-
+    # Downscale FIRST, then auto-crop on the smaller image — auto-crop
+    # does pixel-by-pixel analysis (grayscale + bounding-box scans), and
+    # running that on a full-resolution phone photo (often 3000-4000px+)
+    # before shrinking it was needlessly slow on a weak free-tier CPU.
+    # A 1800px-wide image is still plenty sharp for finding the document
+    # boundary, at a fraction of the processing cost.
     w, h = img.size
     if max(w, h) > 1800:
         scale = 1800 / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    img = _auto_crop_document(img)
 
     for quality in (85, 70, 55, 40):
         buf = io.BytesIO()
