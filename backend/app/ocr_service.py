@@ -719,10 +719,17 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     solves both the speed and reliability problems of running Tesseract
     locally on a memory/CPU-constrained free hosting instance."""
     import time
+    import asyncio
     url = "https://api.ocr.space/parse/image"
 
     t_compress = time.time()
-    image_bytes = _compress_for_upload(image_bytes)
+    # Run in a separate thread — this does CPU-bound PIL image work
+    # (grayscale scans, resizing, JPEG encoding), which would otherwise
+    # block the single-worker async event loop entirely, freezing every
+    # other request on the server (including simple ones) until it's
+    # done. Offloading it keeps the server responsive to other requests
+    # while this one's image processing runs in the background.
+    image_bytes = await asyncio.to_thread(_compress_for_upload, image_bytes)
     print(f"[timing]   compress: {time.time()-t_compress:.1f}s, result={len(image_bytes)/1024:.0f}KB")
     filename = "upload.jpg"  # always send as a plain, unambiguous jpeg now
 
@@ -854,7 +861,7 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             # failing outright, so the feature keeps working either way.
             try:
                 t2 = time.time()
-                raw_text = _tesseract_ocr(image_bytes)
+                raw_text = await asyncio.to_thread(_tesseract_ocr, image_bytes)
                 print(f"[timing] Tesseract fallback: {time.time()-t2:.1f}s, got {len(raw_text)} chars")
             except Exception as e:
                 print(f"[timing] Tesseract fallback failed: {type(e).__name__}: {e}")
@@ -880,7 +887,7 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             ]
             return result
         try:
-            raw_text = _tesseract_ocr(image_bytes)
+            raw_text = await asyncio.to_thread(_tesseract_ocr, image_bytes)
         except Exception:
             raw_text = ""
         if not raw_text.strip():
