@@ -88,6 +88,14 @@ const FIELD_DEFS = [
 // template id (e.g. "dpp_template" starts with "dpp") — "all" always
 // passes, and if templateId isn't loaded yet everything shows so the
 // form isn't empty during the brief initial load.
+// Fields shown in the "person" group at the top of the review form —
+// everything else (contract terms, company, payslip specifics) renders
+// further down, after the address section.
+const PERSON_FIELD_KEYS = new Set([
+  "first_name", "last_name", "birth_date", "doc_number",
+  "visa_number", "visa_validity", "residence_type",
+]);
+
 function isFieldRelevant(scope, templateId) {
   if (scope === "all" || !templateId) return true;
   return scope.some((prefix) => templateId.startsWith(prefix));
@@ -306,6 +314,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
               value={czParts.street || ""}
               onChange={(e) => setCzPart("street", e.target.value)}
               placeholder="Vinohradská 45"
+              autoComplete="off"
               className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
@@ -360,6 +369,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
                 value={originParts.street || ""}
                 onChange={(e) => setOriginPart("street", e.target.value)}
                 placeholder="vul. Chreščatyk 10"
+                autoComplete="off"
                 className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
               />
             </label>
@@ -392,6 +402,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
               <input
                 value={originParts.street || ""}
                 onChange={(e) => setOriginPart("street", e.target.value)}
+                autoComplete="off"
                 className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
               />
             </label>
@@ -711,21 +722,14 @@ export default function SimpleDocFiller() {
     });
     setDocNumberVerified(results.some((r) => r.doc_number_verified));
 
-    // Recognized address from a passport/visa is the person's home
-    // country info (birthplace/oblast etc.) — it never contains their
-    // Czech residence address, so it always goes into the "origin"
-    // block, never the CZ block (that one stays for manual entry).
     const recognizedAddress = pick("address");
-    const mergedNationality = pick("nationality");
-    let guessedOriginCountry = originCountry;
-    if (/ukrajin/i.test(mergedNationality)) guessedOriginCountry = "ua";
-    else if (mergedNationality && !/česk|czech/i.test(mergedNationality)) guessedOriginCountry = "eu";
-    setOriginCountry(guessedOriginCountry);
+    const newWarnings = [...results.flatMap((r) => r.warnings || [])];
     if (recognizedAddress) {
-      setOriginAddressParts(smartSplitAddress(recognizedAddress, guessedOriginCountry));
+      newWarnings.push(
+        `V dokumentu byl nalezen možný adresní text: „${recognizedAddress}" — zkontrolujte a případně zkopírujte ručně, automaticky se nevyplňuje.`
+      );
     }
-
-    setWarnings(results.flatMap((r) => r.warnings || []));
+    setWarnings(newWarnings);
     setRawText(results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"));
     setOcrMode(results[0]?.ocr_mode);
     setStep(3);
@@ -1108,29 +1112,12 @@ export default function SimpleDocFiller() {
                 </select>
               </div>
 
-              <div className="mb-3">
-                <AddressBuilder
-                  czParts={czAddressParts}
-                  setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
-                  originCountry={originCountry}
-                  setOriginCountry={(next) => {
-                    // Fields are shared between UA/EU modes (they don't
-                    // mean the same thing in each — UA has no "country"
-                    // field, EU has no "oblast" concept) — clear on
-                    // switch so old values from one mode don't silently
-                    // leak into the other.
-                    setOriginCountry(next);
-                    setOriginAddressParts({});
-                  }}
-                  originParts={originAddressParts}
-                  setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
-                />
-              </div>
+              {(() => {
+                const relevantFields = FIELD_DEFS.filter(([, , scope]) => isFieldRelevant(scope, templateId));
+                const personFields = relevantFields.filter(([key]) => PERSON_FIELD_KEYS.has(key));
+                const restFields = relevantFields.filter(([key]) => !PERSON_FIELD_KEYS.has(key));
 
-              <CompanyPicker fields={fields} setFields={setFields} />
-
-              <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
-                {FIELD_DEFS.filter(([, , scope]) => isFieldRelevant(scope, templateId)).map(([key, label]) => {
+                const renderField = ([key, label]) => {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
                   const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
@@ -1158,8 +1145,43 @@ export default function SimpleDocFiller() {
                       />
                     </label>
                   );
-                })}
-              </div>
+                };
+
+                return (
+                  <>
+                    {/* 1. Person's own data first */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-4">
+                      {personFields.map(renderField)}
+                    </div>
+
+                    {/* 2. Addresses next */}
+                    <div className="mb-3">
+                      <AddressBuilder
+                        czParts={czAddressParts}
+                        setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
+                        originCountry={originCountry}
+                        setOriginCountry={(next) => {
+                          // Fields are shared between UA/EU modes (they don't
+                          // mean the same thing in each — UA has no "country"
+                          // field, EU has no "oblast" concept) — clear on
+                          // switch so old values from one mode don't silently
+                          // leak into the other.
+                          setOriginCountry(next);
+                          setOriginAddressParts({});
+                        }}
+                        originParts={originAddressParts}
+                        setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
+                      />
+                    </div>
+
+                    {/* 3. Company + everything else (contract terms, payslip specifics) */}
+                    <CompanyPicker fields={fields} setFields={setFields} />
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[300px] overflow-y-auto pr-1">
+                      {restFields.map(renderField)}
+                    </div>
+                  </>
+                );
+              })()}
 
               <div className="mt-6 flex justify-between items-center">
                 <button
