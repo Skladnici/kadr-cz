@@ -58,7 +58,9 @@ const FIELD_DEFS = [
   ["first_name", "Jméno", "all"],
   ["last_name", "Příjmení", "all"],
   ["birth_date", "Datum narození", "all"],
-  ["nationality", "Národnost", "all"],
+  // "nationality" is still used internally (to guess CZ/UA/EU for the
+  // address auto-fill) but isn't shown as a form field or written into
+  // any contract — the real DPP template you sent has no such line.
   ["doc_number", "Číslo dokladu", "all"],
   // "address" is handled separately below via <AddressBuilder> — not a plain text field.
   ["position", "Pozice", ["dpp", "dpc", "hpp", "ukonceni"]],
@@ -406,21 +408,26 @@ function smartSplitAddress(raw, countryGuess) {
   const base = splitRecognizedAddress(raw);
   if (!base.street) return base;
 
-  const cityTable = countryGuess === "ua" ? UA_CITY_PSC : countryGuess === "cz" ? CZ_CITY_PSC : null;
-  if (!cityTable) return base;
-
+  // Search both city tables regardless of any pre-guessed country — a
+  // real city-name match is a strong enough signal on its own, and
+  // relying on a separately-guessed country (which can be stale from a
+  // previous document) was causing the split to silently skip.
   const lowerStreet = base.street.toLowerCase();
   let bestMatch = null;
   let bestKey = null;
-  for (const cityName of Object.keys(cityTable)) {
-    // City keys may be "Cyrillic / Latin" (Ukraine) or a plain Czech
-    // name — check every segment, since recognized address text is
-    // usually in Latin transliteration even for Ukrainian addresses.
-    for (const part of cityName.split(" / ").map((p) => p.trim())) {
-      if (part.length >= 3 && lowerStreet.includes(part.toLowerCase())) {
-        if (!bestMatch || part.length > bestMatch.length) {
-          bestMatch = part;
-          bestKey = cityName;
+  let bestTable = null;
+  for (const table of [CZ_CITY_PSC, UA_CITY_PSC]) {
+    for (const cityName of Object.keys(table)) {
+      // City keys may be "Cyrillic / Latin" (Ukraine) or a plain Czech
+      // name — check every segment, since recognized address text is
+      // usually in Latin transliteration even for Ukrainian addresses.
+      for (const part of cityName.split(" / ").map((p) => p.trim())) {
+        if (part.length >= 3 && lowerStreet.includes(part.toLowerCase())) {
+          if (!bestMatch || part.length > bestMatch.length) {
+            bestMatch = part;
+            bestKey = cityName;
+            bestTable = table;
+          }
         }
       }
     }
@@ -436,7 +443,7 @@ function smartSplitAddress(raw, countryGuess) {
   return {
     street,
     city: bestMatch,
-    psc: base.psc || cityTable[bestKey],
+    psc: base.psc || bestTable[bestKey],
   };
 }
 
