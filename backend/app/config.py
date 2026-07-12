@@ -15,12 +15,13 @@ class Settings:
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 
-    # HTTP Basic Auth guarding the shared /api/companies endpoints (this
-    # data is shared across every visitor and feeds directly into real
-    # employment contracts, so it must not be world-writable). Leave unset
-    # to keep those endpoints disabled with a clear 503 rather than open.
-    COMPANIES_USERNAME: str = os.getenv("COMPANIES_USERNAME", "")
-    COMPANIES_PASSWORD: str = os.getenv("COMPANIES_PASSWORD", "")
+    # HTTP Basic Auth guarding the entire site — every /api/* route except
+    # the unauthenticated "/" health check requires this. Anonymous
+    # visitors must not be able to upload documents, run OCR, generate
+    # contracts, or touch the shared companies list. Leave unset to keep
+    # those endpoints disabled with a clear 503 rather than open.
+    SITE_USERNAME: str = os.getenv("SITE_USERNAME", "")
+    SITE_PASSWORD: str = os.getenv("SITE_PASSWORD", "")
     # Engine priority:
     # "live"     = Google Vision — best accuracy, needs billing account
     # "ocrspace" = OCR.space free API — no card, no billing, processing

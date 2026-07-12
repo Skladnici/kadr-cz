@@ -42,26 +42,50 @@ app.add_middleware(
 )
 
 
+_site_security = HTTPBasic()
+
+
+def _require_site_auth(credentials: HTTPBasicCredentials = Depends(_site_security)):
+    """Gates every /api/* route behind a single shared username/password
+    (browser shows its native login prompt) — anonymous visitors must not
+    be able to upload documents, run OCR, generate contracts, or touch the
+    shared companies list."""
+    if not settings.SITE_USERNAME or not settings.SITE_PASSWORD:
+        raise HTTPException(
+            503,
+            "Přístup na server není nastaven — chybí SITE_USERNAME / "
+            "SITE_PASSWORD na serveru.",
+        )
+    valid_username = secrets.compare_digest(credentials.username, settings.SITE_USERNAME)
+    valid_password = secrets.compare_digest(credentials.password, settings.SITE_PASSWORD)
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            401,
+            "Neplatné přihlašovací údaje.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
 @app.get("/")
-def root():
+def root(response: Response):
+    # Deliberately the only unauthenticated route — the frontend calls this
+    # once, first, on every real page load (see SimpleDocFiller's initial
+    # useEffect) purely to receive Clear-Site-Data below, before it makes
+    # any authenticated request. That's what forces the browser to ask for
+    # the site password again on every fresh load/reopen, while nothing
+    # else during the visit re-prompts (nothing else sends this header).
+    response.headers["Clear-Site-Data"] = '"credentials"'
     return {"app": settings.APP_NAME, "status": "running", "ocr_mode": settings.OCR_MODE}
 
 
-@app.get("/api/blanks")
-def get_blanks(response: Response):
+@app.get("/api/blanks", dependencies=[Depends(_require_site_auth)])
+def get_blanks():
     """Returns the list of available fillable Word blanks (auto-discovered
     from app/templates/ — add a new .docx there to add a new blank)."""
-    # This is the first request the frontend makes on every real page
-    # load/reload (see SimpleDocFiller's initial useEffect), so it's a
-    # reliable hook to tell the browser to drop any HTTP Basic Auth
-    # credentials it cached for this origin from /api/companies. Without
-    # this, a browser that cached the password once would never ask again,
-    # even across page reloads or reopening the site in a new tab.
-    response.headers["Clear-Site-Data"] = '"credentials"'
     return list_templates()
 
 
-@app.post("/api/recognize")
+@app.post("/api/recognize", dependencies=[Depends(_require_site_auth)])
 async def recognize(file: UploadFile = File(...)):
     """Upload a document photo/scan/PDF -> get back AI-extracted fields."""
     ext = Path(file.filename).suffix.lower()
@@ -90,7 +114,7 @@ class RecognizeTextRequest(BaseModel):
     text: str
 
 
-@app.post("/api/recognize-text")
+@app.post("/api/recognize-text", dependencies=[Depends(_require_site_auth)])
 async def recognize_text(payload: RecognizeTextRequest):
     """Runs the same field-extraction rules used for photos, but on text
     the person pastes in directly — useful when they already have the
@@ -145,7 +169,7 @@ class FillRequest(BaseModel):
     net_salary: Optional[str] = None
 
 
-@app.post("/api/fill")
+@app.post("/api/fill", dependencies=[Depends(_require_site_auth)])
 def fill(payload: FillRequest):
     """Fills the chosen blank with the given fields and returns a
     download token; nothing is saved to a database."""
@@ -164,7 +188,7 @@ def fill(payload: FillRequest):
     }
 
 
-@app.get("/api/download/{filename}")
+@app.get("/api/download/{filename}", dependencies=[Depends(_require_site_auth)])
 def download(filename: str, background_tasks: BackgroundTasks):
     """Serves a generated file by its filename token. Files live only in
     the generated/ folder and aren't tracked anywhere else."""
@@ -186,10 +210,8 @@ def download(filename: str, background_tasks: BackgroundTasks):
     # server is generating fresh content on every request.
     headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
 
-    # This endpoint has no auth — the unguessable token in the filename
-    # (see blank_service.fill_blank) is the only thing protecting the PII
-    # inside. Deleting the file right after it's served makes each token
-    # single-use, shrinking the window an attacker would have to guess it.
+    # Deleting the file right after it's served makes each token single-use
+    # in addition to the site-wide login now required to reach this route.
     background_tasks.add_task(path.unlink, missing_ok=True)
 
     return FileResponse(
@@ -229,31 +251,7 @@ def _require_supabase():
         )
 
 
-_companies_security = HTTPBasic()
-
-
-def _require_companies_auth(credentials: HTTPBasicCredentials = Depends(_companies_security)):
-    """Gates every /api/companies* route behind a shared username/password
-    (browser shows its native login prompt) — this data is shared across
-    all visitors and feeds directly into real employment contracts, so it
-    must not be writable/readable by anonymous requests."""
-    if not settings.COMPANIES_USERNAME or not settings.COMPANIES_PASSWORD:
-        raise HTTPException(
-            503,
-            "Přihlašovací údaje pro sdílené firmy nejsou nastavené — chybí "
-            "COMPANIES_USERNAME / COMPANIES_PASSWORD na serveru.",
-        )
-    valid_username = secrets.compare_digest(credentials.username, settings.COMPANIES_USERNAME)
-    valid_password = secrets.compare_digest(credentials.password, settings.COMPANIES_PASSWORD)
-    if not (valid_username and valid_password):
-        raise HTTPException(
-            401,
-            "Neplatné přihlašovací údaje.",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-
-
-@app.get("/api/companies", dependencies=[Depends(_require_companies_auth)])
+@app.get("/api/companies", dependencies=[Depends(_require_site_auth)])
 async def list_companies():
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -267,7 +265,7 @@ async def list_companies():
     return resp.json()
 
 
-@app.post("/api/companies", status_code=201, dependencies=[Depends(_require_companies_auth)])
+@app.post("/api/companies", status_code=201, dependencies=[Depends(_require_site_auth)])
 async def create_company(payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -282,7 +280,7 @@ async def create_company(payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.put("/api/companies/{company_id}", dependencies=[Depends(_require_companies_auth)])
+@app.put("/api/companies/{company_id}", dependencies=[Depends(_require_site_auth)])
 async def update_company(company_id: str, payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -298,7 +296,7 @@ async def update_company(company_id: str, payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.delete("/api/companies/{company_id}", status_code=204, dependencies=[Depends(_require_companies_auth)])
+@app.delete("/api/companies/{company_id}", status_code=204, dependencies=[Depends(_require_site_auth)])
 async def delete_company(company_id: str):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:

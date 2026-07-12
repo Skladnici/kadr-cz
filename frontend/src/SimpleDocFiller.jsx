@@ -21,6 +21,11 @@ function uploadFileViaXHR(url, file, timeoutMs = 90000) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.timeout = timeoutMs;
+    // Every API route requires the site-wide login — this is the XHR
+    // equivalent of fetch's { credentials: "include" }, needed so the
+    // browser attaches (and, on a 401, prompts for) the Basic Auth
+    // credentials cross-origin.
+    xhr.withCredentials = true;
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
@@ -707,12 +712,21 @@ export default function SimpleDocFiller() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/blanks`)
-      .then((r) => r.json())
-      .then((data) => {
-        setBlanks(data);
-        if (data.length > 0) setTemplateId(data[0].id);
-      })
+    // GET / has no auth and, on the backend, sends Clear-Site-Data to drop
+    // any HTTP Basic Auth credentials the browser cached for this origin
+    // from an earlier visit — done first, and awaited, so the very next
+    // request (blanks, below) reliably triggers a *fresh* login prompt on
+    // every real page load rather than silently reusing stale credentials.
+    fetch(`${API_BASE}/`)
+      .catch(() => {})
+      .then(() =>
+        fetch(`${API_BASE}/api/blanks`, { credentials: "include" })
+          .then((r) => r.json())
+          .then((data) => {
+            setBlanks(data);
+            if (data.length > 0) setTemplateId(data[0].id);
+          })
+      )
       .catch(() => setError(`Nepodařilo se načíst seznam formulářů. Zkontrolujte, zda backend běží na ${API_BASE}.`));
   }, []);
 
@@ -811,6 +825,7 @@ export default function SimpleDocFiller() {
         const res = await fetch(`${API_BASE}/api/recognize-text`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ text: pastedText }),
         });
         if (!res.ok) throw new Error("server error");
@@ -851,6 +866,7 @@ export default function SimpleDocFiller() {
       const res = await fetch(`${API_BASE}/api/fill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           template_id: templateId,
           ...fields,
