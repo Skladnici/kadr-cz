@@ -543,7 +543,19 @@ function CompanyPicker({ fields, setFields }) {
 
   const handleSelect = (id) => {
     setSelectedId(id);
-    if (!id) return;
+    if (!id) {
+      // "— Vybrat uloženou firmu —" chosen — clear the fields rather
+      // than leaving whatever the previously selected company filled in.
+      setFields((f) => ({
+        ...f,
+        company_name: "",
+        company_ico: "",
+        company_dic: "",
+        company_address: "",
+        company_representative: "",
+      }));
+      return;
+    }
     const c = companies.find((c) => c.id === id);
     if (c) applyCompany(c);
   };
