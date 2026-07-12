@@ -50,38 +50,51 @@ const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   : "http://localhost:8000";
 
 // Fields shown for review/editing after recognition, and sent to /api/fill.
+// Third item marks which templates this field is relevant for — "all"
+// shows it everywhere, otherwise a list of template-id prefixes. This
+// keeps the form from showing e.g. "Důvod ukončení" while filling out a
+// DPP, or "Mzda" while filling out a termination notice.
 const FIELD_DEFS = [
-  ["first_name", "Jméno"],
-  ["last_name", "Příjmení"],
-  ["birth_date", "Datum narození"],
-  ["nationality", "Národnost"],
-  ["doc_number", "Číslo dokladu"],
+  ["first_name", "Jméno", "all"],
+  ["last_name", "Příjmení", "all"],
+  ["birth_date", "Datum narození", "all"],
+  ["nationality", "Národnost", "all"],
+  ["doc_number", "Číslo dokladu", "all"],
   // "address" is handled separately below via <AddressBuilder> — not a plain text field.
-  ["position", "Pozice"],
-  ["workplace", "Místo výkonu práce"],
-  ["salary", "Mzda / odměna"],
-  ["hours_per_week", "Hodin týdně"],
-  ["start_date", "Datum nástupu"],
-  ["end_date", "Datum ukončení"],
-  ["bank_account", "Bankovní účet"],
-  ["company_name", "Firma (zaměstnavatel)"],
-  ["company_ico", "IČO"],
-  ["company_dic", "DIČ"],
-  ["company_address", "Adresa firmy"],
-  ["company_representative", "Zástupce firmy"],
-  ["visa_number", "Série a číslo víza (jen pro cizince)"],
-  ["visa_validity", "Platnost víza do (jen pro cizince)"],
-  ["residence_type", "Druh pobytu na území ČR (jen pro cizince)"],
-  ["signing_place", "Místo podpisu (výchozí: Praze)"],
-  ["termination_reason", "Důvod ukončení (jen pro ukončovák)"],
-  ["last_working_day", "Poslední pracovní den (jen pro ukončovák)"],
-  ["pay_period", "Zúčtovací období (jen pro výplatní pásku)"],
-  ["gross_salary", "Hrubá mzda (jen pro výplatní pásku)"],
-  ["health_insurance", "Zdravotní pojištění (jen pro výplatní pásku)"],
-  ["social_insurance", "Sociální pojištění (jen pro výplatní pásku)"],
-  ["income_tax", "Daň ze mzdy (jen pro výplatní pásku)"],
-  ["net_salary", "Čistá mzda (jen pro výplatní pásku)"],
+  ["position", "Pozice", ["dpp", "dpc", "hpp", "ukonceni"]],
+  ["workplace", "Místo výkonu práce", ["dpp", "dpc", "hpp"]],
+  ["salary", "Mzda / odměna", ["dpp", "dpc", "hpp"]],
+  ["hours_per_week", "Hodin týdně", ["dpp", "dpc", "hpp"]],
+  ["start_date", "Datum nástupu", ["dpp", "dpc", "hpp"]],
+  ["end_date", "Datum ukončení", ["dpp", "dpc", "hpp"]],
+  ["bank_account", "Bankovní účet", "all"],
+  ["company_name", "Firma (zaměstnavatel)", "all"],
+  ["company_ico", "IČO", "all"],
+  ["company_dic", "DIČ", "all"],
+  ["company_address", "Adresa firmy", "all"],
+  ["company_representative", "Zástupce firmy", "all"],
+  ["visa_number", "Série a číslo víza (jen pro cizince)", "all"],
+  ["visa_validity", "Platnost víza do (jen pro cizince)", "all"],
+  ["residence_type", "Druh pobytu na území ČR (jen pro cizince)", "all"],
+  ["signing_place", "Místo podpisu (výchozí: Praze)", "all"],
+  ["termination_reason", "Důvod ukončení", ["ukonceni"]],
+  ["last_working_day", "Poslední pracovní den", ["ukonceni"]],
+  ["pay_period", "Zúčtovací období", ["vyplatni"]],
+  ["gross_salary", "Hrubá mzda", ["vyplatni"]],
+  ["health_insurance", "Zdravotní pojištění", ["vyplatni"]],
+  ["social_insurance", "Sociální pojištění", ["vyplatni"]],
+  ["income_tax", "Daň ze mzdy", ["vyplatni"]],
+  ["net_salary", "Čistá mzda", ["vyplatni"]],
 ];
+
+// Matches a field's allowed-template list against the currently chosen
+// template id (e.g. "dpp_template" starts with "dpp") — "all" always
+// passes, and if templateId isn't loaded yet everything shows so the
+// form isn't empty during the brief initial load.
+function isFieldRelevant(scope, templateId) {
+  if (scope === "all" || !templateId) return true;
+  return scope.some((prefix) => templateId.startsWith(prefix));
+}
 
 // Common Czech cities with their postal code (PSČ) — covers the large
 // majority of real addresses without needing any external lookup
@@ -1006,21 +1019,21 @@ export default function SimpleDocFiller() {
                   onChange={(e) => {
                     const nextId = e.target.value;
                     setTemplateId(nextId);
-                    // Auto-fill the salary default for this contract type
-                    // — but only if the field is empty or still holds
-                    // another template's *default* value, never if the
-                    // person already typed their own amount.
+                    // Auto-fill (or clear) the salary default for this
+                    // contract type — runs every time, even when the new
+                    // template has no default (e.g. "ukončení", "výplatní
+                    // páska"), so a stale amount from a previous DPP/HPP
+                    // selection doesn't linger. Never touches a value the
+                    // person typed themselves.
                     const knownDefaults = Object.values(DEFAULT_SALARY_BY_TEMPLATE);
-                    const nextDefault = DEFAULT_SALARY_BY_TEMPLATE[nextId];
-                    if (nextDefault) {
-                      setFields((f) => {
-                        const current = (f.salary || "").trim();
-                        if (!current || knownDefaults.includes(current)) {
-                          return { ...f, salary: nextDefault };
-                        }
-                        return f;
-                      });
-                    }
+                    const nextDefault = DEFAULT_SALARY_BY_TEMPLATE[nextId] || "";
+                    setFields((f) => {
+                      const current = (f.salary || "").trim();
+                      if (!current || knownDefaults.includes(current)) {
+                        return { ...f, salary: nextDefault };
+                      }
+                      return f;
+                    });
                   }}
                   className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
@@ -1044,7 +1057,7 @@ export default function SimpleDocFiller() {
               <CompanyPicker fields={fields} setFields={setFields} />
 
               <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[360px] overflow-y-auto pr-1">
-                {FIELD_DEFS.map(([key, label]) => {
+                {FIELD_DEFS.filter(([, , scope]) => isFieldRelevant(scope, templateId)).map(([key, label]) => {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
                   const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
