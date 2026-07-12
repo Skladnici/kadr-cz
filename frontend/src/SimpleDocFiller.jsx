@@ -1055,7 +1055,15 @@ export default function SimpleDocFiller() {
                   czParts={czAddressParts}
                   setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
                   originCountry={originCountry}
-                  setOriginCountry={setOriginCountry}
+                  setOriginCountry={(next) => {
+                    // Fields are shared between UA/EU modes (they don't
+                    // mean the same thing in each — UA has no "country"
+                    // field, EU has no "oblast" concept) — clear on
+                    // switch so old values from one mode don't silently
+                    // leak into the other.
+                    setOriginCountry(next);
+                    setOriginAddressParts({});
+                  }}
                   originParts={originAddressParts}
                   setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
                 />
