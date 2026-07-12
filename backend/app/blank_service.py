@@ -12,6 +12,7 @@ present, otherwise the filename is used.
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+import re
 import uuid
 
 from docx import Document as DocxDocument
@@ -57,12 +58,26 @@ def _fmt_date(d) -> str:
     return d.strftime("%d.%m.%Y")
 
 
+def _safe_filename_part(value: str, fallback: str = "") -> str:
+    """Strips anything but letters/digits/underscore/hyphen so a value can
+    never inject path separators or traversal sequences into a filename."""
+    cleaned = re.sub(r"[^\w-]", "_", value or "", flags=re.UNICODE).strip("_")
+    return cleaned or fallback
+
+
 def fill_blank(template_id: str, fields: dict) -> Path:
     """
     Fills the given template with the provided field values and returns
     the output .docx path. `fields` keys should match the template's
     {{PLACEHOLDER}} names (case-insensitive match on common aliases below).
     """
+    # template_id must be one of the ids we actually discovered on disk —
+    # never trust the client's raw string when building a filesystem path
+    # (e.g. an absolute path would otherwise override TEMPLATES_DIR entirely).
+    valid_ids = {t["id"] for t in list_templates()}
+    if template_id not in valid_ids:
+        raise FileNotFoundError(f"Šablona '{template_id}' nenalezena.")
+
     template_path = settings.TEMPLATES_DIR / f"{template_id}.docx"
     if not template_path.exists():
         raise FileNotFoundError(f"Šablona '{template_id}' nenalezena.")
@@ -113,11 +128,17 @@ def fill_blank(template_id: str, fields: dict) -> Path:
     }
     doc.render(context)
 
-    safe_last = (fields.get("last_name") or "dokument").replace(" ", "_")
-    safe_first = (fields.get("first_name") or "").replace(" ", "_")
+    safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
+    safe_first = _safe_filename_part(fields.get("first_name"))
     unique = uuid.uuid4().hex[:6]
     out_name = f"{template_id}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
-    out_path = settings.GENERATED_DIR / out_name
+    out_path = (settings.GENERATED_DIR / out_name).resolve()
+
+    # Defense in depth: even though every input above is now sanitized,
+    # refuse to write anywhere outside GENERATED_DIR.
+    if settings.GENERATED_DIR.resolve() not in out_path.parents:
+        raise ValueError("Neplatná cesta k vygenerovanému souboru.")
+
     doc.save(str(out_path))
     return out_path
 
