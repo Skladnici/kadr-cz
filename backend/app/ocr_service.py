@@ -735,7 +735,7 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
         }
         files = {"file": (filename, image_bytes, "image/jpeg")}
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(url, data=data, files=files)
                 resp.raise_for_status()
                 result = resp.json()
