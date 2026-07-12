@@ -778,7 +778,7 @@ export default function SimpleDocFiller() {
         const formData = new FormData();
         formData.append("file", compressed);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s max per file
+        const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s max per file
         const res = await fetch(`${API_BASE}/api/recognize`, {
           method: "POST",
           body: formData,
@@ -800,7 +800,7 @@ export default function SimpleDocFiller() {
       applyRecognizedResults(results);
     } catch (e) {
       if (e.name === "AbortError") {
-        setError("Rozpoznávání trvá příliš dlouho (přes 60 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
+        setError("Rozpoznávání trvá příliš dlouho (přes 90 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
       } else {
         setError(`Nepodařilo se rozpoznat dokument. Zkontrolujte, zda backend běží na ${API_BASE}.`);
       }
