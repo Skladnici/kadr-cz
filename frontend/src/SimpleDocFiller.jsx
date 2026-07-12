@@ -10,6 +10,36 @@ import {
 // backend already compresses/resizes images reliably and quickly before
 // OCR, so sending the original file directly is both simpler and safer.
 
+// Uploads a file via XMLHttpRequest instead of fetch(). Some browser
+// extensions (crypto wallets in particular) monkey-patch window.fetch
+// globally to inject their own behavior on every page — this can cause
+// fetch() calls to silently hang forever on unrelated sites. XHR is a
+// different, older browser API that such extensions typically don't
+// touch, so it's a reliable way to sidestep that interference.
+function uploadFileViaXHR(url, file, timeoutMs = 90000) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.timeout = timeoutMs;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (e) {
+          reject(new Error("invalid JSON response"));
+        }
+      } else {
+        reject(new Error(`server error ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("network error"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
+
 const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   ? window.__HR_API_BASE__
   : "http://localhost:8000";
@@ -740,19 +770,9 @@ export default function SimpleDocFiller() {
       const results = [];
       for (const file of pendingFiles) {
         console.log("[upload] sending", file.name, file.size, "bytes to", `${API_BASE}/api/recognize`);
-        const formData = new FormData();
-        formData.append("file", file);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s max per file
-        const res = await fetch(`${API_BASE}/api/recognize`, {
-          method: "POST",
-          body: formData,
-          signal: controller.signal,
-        });
-        console.log("[upload] response status", res.status);
-        clearTimeout(timeoutId);
-        if (!res.ok) throw new Error("server error");
-        results.push(await res.json());
+        const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, file);
+        console.log("[upload] got response", data);
+        results.push(data);
       }
       if (pastedText.trim()) {
         const res = await fetch(`${API_BASE}/api/recognize-text`, {
@@ -765,10 +785,10 @@ export default function SimpleDocFiller() {
       }
       applyRecognizedResults(results);
     } catch (e) {
-      if (e.name === "AbortError") {
+      if (e.message === "timeout") {
         setError("Rozpoznávání trvá příliš dlouho (přes 90 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
       } else {
-        setError(`Nepodařilo se rozpoznat dokument. Zkontrolujte, zda backend běží na ${API_BASE}.`);
+        setError(`Nepodařilo se rozpoznat dokument (${e.message}). Zkontrolujte, zda backend běží na ${API_BASE}.`);
       }
       setStep(1);
     }
