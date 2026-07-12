@@ -10,7 +10,7 @@ import {
 // compression that happens afterwards. HEIC files are passed through
 // unchanged since most browsers can't decode HEIC via <canvas>.
 function compressImageInBrowser(file, maxDimension = 1800, quality = 0.82) {
-  return new Promise((resolve) => {
+  const compress = new Promise((resolve) => {
     const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
     if (isHeic || !file.type.startsWith("image/")) {
       resolve(file); // let the backend handle HEIC/unsupported types as-is
@@ -43,6 +43,13 @@ function compressImageInBrowser(file, maxDimension = 1800, quality = 0.82) {
     img.onerror = () => resolve(file); // fall back to original on any decode issue
     img.src = url;
   });
+
+  // Safety net: if browser-side compression somehow hangs (no onload AND
+  // no onerror firing — seen on some odd image files/browsers), never
+  // block the upload forever. Fall back to the original, uncompressed
+  // file after 10s so the request still goes out.
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(file), 10000));
+  return Promise.race([compress, timeout]);
 }
 
 const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
@@ -774,7 +781,9 @@ export default function SimpleDocFiller() {
     try {
       const results = [];
       for (const file of pendingFiles) {
+        console.log("[upload] compressing", file.name, file.size, "bytes");
         const compressed = await compressImageInBrowser(file);
+        console.log("[upload] compressed, sending", compressed.size, "bytes to", `${API_BASE}/api/recognize`);
         const formData = new FormData();
         formData.append("file", compressed);
         const controller = new AbortController();
@@ -784,6 +793,7 @@ export default function SimpleDocFiller() {
           body: formData,
           signal: controller.signal,
         });
+        console.log("[upload] response status", res.status);
         clearTimeout(timeoutId);
         if (!res.ok) throw new Error("server error");
         results.push(await res.json());
