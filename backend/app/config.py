@@ -12,6 +12,8 @@ class Settings:
 
     GOOGLE_VISION_API_KEY: str = os.getenv("GOOGLE_VISION_API_KEY", "")
     OCR_SPACE_API_KEY: str = os.getenv("OCR_SPACE_API_KEY", "")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     # Engine priority:
     # "live"     = Google Vision — best accuracy, needs billing account
     # "ocrspace" = OCR.space free API — no card, no billing, processing
