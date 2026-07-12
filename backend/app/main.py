@@ -7,13 +7,15 @@ no database. Run:
 
     uvicorn app.main:app --reload --port 8000
 """
+import secrets
 import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
 
@@ -202,7 +204,31 @@ def _require_supabase():
         )
 
 
-@app.get("/api/companies")
+_companies_security = HTTPBasic()
+
+
+def _require_companies_auth(credentials: HTTPBasicCredentials = Depends(_companies_security)):
+    """Gates every /api/companies* route behind a shared username/password
+    (browser shows its native login prompt) — this data is shared across
+    all visitors and feeds directly into real employment contracts, so it
+    must not be writable/readable by anonymous requests."""
+    if not settings.COMPANIES_USERNAME or not settings.COMPANIES_PASSWORD:
+        raise HTTPException(
+            503,
+            "Přihlašovací údaje pro sdílené firmy nejsou nastavené — chybí "
+            "COMPANIES_USERNAME / COMPANIES_PASSWORD na serveru.",
+        )
+    valid_username = secrets.compare_digest(credentials.username, settings.COMPANIES_USERNAME)
+    valid_password = secrets.compare_digest(credentials.password, settings.COMPANIES_PASSWORD)
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            401,
+            "Neplatné přihlašovací údaje.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+@app.get("/api/companies", dependencies=[Depends(_require_companies_auth)])
 async def list_companies():
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -216,7 +242,7 @@ async def list_companies():
     return resp.json()
 
 
-@app.post("/api/companies", status_code=201)
+@app.post("/api/companies", status_code=201, dependencies=[Depends(_require_companies_auth)])
 async def create_company(payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -231,7 +257,7 @@ async def create_company(payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.put("/api/companies/{company_id}")
+@app.put("/api/companies/{company_id}", dependencies=[Depends(_require_companies_auth)])
 async def update_company(company_id: str, payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -247,7 +273,7 @@ async def update_company(company_id: str, payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.delete("/api/companies/{company_id}", status_code=204)
+@app.delete("/api/companies/{company_id}", status_code=204, dependencies=[Depends(_require_companies_auth)])
 async def delete_company(company_id: str):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:

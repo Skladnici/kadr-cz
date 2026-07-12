@@ -519,7 +519,7 @@ function CompanyPicker({ fields, setFields }) {
 
   const loadCompanies = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/companies`);
+      const res = await fetch(`${API_BASE}/api/companies`, { credentials: "include" });
       if (!res.ok) throw new Error("failed");
       setCompanies(await res.json());
       setError(null);
@@ -577,6 +577,7 @@ function CompanyPicker({ fields, setFields }) {
         {
           method: selectedId ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify(profile),
         }
       );
@@ -596,7 +597,7 @@ function CompanyPicker({ fields, setFields }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("failed");
       setSelectedId("");
       await loadCompanies();
