@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -150,7 +150,7 @@ def fill(payload: FillRequest):
 
 
 @app.get("/api/download/{filename}")
-def download(filename: str):
+def download(filename: str, background_tasks: BackgroundTasks):
     """Serves a generated file by its filename token. Files live only in
     the generated/ folder and aren't tracked anywhere else."""
     # Basic path-traversal guard — only allow plain filenames we generated.
@@ -170,7 +170,17 @@ def download(filename: str):
     # stale cached copy after the template was updated, even though the
     # server is generating fresh content on every request.
     headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
-    return FileResponse(path, filename=filename, media_type=media_type, headers=headers)
+
+    # This endpoint has no auth — the unguessable token in the filename
+    # (see blank_service.fill_blank) is the only thing protecting the PII
+    # inside. Deleting the file right after it's served makes each token
+    # single-use, shrinking the window an attacker would have to guess it.
+    background_tasks.add_task(path.unlink, missing_ok=True)
+
+    return FileResponse(
+        path, filename=filename, media_type=media_type, headers=headers,
+        background=background_tasks,
+    )
 
 
 # ---------------------------------------------------------------- Companies

@@ -130,7 +130,12 @@ def fill_blank(template_id: str, fields: dict) -> Path:
 
     safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
     safe_first = _safe_filename_part(fields.get("first_name"))
-    unique = uuid.uuid4().hex[:6]
+    # Full 128-bit token — this is the *only* thing standing between an
+    # anonymous request and a document full of PII (birth date, ID number,
+    # address, salary, bank account), since /api/download has no auth.
+    # A short 6-hex-char suffix (24 bits, ~16.7M values) was brute-forceable;
+    # a full UUID4 is not.
+    unique = uuid.uuid4().hex
     out_name = f"{template_id}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
     out_path = (settings.GENERATED_DIR / out_name).resolve()
 
