@@ -14,6 +14,13 @@ class Settings:
     OCR_SPACE_API_KEY: str = os.getenv("OCR_SPACE_API_KEY", "")
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+
+    # HTTP Basic Auth guarding the shared /api/companies endpoints (this
+    # data is shared across every visitor and feeds directly into real
+    # employment contracts, so it must not be world-writable). Leave unset
+    # to keep those endpoints disabled with a clear 503 rather than open.
+    COMPANIES_USERNAME: str = os.getenv("COMPANIES_USERNAME", "")
+    COMPANIES_PASSWORD: str = os.getenv("COMPANIES_PASSWORD", "")
     # Engine priority:
     # "live"     = Google Vision — best accuracy, needs billing account
     # "ocrspace" = OCR.space free API — no card, no billing, processing
@@ -38,7 +45,18 @@ class Settings:
     MAX_UPLOAD_SIZE_MB: int = 20
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".pdf"}
 
-    CORS_ORIGINS: list = os.getenv("CORS_ORIGINS", "*").split(",")
+    # No wildcard default: combined with allow_credentials=True (needed for
+    # HTTP Basic Auth on /api/companies), a "*" origin lets any website on
+    # the internet make credentialed cross-origin requests to this API from
+    # a visitor's browser. Production deployments MUST set CORS_ORIGINS to
+    # the real frontend origin(s), e.g. "https://kadr-cz.example.com". With
+    # nothing set, only the local Vite dev server is allowed.
+    _raw_cors_origins = os.getenv("CORS_ORIGINS", "")
+    CORS_ORIGINS: list = (
+        [o.strip() for o in _raw_cors_origins.split(",") if o.strip()]
+        if _raw_cors_origins.strip()
+        else ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
 
 
 settings = Settings()

@@ -7,13 +7,15 @@ no database. Run:
 
     uvicorn app.main:app --reload --port 8000
 """
+import secrets
 import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
 
@@ -23,10 +25,18 @@ from app.blank_service import list_templates, fill_blank, convert_to_pdf
 
 app = FastAPI(title=settings.APP_NAME)
 
+# Defense in depth: allow_credentials=True is required so the browser will
+# send the Basic Auth header cross-origin for /api/companies. Never combine
+# that with a wildcard origin — Starlette would reflect the caller's Origin
+# header instead of literally sending "*", which lets any website read
+# credentialed responses from a visitor's browser. If CORS_ORIGINS somehow
+# still contains "*", force credentials off rather than allow that combo.
+_cors_allow_credentials = "*" not in settings.CORS_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -148,7 +158,7 @@ def fill(payload: FillRequest):
 
 
 @app.get("/api/download/{filename}")
-def download(filename: str):
+def download(filename: str, background_tasks: BackgroundTasks):
     """Serves a generated file by its filename token. Files live only in
     the generated/ folder and aren't tracked anywhere else."""
     # Basic path-traversal guard — only allow plain filenames we generated.
@@ -168,7 +178,17 @@ def download(filename: str):
     # stale cached copy after the template was updated, even though the
     # server is generating fresh content on every request.
     headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
-    return FileResponse(path, filename=filename, media_type=media_type, headers=headers)
+
+    # This endpoint has no auth — the unguessable token in the filename
+    # (see blank_service.fill_blank) is the only thing protecting the PII
+    # inside. Deleting the file right after it's served makes each token
+    # single-use, shrinking the window an attacker would have to guess it.
+    background_tasks.add_task(path.unlink, missing_ok=True)
+
+    return FileResponse(
+        path, filename=filename, media_type=media_type, headers=headers,
+        background=background_tasks,
+    )
 
 
 # ---------------------------------------------------------------- Companies
@@ -202,7 +222,31 @@ def _require_supabase():
         )
 
 
-@app.get("/api/companies")
+_companies_security = HTTPBasic()
+
+
+def _require_companies_auth(credentials: HTTPBasicCredentials = Depends(_companies_security)):
+    """Gates every /api/companies* route behind a shared username/password
+    (browser shows its native login prompt) — this data is shared across
+    all visitors and feeds directly into real employment contracts, so it
+    must not be writable/readable by anonymous requests."""
+    if not settings.COMPANIES_USERNAME or not settings.COMPANIES_PASSWORD:
+        raise HTTPException(
+            503,
+            "Přihlašovací údaje pro sdílené firmy nejsou nastavené — chybí "
+            "COMPANIES_USERNAME / COMPANIES_PASSWORD na serveru.",
+        )
+    valid_username = secrets.compare_digest(credentials.username, settings.COMPANIES_USERNAME)
+    valid_password = secrets.compare_digest(credentials.password, settings.COMPANIES_PASSWORD)
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            401,
+            "Neplatné přihlašovací údaje.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+@app.get("/api/companies", dependencies=[Depends(_require_companies_auth)])
 async def list_companies():
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -216,7 +260,7 @@ async def list_companies():
     return resp.json()
 
 
-@app.post("/api/companies", status_code=201)
+@app.post("/api/companies", status_code=201, dependencies=[Depends(_require_companies_auth)])
 async def create_company(payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -231,7 +275,7 @@ async def create_company(payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.put("/api/companies/{company_id}")
+@app.put("/api/companies/{company_id}", dependencies=[Depends(_require_companies_auth)])
 async def update_company(company_id: str, payload: CompanyIn):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
@@ -247,7 +291,7 @@ async def update_company(company_id: str, payload: CompanyIn):
     return result[0] if isinstance(result, list) else result
 
 
-@app.delete("/api/companies/{company_id}", status_code=204)
+@app.delete("/api/companies/{company_id}", status_code=204, dependencies=[Depends(_require_companies_auth)])
 async def delete_company(company_id: str):
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
