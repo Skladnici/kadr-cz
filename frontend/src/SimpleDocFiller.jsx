@@ -511,17 +511,33 @@ function smartSplitAddress(raw, countryGuess) {
 // Stored server-side (Supabase) so the same list shows up for everyone
 // using the site, on any computer — not just this browser.
 
+// CompanyPicker only mounts while step 3 ("Vyplnit") is showing, and gets
+// unmounted/remounted every time the user goes back to step 1 and works on
+// another document. Without this cache, each remount would re-fetch (and,
+// since /api/companies needs a password, potentially re-prompt for) data
+// that hasn't changed — even though the user never left the "companies"
+// section conceptually, just moved to a different document in the same
+// visit. Module-level so it survives remounts but resets on a real page
+// reload (see also Clear-Site-Data on the backend for the auth prompt).
+let companiesCache = null;
+
 function CompanyPicker({ fields, setFields }) {
-  const [companies, setCompanies] = useState([]);
+  const [companies, setCompanies] = useState(companiesCache || []);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const loadCompanies = useCallback(async () => {
+  const loadCompanies = useCallback(async (force = false) => {
+    if (!force && companiesCache) {
+      setCompanies(companiesCache);
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/companies`, { credentials: "include" });
       if (!res.ok) throw new Error("failed");
-      setCompanies(await res.json());
+      const data = await res.json();
+      companiesCache = data;
+      setCompanies(data);
       setError(null);
     } catch {
       setError("Sdílené firmy se nepodařilo načíst ze serveru.");
@@ -583,7 +599,7 @@ function CompanyPicker({ fields, setFields }) {
       );
       if (!res.ok) throw new Error("failed");
       const saved = await res.json();
-      await loadCompanies();
+      await loadCompanies(true); // force: the list just changed server-side
       setSelectedId(saved.id);
     } catch {
       setError("Uložení se nezdařilo — zkontrolujte, zda je server dostupný.");
@@ -600,7 +616,7 @@ function CompanyPicker({ fields, setFields }) {
       const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("failed");
       setSelectedId("");
-      await loadCompanies();
+      await loadCompanies(true); // force: the list just changed server-side
     } catch {
       setError("Smazání se nezdařilo — zkontrolujte, zda je server dostupný.");
     } finally {

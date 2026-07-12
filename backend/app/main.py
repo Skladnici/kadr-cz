@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Response, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -48,9 +48,16 @@ def root():
 
 
 @app.get("/api/blanks")
-def get_blanks():
+def get_blanks(response: Response):
     """Returns the list of available fillable Word blanks (auto-discovered
     from app/templates/ — add a new .docx there to add a new blank)."""
+    # This is the first request the frontend makes on every real page
+    # load/reload (see SimpleDocFiller's initial useEffect), so it's a
+    # reliable hook to tell the browser to drop any HTTP Basic Auth
+    # credentials it cached for this origin from /api/companies. Without
+    # this, a browser that cached the password once would never ask again,
+    # even across page reloads or reopening the site in a new tab.
+    response.headers["Clear-Site-Data"] = '"credentials"'
     return list_templates()
 
 
