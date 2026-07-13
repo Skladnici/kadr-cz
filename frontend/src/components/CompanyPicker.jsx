@@ -142,14 +142,14 @@ function CompanyPicker({ company, setFields, apiFetch }) {
   };
 
   return (
-    <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40 mb-3">
+    <div className="rounded-xl border border-slate-200 p-3 bg-slate-50/40 mb-4">
       <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Sdílené firmy</div>
       {error && <p className="mb-2 text-[11.5px] text-red-600">{error}</p>}
       <div className="flex gap-2 items-center flex-wrap">
         <select
           value={selectedId}
           onChange={(e) => handleSelect(e.target.value)}
-          className="flex-1 min-w-[160px] rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+          className="flex-1 min-w-[160px] rounded-xl border border-slate-200 px-2.5 py-1.5 text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
         >
           <option value="">— Vybrat uloženou firmu —</option>
           {companies.map((c) => (
@@ -160,7 +160,7 @@ function CompanyPicker({ company, setFields, apiFetch }) {
           type="button"
           onClick={handleSaveCurrent}
           disabled={loading}
-          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap disabled:opacity-50"
+          className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap disabled:opacity-50"
         >
           {selectedId ? "Aktualizovat" : "Uložit jako novou"}
         </button>
@@ -169,7 +169,7 @@ function CompanyPicker({ company, setFields, apiFetch }) {
             type="button"
             onClick={handleDelete}
             disabled={loading}
-            className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+            className="rounded-xl border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
           >
             Smazat
           </button>

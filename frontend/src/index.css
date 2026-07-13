@@ -1,3 +1,17 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Brand accent — used for the header badge and each screen's one
+     primary action button (see PRIMARY_GRADIENT in SimpleDocFiller.jsx
+     and LoginForm.jsx). Not applied to secondary/bordered buttons. */
+  --gradient-primary: linear-gradient(135deg, #042C53, #185FA5);
+  /* Whole-page background wash, applied on the two top-level screen
+     wrappers (LoginForm and SimpleDocFiller). */
+  --gradient-page-bg: linear-gradient(160deg, #E6F1FB, #FFFFFF);
+}
+
+body {
+  font-family: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+}

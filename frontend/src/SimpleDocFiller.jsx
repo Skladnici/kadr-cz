@@ -18,6 +18,12 @@ import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } f
 // backend already compresses/resizes images reliably and quickly before
 // OCR, so sending the original file directly is both simpler and safer.
 
+// The one accent used for the header badge and each screen's single
+// primary action button — see index.css's --gradient-primary for the
+// actual color stops. Every other button stays neutral (bordered, no
+// fill) so the gradient always points at exactly one action per screen.
+const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
+
 export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
@@ -375,23 +381,23 @@ export default function SimpleDocFiller() {
     <div
       className="min-h-screen w-full flex items-start justify-center py-10 px-4"
       style={{
-        fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
-        backgroundColor: "#FAFAF7",
+        fontFamily: "'Barlow', 'Segoe UI', system-ui, sans-serif",
+        background: "var(--gradient-page-bg)",
       }}
     >
       <div className="w-full max-w-xl">
         {/* Header */}
-        <div className="flex items-center gap-3 mb-7">
+        <div className="flex items-center gap-3 mb-9">
           <div
             className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
-            style={{ background: "linear-gradient(135deg, #E8B84B, #C9932E)" }}
+            style={PRIMARY_GRADIENT}
           >
-            <ShieldCheck size={18} strokeWidth={2.25} className="text-[#0B1220]" />
+            <ShieldCheck size={18} strokeWidth={2.25} className="text-white" />
           </div>
           <div>
             <div
               className="text-[16px] font-semibold tracking-tight text-[#0B1220] leading-none"
-              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+              style={{ fontFamily: "'Barlow', sans-serif" }}
             >
               KADR.CZ
             </div>
@@ -408,14 +414,14 @@ export default function SimpleDocFiller() {
               <div
                 key={label}
                 className={`flex-1 h-[3px] rounded-full transition-colors ${
-                  state === "done" || state === "active" ? "bg-[#C9932E]" : "bg-slate-200"
+                  state === "done" || state === "active" ? "bg-[#185FA5]" : "bg-slate-200"
                 }`}
                 title={label}
               />
             );
           })}
         </div>
-        <div className="flex items-center justify-between mb-6 -mt-4 px-0.5">
+        <div className="flex items-center justify-between mb-8 -mt-4 px-0.5">
           {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
             const n = i + 1;
             const state = step > n ? "done" : step === n ? "active" : "todo";
@@ -432,7 +438,7 @@ export default function SimpleDocFiller() {
 
         <div className="rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] overflow-hidden">
           {error && (
-            <div className="m-5 mb-0 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-[12.5px] text-red-700">
+            <div className="m-5 mb-0 flex items-start gap-2 rounded-xl bg-red-50 p-3 text-[12.5px] text-red-700">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
             </div>
           )}
@@ -440,7 +446,7 @@ export default function SimpleDocFiller() {
           {/* Step 1: upload */}
           {step === 1 && (
             <div className="p-7">
-              <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Nahrajte doklady</h2>
+              <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Barlow', sans-serif" }}>Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
                 automaticky. Můžete přidat více souborů i text zároveň (např. pas + vízum).
@@ -450,7 +456,7 @@ export default function SimpleDocFiller() {
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => { e.preventDefault(); addPendingFiles(e.dataTransfer.files); }}
-                className="mt-5 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-10 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
+                className="mt-7 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-10 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
               >
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
                   <Upload size={18} className="text-slate-400" />
@@ -470,9 +476,9 @@ export default function SimpleDocFiller() {
               </div>
 
               {previewUrls.length > 0 && (
-                <div className="mt-4 flex gap-2 flex-wrap">
+                <div className="mt-[22px] flex gap-2 flex-wrap">
                   {previewUrls.map((p, i) => (
-                    <div key={i} className="relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group">
+                    <div key={i} className="relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group">
                       {p.url ? (
                         <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
                       ) : (
@@ -494,7 +500,7 @@ export default function SimpleDocFiller() {
                 </div>
               )}
 
-              <details className="mt-4">
+              <details className="mt-[22px]">
                 <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-[#0B1220]">
                   Nebo vložit text dokladu ručně
                 </summary>
@@ -503,15 +509,16 @@ export default function SimpleDocFiller() {
                   onChange={(e) => setPastedText(e.target.value)}
                   placeholder="Vložte sem text dokladu…"
                   rows={5}
-                  className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
                 />
               </details>
 
-              <div className="mt-5 flex items-center gap-2.5">
+              <div className="mt-7 flex items-center gap-2.5">
                 <button
                   onClick={handleConfirmUpload}
                   disabled={pendingFiles.length === 0 && !pastedText.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#0B1220] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#16243A] disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={PRIMARY_GRADIENT}
+                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Rozpoznat a pokračovat <ArrowRight size={14} />
                 </button>
@@ -531,7 +538,7 @@ export default function SimpleDocFiller() {
               <div className="flex flex-col items-center justify-center gap-4 py-14">
                 <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden">
                   <FileText size={26} className="text-slate-300" />
-                  <div className="absolute left-0 right-0 h-0.5 bg-[#C9932E]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
+                  <div className="absolute left-0 right-0 h-0.5 bg-[#185FA5]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
                 </div>
                 <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220]">
                   <Loader2 size={14} className="animate-spin text-slate-400" /> Rozpoznávám dokument…
@@ -545,13 +552,13 @@ export default function SimpleDocFiller() {
           {step === 3 && (
             <div className="p-7">
               {previewUrls.length > 0 && (
-                <div className="mb-4 flex gap-2 flex-wrap">
+                <div className="mb-[22px] flex gap-2 flex-wrap">
                   {previewUrls.map((p, i) => (
                     <button
                       key={i}
                       type="button"
                       onClick={() => p.url && setLightboxUrl(p.url)}
-                      className={`relative w-16 h-16 rounded-lg border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
+                      className={`relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
                       title={p.url ? "Klikněte pro zvětšení" : p.name}
                     >
                       {p.url ? (
@@ -568,14 +575,14 @@ export default function SimpleDocFiller() {
               )}
 
               {ocrMode === "mock" && (
-                <div className="mb-4 flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2">
+                <div className="mb-[22px] flex items-center justify-between rounded-xl bg-emerald-50 px-3 py-2">
                   <span className="text-[12px] text-emerald-700 font-medium">Údaje rozpoznány (demo data)</span>
                 </div>
               )}
               {warnings.length > 0 && (
-                <div className="mb-4 space-y-2">
+                <div className="mb-[22px] space-y-2">
                   {warnings.map((w, i) => (
-                    <div key={i} className="flex items-start gap-2 rounded-lg bg-amber-50 p-2.5 text-[12px] text-amber-700">
+                    <div key={i} className="flex items-start gap-2 rounded-xl bg-amber-50 p-2.5 text-[12px] text-amber-700">
                       <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {w}
                     </div>
                   ))}
@@ -583,7 +590,7 @@ export default function SimpleDocFiller() {
               )}
 
               {rawText && rawText.trim() && (
-                <details className="mb-4 rounded-lg border border-slate-200 bg-slate-50/60">
+                <details className="mb-[22px] rounded-xl border border-slate-200 bg-slate-50/60">
                   <summary className="cursor-pointer px-3 py-2 text-[12px] font-medium text-slate-600">
                     Zobrazit rozpoznaný text z dokumentu (pro ruční kopírování)
                   </summary>
@@ -595,7 +602,7 @@ export default function SimpleDocFiller() {
                 </details>
               )}
 
-              <div className="mb-4">
+              <div className="mb-[22px]">
                 <label className="text-[11px] uppercase tracking-wide text-slate-400">Typ dokumentu</label>
                 <select
                   value={templateId || ""}
@@ -618,7 +625,7 @@ export default function SimpleDocFiller() {
                       return f;
                     });
                   }}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
                   {blanks.map((b) => (
                     <option key={b.id} value={b.id}>{b.title}</option>
@@ -662,7 +669,7 @@ export default function SimpleDocFiller() {
                           }))
                         }
                         style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
-                        className={`mt-1 w-full rounded-md border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
+                        className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
                           ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                       />
                       {showIcoWarning && (
@@ -682,12 +689,12 @@ export default function SimpleDocFiller() {
                 return (
                   <>
                     {/* 1. Person's own data first */}
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-4">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px]">
                       {personFields.map(renderField)}
                     </div>
 
                     {/* 2. Addresses next */}
-                    <div className="mb-3">
+                    <div className="mb-4">
                       <AddressBuilder
                         czParts={czAddressParts}
                         setCzPart={setCzPart}
@@ -700,14 +707,14 @@ export default function SimpleDocFiller() {
 
                     {/* 3. Company + everything else (contract terms, payslip specifics) */}
                     <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[300px] overflow-y-auto pr-1">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>
                   </>
                 );
               })()}
 
-              <div className="mt-6 flex justify-between items-center">
+              <div className="mt-8 flex justify-between items-center">
                 <button
                   onClick={() => {
                     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
@@ -722,7 +729,8 @@ export default function SimpleDocFiller() {
                 <button
                   onClick={handleGenerate}
                   disabled={loading || !templateId}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#C9932E] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#A97A24] disabled:opacity-60"
+                  style={PRIMARY_GRADIENT}
+                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-60"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
                   {loading ? "Generuji…" : "Vytvořit dokument"}
@@ -747,22 +755,23 @@ export default function SimpleDocFiller() {
                 >
                   <Check size={24} />
                 </div>
-                <h2 className="mt-4 text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                <h2 className="mt-4 text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Barlow', sans-serif" }}>
                   Dokument je hotový
                 </h2>
                 <p className="mt-1 text-[13px] text-slate-500">Stáhněte si soubor nebo ho rovnou vytiskněte.</p>
 
                 {downloadError && (
-                  <div className="mt-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-[12.5px] text-red-700 text-left">
+                  <div className="mt-[22px] flex items-start gap-2 rounded-xl bg-red-50 p-3 text-[12.5px] text-red-700 text-left">
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {downloadError}
                   </div>
                 )}
 
-                <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                   <button
                     type="button"
                     onClick={() => handleDownload(result.docx_token, { filename: result.docx_token })}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                    style={PRIMARY_GRADIENT}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-[13px] font-medium text-white transition-[filter] hover:brightness-110"
                   >
                     <Download size={15} /> Stáhnout Word
                   </button>
@@ -770,14 +779,14 @@ export default function SimpleDocFiller() {
                     <button
                       type="button"
                       onClick={() => handleDownload(result.pdf_token, { openInNewTab: true })}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
                       <Printer size={15} /> Otevřít / Tisk (PDF)
                     </button>
                   )}
                   <button
                     onClick={reset}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0B1220] px-4 py-3 text-[13px] font-medium text-white hover:bg-[#16243A] transition-colors"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                   >
                     <RotateCcw size={15} /> Nový dokument
                   </button>
@@ -787,7 +796,7 @@ export default function SimpleDocFiller() {
           )}
         </div>
 
-        <p className="mt-4 text-center text-[11.5px] text-slate-400">
+        <p className="mt-[22px] text-center text-[11.5px] text-slate-400">
           Údaje o firmách (název, IČO, DIČ, adresa) se ukládají trvale pro
           opakované použití. Vygenerované dokumenty s osobními údaji (doklady,
           mzda, adresa) se neukládají — mažou se hned po stažení.
@@ -802,7 +811,7 @@ export default function SimpleDocFiller() {
           <img
             src={lightboxUrl}
             alt="Náhled dokumentu"
-            className="max-h-full max-w-full rounded-lg shadow-2xl object-contain"
+            className="max-h-full max-w-full rounded-xl shadow-2xl object-contain"
           />
           <button
             onClick={() => setLightboxUrl(null)}
