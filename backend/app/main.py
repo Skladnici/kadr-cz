@@ -286,6 +286,14 @@ async def create_company(payload: CompanyIn):
 
 @app.put("/api/companies/{company_id}", dependencies=[Depends(_require_site_auth)])
 async def update_company(company_id: str, payload: CompanyIn):
+    # Known limitation, accepted for this app's size: no optimistic
+    # concurrency check. If two people edit the same company at once,
+    # whoever's PATCH lands last silently wins — the other person's
+    # changes are gone with no warning. Fixable by having the client send
+    # the updated_at it last saw and rejecting the PATCH (409) if the row
+    # has since changed (create_companies_table.sql already has
+    # updated_at + a trigger, so the column exists) — not done here since
+    # it wasn't worth the added complexity for a small shared team tool.
     _require_supabase()
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.patch(
