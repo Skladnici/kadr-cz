@@ -427,6 +427,84 @@ export default function SimpleDocFiller() {
     });
   }, [fields.company_address]);
 
+  // --- Lightbox zoom/pan (mouse wheel to zoom 100%-400%, drag to pan) ---
+  // Kept self-contained to the lightbox — doesn't touch how previews are
+  // uploaded, recognized, or opened, only what happens once one is open.
+  const lightboxImgRef = useRef(null);
+  const [lightboxTransform, setLightboxTransform] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const lightboxDragRef = useRef(null); // { startX, startY, startPan } while a drag is in progress, else null
+  const [isPanningLightbox, setIsPanningLightbox] = useState(false);
+
+  // Fresh photo, fresh zoom — otherwise the next opened preview would
+  // inherit whatever zoom/pan the previous one was left at.
+  useEffect(() => {
+    setLightboxTransform({ zoom: 1, pan: { x: 0, y: 0 } });
+  }, [lightboxUrl]);
+
+  // Keeps panning from dragging the image entirely out of view — the
+  // further zoomed in, the more room there is to pan, none at all at 100%.
+  const clampLightboxPan = useCallback((pan, zoom) => {
+    const el = lightboxImgRef.current;
+    if (!el) return pan;
+    const maxX = (el.offsetWidth * (zoom - 1)) / 2;
+    const maxY = (el.offsetHeight * (zoom - 1)) / 2;
+    return {
+      x: Math.min(maxX, Math.max(-maxX, pan.x)),
+      y: Math.min(maxY, Math.max(-maxY, pan.y)),
+    };
+  }, []);
+
+  // Wheel is attached as a native (non-passive) listener rather than
+  // React's onWheel — React delegates wheel listeners as passive by
+  // default, which would silently prevent e.preventDefault() from
+  // stopping the page itself from scrolling behind the lightbox.
+  useEffect(() => {
+    const el = lightboxImgRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      setLightboxTransform((t) => {
+        const nextZoom = Math.min(4, Math.max(1, t.zoom - e.deltaY * 0.0015));
+        return { zoom: nextZoom, pan: clampLightboxPan(t.pan, nextZoom) };
+      });
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [lightboxUrl, clampLightboxPan]);
+
+  const handleLightboxMouseDown = useCallback((e) => {
+    if (lightboxTransform.zoom <= 1) return; // nothing to pan at 100%
+    e.preventDefault();
+    lightboxDragRef.current = { startX: e.clientX, startY: e.clientY, startPan: lightboxTransform.pan };
+    setIsPanningLightbox(true);
+  }, [lightboxTransform.zoom, lightboxTransform.pan]);
+
+  // Move/up listen on window (not just the image) so a drag that carries
+  // the cursor off the image, or releases outside it, still behaves.
+  useEffect(() => {
+    const handleMove = (e) => {
+      const drag = lightboxDragRef.current;
+      if (!drag) return;
+      setLightboxTransform((t) => ({
+        ...t,
+        pan: clampLightboxPan(
+          { x: drag.startPan.x + (e.clientX - drag.startX), y: drag.startPan.y + (e.clientY - drag.startY) },
+          t.zoom
+        ),
+      }));
+    };
+    const handleUp = () => {
+      lightboxDragRef.current = null;
+      setIsPanningLightbox(false);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [clampLightboxPan]);
+
   if (!authHeader) {
     return <LoginForm onLogin={handleLogin} loading={loggingIn} error={loginError} />;
   }
@@ -861,14 +939,31 @@ export default function SimpleDocFiller() {
 
       {lightboxUrl && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
-          onClick={() => setLightboxUrl(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 overflow-hidden"
+          onClick={(e) => {
+            // Only the backdrop itself closes it — a click that bubbled
+            // up from the image (e.g. the end of a drag, or a plain
+            // click now that the image is interactive) shouldn't.
+            if (e.target === e.currentTarget) setLightboxUrl(null);
+          }}
         >
           <img
+            ref={lightboxImgRef}
             src={lightboxUrl}
             alt="Náhled dokumentu"
-            className="max-h-full max-w-full rounded-xl shadow-2xl object-contain"
+            draggable={false}
+            onMouseDown={handleLightboxMouseDown}
+            style={{
+              transform: `translate(${lightboxTransform.pan.x}px, ${lightboxTransform.pan.y}px) scale(${lightboxTransform.zoom})`,
+              cursor: lightboxTransform.zoom > 1 ? (isPanningLightbox ? "grabbing" : "grab") : "zoom-in",
+            }}
+            className="max-h-full max-w-full rounded-xl shadow-2xl object-contain select-none"
           />
+          {lightboxTransform.zoom > 1 && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-[12px] text-white pointer-events-none">
+              {Math.round(lightboxTransform.zoom * 100)}%
+            </div>
+          )}
           <button
             onClick={() => setLightboxUrl(null)}
             className="absolute top-5 right-5 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
