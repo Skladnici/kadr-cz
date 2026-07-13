@@ -46,12 +46,12 @@ class Settings:
     MAX_UPLOAD_SIZE_MB: int = 20
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".pdf"}
 
-    # No wildcard default: combined with allow_credentials=True (needed for
-    # HTTP Basic Auth on /api/companies), a "*" origin lets any website on
-    # the internet make credentialed cross-origin requests to this API from
-    # a visitor's browser. Production deployments MUST set CORS_ORIGINS to
-    # the real frontend origin(s), e.g. "https://kadr-cz.example.com". With
-    # nothing set, only the local Vite dev server is allowed.
+    # No wildcard default. Production deployments MUST set CORS_ORIGINS to
+    # the real frontend origin(s), e.g. "https://kadr-cz.example.com" —
+    # with nothing set, only the local Vite dev server is allowed.
+    # (CORS here doesn't gate credentials — allow_credentials is always
+    # off in main.py, since the site login is a manually-attached
+    # Authorization header, not a browser-managed cookie.)
     _raw_cors_origins = os.getenv("CORS_ORIGINS", "")
     CORS_ORIGINS: list = (
         [o.strip() for o in _raw_cors_origins.split(",") if o.strip()]

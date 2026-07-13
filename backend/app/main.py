@@ -1,9 +1,13 @@
 """
-KADR.CZ — simplified, stateless document filler.
+KADR.CZ — document filler for Czech employment contracts.
 
-Flow: upload a document -> AI extracts fields -> pick a blank -> fill ->
-download as .docx or .pdf. Nothing is stored between requests; there is
-no database. Run:
+Flow: log in -> upload a document -> AI extracts fields -> pick a blank
+-> fill -> download as .docx or .pdf. Uploaded photos and generated
+documents are not retained (the source photo is deleted right after
+recognition; the generated file is deleted right after download, or
+after 24h if never downloaded). The one persistent exception is the
+shared companies list, stored in Supabase so employer details can be
+reused across contracts and visitors. Run:
 
     uvicorn app.main:app --reload --port 8000
 """
