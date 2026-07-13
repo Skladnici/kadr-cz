@@ -12,6 +12,7 @@ reused across contracts and visitors. Run:
     uvicorn app.main:app --reload --port 8000
 """
 import asyncio
+import logging
 import secrets
 import uuid
 from pathlib import Path
@@ -27,6 +28,11 @@ from typing import Optional
 from app.config import settings
 from app.ocr_service import recognize_document
 from app.blank_service import list_templates, fill_blank, convert_to_pdf
+
+logging.basicConfig(
+    level=settings.LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 app = FastAPI(title=settings.APP_NAME)
 

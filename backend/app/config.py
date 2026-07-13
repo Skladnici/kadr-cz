@@ -46,6 +46,13 @@ class Settings:
     MAX_UPLOAD_SIZE_MB: int = 20
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".pdf"}
 
+    # Controls verbosity of the OCR pipeline's logging (ocr_service.py) —
+    # defaults to INFO so the per-request timing/diagnostic messages it
+    # already relied on stay visible in Render's log viewer by default,
+    # same as when they were plain print() calls. Set to WARNING to quiet
+    # the timing noise down, or DEBUG for more detail.
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
     # No wildcard default. Production deployments MUST set CORS_ORIGINS to
     # the real frontend origin(s), e.g. "https://kadr-cz.example.com" —
     # with nothing set, only the local Vite dev server is allowed.
