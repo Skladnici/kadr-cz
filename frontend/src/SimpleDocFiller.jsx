@@ -24,6 +24,10 @@ import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } f
 // fill) so the gradient always points at exactly one action per screen.
 const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
 
+// sessionStorage key for the site-wide Basic Auth header — see the
+// authHeader useState/useEffect pair below.
+const AUTH_STORAGE_KEY = "kadr_cz_auth_header";
+
 export default function SimpleDocFiller() {
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
@@ -46,14 +50,35 @@ export default function SimpleDocFiller() {
   const [downloadError, setDownloadError] = useState(null);
   const fileInputRef = useRef(null);
 
-  // In-memory only, on purpose — a plain useState (not sessionStorage/
-  // localStorage) means this naturally resets on every real page reload
-  // or new visit, with no server-side cooperation needed, while still
-  // surviving internal step navigation within the same page load (so the
-  // password is asked once per visit, not once per document).
-  const [authHeader, setAuthHeader] = useState(null);
+  // Backed by sessionStorage (not localStorage, not memory-only) so a
+  // page reload (F5) or browser back/forward doesn't force a fresh
+  // login — sessionStorage survives those — while still asking again
+  // once the tab/browser is actually closed, since that's exactly when
+  // sessionStorage (unlike localStorage) gets cleared. "Nový dokument"
+  // (reset()) never touches authHeader, so the login-once-per-visit
+  // behavior for cycling through documents is unaffected by this.
+  const [authHeader, setAuthHeader] = useState(() => {
+    try {
+      return sessionStorage.getItem(AUTH_STORAGE_KEY);
+    } catch {
+      return null; // sessionStorage unavailable — falls back to asking every load, same as before this change
+    }
+  });
   const [loginError, setLoginError] = useState(null);
   const [loggingIn, setLoggingIn] = useState(false);
+
+  // Single point that keeps sessionStorage in sync with authHeader,
+  // regardless of which of the three call sites below changed it —
+  // login success writes it in, a 401 (from apiFetch or the XHR upload
+  // path) clears it out.
+  useEffect(() => {
+    try {
+      if (authHeader) sessionStorage.setItem(AUTH_STORAGE_KEY, authHeader);
+      else sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch {
+      // sessionStorage unavailable — session just won't survive a reload
+    }
+  }, [authHeader]);
 
   // Every authenticated request goes through here instead of a bare
   // fetch() — attaches the Authorization header we built at login, and
