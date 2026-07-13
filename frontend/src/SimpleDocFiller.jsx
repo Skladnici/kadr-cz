@@ -16,16 +16,12 @@ import {
 // fetch() calls to silently hang forever on unrelated sites. XHR is a
 // different, older browser API that such extensions typically don't
 // touch, so it's a reliable way to sidestep that interference.
-function uploadFileViaXHR(url, file, timeoutMs = 90000) {
+function uploadFileViaXHR(url, file, authHeader, timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.timeout = timeoutMs;
-    // Every API route requires the site-wide login — this is the XHR
-    // equivalent of fetch's { credentials: "include" }, needed so the
-    // browser attaches (and, on a 401, prompts for) the Basic Auth
-    // credentials cross-origin.
-    xhr.withCredentials = true;
+    xhr.setRequestHeader("Authorization", authHeader);
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
@@ -52,14 +48,14 @@ const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   : "http://localhost:8000";
 
 // Turns a failed request's HTTP status into an honest Czech message,
-// instead of always blaming "the backend isn't running" — most
-// importantly, distinguishing "you need to log in" (401 — e.g. the
-// browser's Basic Auth prompt was cancelled or credentials expired)
-// from a genuinely unreachable/broken backend, since every /api/* route
-// now requires the site-wide login.
+// instead of always blaming "the backend isn't running". A 401 here
+// normally never reaches the user — apiFetch() already reacts to it by
+// clearing the stored login and showing LoginForm again — this text only
+// covers the rare case where something else surfaces a 401 message
+// before that re-render happens.
 function describeRequestError(status, fallbackAction) {
   if (status === 401) {
-    return "Je potřeba se přihlásit. Obnovte stránku (F5) a zadejte přihlašovací údaje, až se o ně prohlížeč přihlásí.";
+    return "Přihlášení vypršelo nebo je neplatné — zadejte prosím přihlašovací údaje znovu.";
   }
   if (status === 503) {
     return "Tato funkce není na serveru nastavená — kontaktujte správce webu.";
@@ -71,6 +67,99 @@ function describeRequestError(status, fallbackAction) {
     return "Na serveru došlo k chybě — zkuste to prosím za chvíli znovu.";
   }
   return `${fallbackAction} Zkontrolujte, zda backend běží na ${API_BASE}.`;
+}
+
+// Basic Auth credentials, built and attached by hand instead of relying
+// on the browser's native login prompt — that prompt turned out not to
+// fire reliably for cross-site fetch()/XHR requests to a different
+// origin (frontend on Vercel, backend on Render), especially in
+// Incognito/Private browsing, where browsers restrict HTTP-auth-cache
+// behavior across sites as an anti-tracking measure. FastAPI's
+// HTTPBasic() on the backend only inspects the Authorization header, so
+// it doesn't care how it got there — this is a drop-in replacement from
+// its point of view.
+function toBasicAuthHeader(username, password) {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = "";
+  bytes.forEach((b) => { binary += String.fromCharCode(b); });
+  return "Basic " + btoa(binary);
+}
+
+function LoginForm({ onLogin, loading, error }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!username || !password || loading) return;
+    onLogin(username, password);
+  };
+
+  return (
+    <div
+      className="min-h-screen w-full flex items-center justify-center px-4"
+      style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", backgroundColor: "#FAFAF7" }}
+    >
+      <form
+        onSubmit={submit}
+        className="w-full max-w-sm rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] p-7"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div
+            className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+            style={{ background: "linear-gradient(135deg, #E8B84B, #C9932E)" }}
+          >
+            <ShieldCheck size={18} strokeWidth={2.25} className="text-[#0B1220]" />
+          </div>
+          <div>
+            <div
+              className="text-[16px] font-semibold tracking-tight text-[#0B1220] leading-none"
+              style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            >
+              KADR.CZ
+            </div>
+            <div className="text-[11.5px] text-slate-500 mt-1">Přihlášení</div>
+          </div>
+        </div>
+
+        {error && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-[12.5px] text-red-700">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
+          </div>
+        )}
+
+        <label className="block mb-3">
+          <span className="text-[11px] uppercase tracking-wide text-slate-400">Uživatelské jméno</span>
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            autoFocus
+            className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+          />
+        </label>
+        <label className="block mb-5">
+          <span className="text-[11px] uppercase tracking-wide text-slate-400">Heslo</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            className="mt-1 w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+          />
+        </label>
+
+        <button
+          type="submit"
+          disabled={loading || !username || !password}
+          className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0B1220] px-5 py-2.5 text-[13px] font-medium text-white hover:bg-[#16243A] disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {loading && <Loader2 size={14} className="animate-spin" />}
+          {loading ? "Přihlašuji…" : "Přihlásit se"}
+        </button>
+      </form>
+    </div>
+  );
 }
 
 // Fields shown for review/editing after recognition, and sent to /api/fill.
@@ -542,15 +631,15 @@ function smartSplitAddress(raw, countryGuess) {
 
 // CompanyPicker only mounts while step 3 ("Vyplnit") is showing, and gets
 // unmounted/remounted every time the user goes back to step 1 and works on
-// another document. Without this cache, each remount would re-fetch (and,
-// since /api/companies needs a password, potentially re-prompt for) data
-// that hasn't changed — even though the user never left the "companies"
-// section conceptually, just moved to a different document in the same
-// visit. Module-level so it survives remounts but resets on a real page
-// reload (see also Clear-Site-Data on the backend for the auth prompt).
+// another document. Without this cache, each remount would needlessly
+// re-fetch data that hasn't changed — even though the user never left the
+// "companies" section conceptually, just moved to a different document in
+// the same visit. Module-level so it survives remounts but resets on a
+// real page reload (a fresh page load always starts logged out again —
+// see LoginForm/apiFetch below).
 let companiesCache = null;
 
-function CompanyPicker({ fields, setFields }) {
+function CompanyPicker({ fields, setFields, apiFetch }) {
   const [companies, setCompanies] = useState(companiesCache || []);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -562,9 +651,13 @@ function CompanyPicker({ fields, setFields }) {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/api/companies`, { credentials: "include" });
+      const res = await apiFetch("/api/companies");
       if (!res.ok) {
-        setError(describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst."));
+        // A 401 already made apiFetch drop back to the login form — no
+        // need to also show an error message behind it.
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst."));
+        }
         return;
       }
       const data = await res.json();
@@ -574,7 +667,7 @@ function CompanyPicker({ fields, setFields }) {
     } catch {
       setError("Sdílené firmy se nepodařilo načíst — zkontrolujte připojení k internetu.");
     }
-  }, []);
+  }, [apiFetch]);
 
   useEffect(() => { loadCompanies(); }, [loadCompanies]);
 
@@ -620,17 +713,18 @@ function CompanyPicker({ fields, setFields }) {
       representative: fields.company_representative || "",
     };
     try {
-      const res = await fetch(
-        selectedId ? `${API_BASE}/api/companies/${selectedId}` : `${API_BASE}/api/companies`,
+      const res = await apiFetch(
+        selectedId ? `/api/companies/${selectedId}` : "/api/companies",
         {
           method: selectedId ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
-          credentials: "include",
           body: JSON.stringify(profile),
         }
       );
       if (!res.ok) {
-        setError(describeRequestError(res.status, "Uložení se nezdařilo."));
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Uložení se nezdařilo."));
+        }
         return;
       }
       const saved = await res.json();
@@ -648,9 +742,11 @@ function CompanyPicker({ fields, setFields }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE", credentials: "include" });
+      const res = await apiFetch(`/api/companies/${selectedId}`, { method: "DELETE" });
       if (!res.ok) {
-        setError(describeRequestError(res.status, "Smazání se nezdařilo."));
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Smazání se nezdařilo."));
+        }
         return;
       }
       setSelectedId("");
@@ -745,31 +841,71 @@ export default function SimpleDocFiller() {
   const [downloadError, setDownloadError] = useState(null);
   const fileInputRef = useRef(null);
 
+  // In-memory only, on purpose — a plain useState (not sessionStorage/
+  // localStorage) means this naturally resets on every real page reload
+  // or new visit, with no server-side cooperation needed, while still
+  // surviving internal step navigation within the same page load (so the
+  // password is asked once per visit, not once per document).
+  const [authHeader, setAuthHeader] = useState(null);
+  const [loginError, setLoginError] = useState(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  // Every authenticated request goes through here instead of a bare
+  // fetch() — attaches the Authorization header we built at login, and
+  // reacts to a 401 (wrong/expired credentials) by dropping back to
+  // LoginForm, centralizing that instead of repeating it at every call
+  // site.
+  const apiFetch = useCallback((path, options = {}) => {
+    return fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: { ...options.headers, Authorization: authHeader },
+    }).then((res) => {
+      if (res.status === 401) setAuthHeader(null);
+      return res;
+    });
+  }, [authHeader]);
+
+  const handleLogin = async (username, password) => {
+    setLoggingIn(true);
+    setLoginError(null);
+    const header = toBasicAuthHeader(username, password);
+    try {
+      const res = await fetch(`${API_BASE}/api/blanks`, { headers: { Authorization: header } });
+      if (res.ok) {
+        setAuthHeader(header);
+      } else if (res.status === 401) {
+        setLoginError("Nesprávné uživatelské jméno nebo heslo.");
+      } else {
+        setLoginError(describeRequestError(res.status, "Přihlášení se nezdařilo."));
+      }
+    } catch {
+      setLoginError("Přihlášení se nezdařilo — zkontrolujte připojení k internetu.");
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
   useEffect(() => {
-    // GET / has no auth and, on the backend, sends Clear-Site-Data to drop
-    // any HTTP Basic Auth credentials the browser cached for this origin
-    // from an earlier visit — done first, and awaited, so the very next
-    // request (blanks, below) reliably triggers a *fresh* login prompt on
-    // every real page load rather than silently reusing stale credentials.
-    fetch(`${API_BASE}/`)
-      .catch(() => {})
-      .then(() =>
-        fetch(`${API_BASE}/api/blanks`, { credentials: "include" })
-          .then((r) => {
-            if (!r.ok) {
-              const err = new Error("failed");
-              err.status = r.status;
-              throw err;
-            }
-            return r.json();
-          })
-          .then((data) => {
-            setBlanks(data);
-            if (data.length > 0) setTemplateId(data[0].id);
-          })
-      )
-      .catch((e) => setError(describeRequestError(e?.status, "Nepodařilo se načíst seznam formulářů.")));
-  }, []);
+    if (!authHeader) return;
+    apiFetch("/api/blanks")
+      .then((r) => {
+        if (!r.ok) {
+          const err = new Error("failed");
+          err.status = r.status;
+          throw err;
+        }
+        return r.json();
+      })
+      .then((data) => {
+        setBlanks(data);
+        if (data.length > 0) setTemplateId(data[0].id);
+      })
+      .catch((e) => {
+        if (e.status !== 401) {
+          setError(describeRequestError(e?.status, "Nepodařilo se načíst seznam formulářů."));
+        }
+      });
+  }, [authHeader, apiFetch]);
 
   // Shared by both the file-upload path and the paste-text path: takes
   // an array of /api/recognize-shaped results and merges them into the
@@ -858,15 +994,14 @@ export default function SimpleDocFiller() {
       const results = [];
       for (const file of pendingFiles) {
         console.log("[upload] sending", file.name, file.size, "bytes to", `${API_BASE}/api/recognize`);
-        const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, file);
+        const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, file, authHeader);
         console.log("[upload] got response", data);
         results.push(data);
       }
       if (pastedText.trim()) {
-        const res = await fetch(`${API_BASE}/api/recognize-text`, {
+        const res = await apiFetch("/api/recognize-text", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          credentials: "include",
           body: JSON.stringify({ text: pastedText }),
         });
         if (!res.ok) {
@@ -880,12 +1015,16 @@ export default function SimpleDocFiller() {
     } catch (e) {
       if (e.message === "timeout") {
         setError("Rozpoznávání trvá příliš dlouho (přes 90 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
+      } else if (e.status === 401) {
+        // XHR upload doesn't go through apiFetch — clear the login here
+        // too so a 401 from /api/recognize also drops back to LoginForm.
+        setAuthHeader(null);
       } else {
         setError(describeRequestError(e.status, "Nepodařilo se rozpoznat dokument."));
       }
       setStep(1);
     }
-  }, [pendingFiles, pastedText, applyRecognizedResults]);
+  }, [pendingFiles, pastedText, applyRecognizedResults, authHeader, apiFetch]);
 
   const skipUpload = () => {
     setFields({
@@ -908,10 +1047,9 @@ export default function SimpleDocFiller() {
     setError(null);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/fill`, {
+      const res = await apiFetch("/api/fill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           template_id: templateId,
           ...fields,
@@ -928,7 +1066,9 @@ export default function SimpleDocFiller() {
       setResult(data);
       setStep(4);
     } catch (e) {
-      setError(describeRequestError(e.status, "Nepodařilo se vygenerovat dokument."));
+      if (e.status !== 401) {
+        setError(describeRequestError(e.status, "Nepodařilo se vygenerovat dokument."));
+      }
     } finally {
       setLoading(false);
     }
@@ -950,8 +1090,6 @@ export default function SimpleDocFiller() {
     setPastedText("");
   };
 
-  const downloadUrl = (token) => `${API_BASE}/api/download/${token}`;
-
   // Download tokens are single-use — the file is deleted server-side right
   // after being served (see backend/app/main.py /api/download), so a
   // second click on the same link (browser back+retry, opening twice,
@@ -961,13 +1099,15 @@ export default function SimpleDocFiller() {
   const handleDownload = async (token, { filename, openInNewTab } = {}) => {
     setDownloadError(null);
     try {
-      const res = await fetch(downloadUrl(token), { credentials: "include" });
+      const res = await apiFetch(`/api/download/${token}`);
       if (!res.ok) {
-        setDownloadError(
-          res.status === 404
-            ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
-            : describeRequestError(res.status, "Stažení se nezdařilo.")
-        );
+        if (res.status !== 401) {
+          setDownloadError(
+            res.status === 404
+              ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
+              : describeRequestError(res.status, "Stažení se nezdařilo.")
+          );
+        }
         return;
       }
       const blob = await res.blob();
@@ -987,6 +1127,10 @@ export default function SimpleDocFiller() {
       setDownloadError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
     }
   };
+
+  if (!authHeader) {
+    return <LoginForm onLogin={handleLogin} loading={loggingIn} error={loginError} />;
+  }
 
   return (
     <div
@@ -1306,7 +1450,7 @@ export default function SimpleDocFiller() {
                     </div>
 
                     {/* 3. Company + everything else (contract terms, payslip specifics) */}
-                    <CompanyPicker fields={fields} setFields={setFields} />
+                    <CompanyPicker fields={fields} setFields={setFields} apiFetch={apiFetch} />
                     <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>

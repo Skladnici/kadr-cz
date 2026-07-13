@@ -1,9 +1,13 @@
 """
-KADR.CZ — simplified, stateless document filler.
+KADR.CZ — document filler for Czech employment contracts.
 
-Flow: upload a document -> AI extracts fields -> pick a blank -> fill ->
-download as .docx or .pdf. Nothing is stored between requests; there is
-no database. Run:
+Flow: log in -> upload a document -> AI extracts fields -> pick a blank
+-> fill -> download as .docx or .pdf. Uploaded photos and generated
+documents are not retained (the source photo is deleted right after
+recognition; the generated file is deleted right after download, or
+after 24h if never downloaded). The one persistent exception is the
+shared companies list, stored in Supabase so employer details can be
+reused across contracts and visitors. Run:
 
     uvicorn app.main:app --reload --port 8000
 """
@@ -13,7 +17,7 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Response, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -26,18 +30,18 @@ from app.blank_service import list_templates, fill_blank, convert_to_pdf
 
 app = FastAPI(title=settings.APP_NAME)
 
-# Defense in depth: allow_credentials=True is required so the browser will
-# send the Basic Auth header cross-origin for /api/companies. Never combine
-# that with a wildcard origin — Starlette would reflect the caller's Origin
-# header instead of literally sending "*", which lets any website read
-# credentialed responses from a visitor's browser. If CORS_ORIGINS somehow
-# still contains "*", force credentials off rather than allow that combo.
-_cors_allow_credentials = "*" not in settings.CORS_ORIGINS
-
+# No cookies or browser-managed credentials are used anywhere — the
+# frontend sends its own Authorization: Basic header explicitly on every
+# request (see LoginForm/apiFetch in SimpleDocFiller.jsx) instead of
+# relying on the browser's native Basic Auth prompt, which turned out not
+# to fire reliably for cross-site fetch() requests (notably in Incognito
+# mode). Since nothing is credentialed, allow_credentials must stay off —
+# combined with a wildcard origin it would let any website read
+# credentialed responses from a visitor's browser.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=_cors_allow_credentials,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -47,10 +51,12 @@ _site_security = HTTPBasic()
 
 
 def _require_site_auth(credentials: HTTPBasicCredentials = Depends(_site_security)):
-    """Gates every /api/* route behind a single shared username/password
-    (browser shows its native login prompt) — anonymous visitors must not
-    be able to upload documents, run OCR, generate contracts, or touch the
-    shared companies list."""
+    """Gates every /api/* route behind a single shared username/password.
+    FastAPI's HTTPBasic only inspects the Authorization: Basic header — it
+    doesn't care whether a browser's native prompt put it there or the
+    frontend's own login form did (see SimpleDocFiller.jsx). Anonymous
+    visitors must not be able to upload documents, run OCR, generate
+    contracts, or touch the shared companies list."""
     if not settings.SITE_USERNAME or not settings.SITE_PASSWORD:
         raise HTTPException(
             503,
@@ -68,14 +74,7 @@ def _require_site_auth(credentials: HTTPBasicCredentials = Depends(_site_securit
 
 
 @app.get("/")
-def root(response: Response):
-    # Deliberately the only unauthenticated route — the frontend calls this
-    # once, first, on every real page load (see SimpleDocFiller's initial
-    # useEffect) purely to receive Clear-Site-Data below, before it makes
-    # any authenticated request. That's what forces the browser to ask for
-    # the site password again on every fresh load/reopen, while nothing
-    # else during the visit re-prompts (nothing else sends this header).
-    response.headers["Clear-Site-Data"] = '"credentials"'
+def root():
     return {"app": settings.APP_NAME, "status": "running", "ocr_mode": settings.OCR_MODE}
 
 
