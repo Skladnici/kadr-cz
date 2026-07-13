@@ -255,36 +255,44 @@ def _require_supabase():
         )
 
 
-@app.get("/api/companies", dependencies=[Depends(_require_site_auth)])
-async def list_companies():
-    _require_supabase()
+_companies_dependencies = [Depends(_require_site_auth), Depends(_require_supabase)]
+
+
+async def _supabase_companies_request(
+    method: str, *, params: Optional[dict] = None, json: Optional[dict] = None, extra_headers: Optional[dict] = None
+):
+    """Every /api/companies* route below does exactly this — build
+    headers, call the Supabase REST API, surface its error text on
+    failure — with only the HTTP method/params/body actually differing."""
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
+        resp = await client.request(
+            method,
             f"{settings.SUPABASE_URL}/rest/v1/companies",
-            headers=_supabase_headers(),
-            params={"select": "*", "order": "name.asc"},
+            headers={**_supabase_headers(), **(extra_headers or {})},
+            params=params,
+            json=json,
         )
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp
+
+
+@app.get("/api/companies", dependencies=_companies_dependencies)
+async def list_companies():
+    resp = await _supabase_companies_request("GET", params={"select": "*", "order": "name.asc"})
     return resp.json()
 
 
-@app.post("/api/companies", status_code=201, dependencies=[Depends(_require_site_auth)])
+@app.post("/api/companies", status_code=201, dependencies=_companies_dependencies)
 async def create_company(payload: CompanyIn):
-    _require_supabase()
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{settings.SUPABASE_URL}/rest/v1/companies",
-            headers={**_supabase_headers(), "Prefer": "return=representation"},
-            json=payload.model_dump(),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    resp = await _supabase_companies_request(
+        "POST", json=payload.model_dump(), extra_headers={"Prefer": "return=representation"},
+    )
     result = resp.json()
     return result[0] if isinstance(result, list) else result
 
 
-@app.put("/api/companies/{company_id}", dependencies=[Depends(_require_site_auth)])
+@app.put("/api/companies/{company_id}", dependencies=_companies_dependencies)
 async def update_company(company_id: str, payload: CompanyIn):
     # Known limitation, accepted for this app's size: no optimistic
     # concurrency check. If two people edit the same company at once,
@@ -294,29 +302,15 @@ async def update_company(company_id: str, payload: CompanyIn):
     # has since changed (create_companies_table.sql already has
     # updated_at + a trigger, so the column exists) — not done here since
     # it wasn't worth the added complexity for a small shared team tool.
-    _require_supabase()
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.patch(
-            f"{settings.SUPABASE_URL}/rest/v1/companies",
-            headers={**_supabase_headers(), "Prefer": "return=representation"},
-            params={"id": f"eq.{company_id}"},
-            json=payload.model_dump(),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    resp = await _supabase_companies_request(
+        "PATCH", params={"id": f"eq.{company_id}"}, json=payload.model_dump(),
+        extra_headers={"Prefer": "return=representation"},
+    )
     result = resp.json()
     return result[0] if isinstance(result, list) else result
 
 
-@app.delete("/api/companies/{company_id}", status_code=204, dependencies=[Depends(_require_site_auth)])
+@app.delete("/api/companies/{company_id}", status_code=204, dependencies=_companies_dependencies)
 async def delete_company(company_id: str):
-    _require_supabase()
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.delete(
-            f"{settings.SUPABASE_URL}/rest/v1/companies",
-            headers=_supabase_headers(),
-            params={"id": f"eq.{company_id}"},
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    await _supabase_companies_request("DELETE", params={"id": f"eq.{company_id}"})
     return None
