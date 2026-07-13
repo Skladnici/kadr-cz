@@ -19,6 +19,7 @@ To go live: put GOOGLE_VISION_API_KEY=... in backend/.env
 """
 import asyncio
 import base64
+import logging
 import re
 import mimetypes
 from datetime import date, datetime, timedelta
@@ -28,6 +29,8 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
@@ -676,7 +679,7 @@ def _auto_crop_document(img):
         bottom = min(h, bottom + pad_y)
         return img.crop((left, top, right, bottom))
     except Exception as e:
-        print(f"[ocr] auto-crop skipped: {type(e).__name__}: {e}")
+        logger.warning("auto-crop skipped: %s: %s", type(e).__name__, e)
         return img
 
 
@@ -697,7 +700,7 @@ def _compress_for_upload(image_bytes: bytes, max_size_kb: int = 900) -> bytes:
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception as e:
-        print(f"[ocr] _compress_for_upload failed to decode image: {type(e).__name__}: {e}")
+        logger.warning("_compress_for_upload failed to decode image: %s: %s", type(e).__name__, e)
         return image_bytes  # let the caller's error handling deal with it
 
     # Downscale FIRST, then auto-crop on the smaller image — auto-crop
@@ -738,7 +741,7 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     # done. Offloading it keeps the server responsive to other requests
     # while this one's image processing runs in the background.
     image_bytes = await asyncio.to_thread(_compress_for_upload, image_bytes)
-    print(f"[timing]   compress: {time.time()-t_compress:.1f}s, result={len(image_bytes)/1024:.0f}KB")
+    logger.info("compress: %.1fs, result=%.0fKB", time.time() - t_compress, len(image_bytes) / 1024)
     filename = "upload.jpg"  # always send as a plain, unambiguous jpeg now
 
     # OCR.space has two engines with different language support — Engine 2
@@ -765,14 +768,14 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
                 resp = await client.post(url, data=data, files=files)
                 resp.raise_for_status()
                 result = resp.json()
-            print(f"[timing]   attempt {attempt}: {time.time()-t_attempt:.1f}s")
+            logger.info("attempt %s: %.1fs", attempt, time.time() - t_attempt)
         except Exception as e:
-            print(f"[timing]   attempt {attempt} FAILED after {time.time()-t_attempt:.1f}s: {type(e).__name__}: {e}")
+            logger.warning("attempt %s FAILED after %.1fs: %s: %s", attempt, time.time() - t_attempt, type(e).__name__, e)
             continue
 
         if result.get("IsErroredOnProcessing"):
             err = result.get("ErrorMessage") or result.get("ErrorDetails") or "unknown error"
-            print(f"[ocr] OCR.space error ({attempt}): {err}")
+            logger.warning("OCR.space error (%s): %s", attempt, err)
             continue
 
         parsed = result.get("ParsedResults") or []
@@ -814,7 +817,7 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
 
         image = _preprocess_for_ocr(image)
     except Exception as e:
-        print(f"[ocr] Failed to open/preprocess image: {type(e).__name__}: {e}")
+        logger.warning("Failed to open/preprocess image: %s: %s", type(e).__name__, e)
         return ""
 
     # Use the combined Czech+Ukrainian+English model first — needed to
@@ -826,7 +829,7 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
         try:
             return pytesseract.image_to_string(image, lang=langs, config=config)
         except Exception as e:
-            print(f"[ocr] Tesseract failed with lang={langs}: {type(e).__name__}: {e}")
+            logger.warning("Tesseract failed with lang=%s: %s: %s", langs, type(e).__name__, e)
             continue
     return ""
 
@@ -841,7 +844,7 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
 
     image_bytes = file_path.read_bytes()
     quality = _quality_score(image_bytes)
-    print(f"[timing] file read: {time.time()-t0:.1f}s, size={len(image_bytes)/1024:.0f}KB")
+    logger.info("file read: %.1fs, size=%.0fKB", time.time() - t0, len(image_bytes) / 1024)
 
     if settings.OCR_MODE == "mock":
         result = _mock_extract(original_filename)
@@ -859,9 +862,9 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
         try:
             t1 = time.time()
             raw_text = await _ocr_space_ocr(image_bytes, original_filename)
-            print(f"[timing] OCR.space total: {time.time()-t1:.1f}s, got {len(raw_text)} chars")
+            logger.info("OCR.space total: %.1fs, got %d chars", time.time() - t1, len(raw_text))
         except Exception as e:
-            print(f"[ocr] OCR.space request failed: {type(e).__name__}: {e}")
+            logger.warning("OCR.space request failed: %s: %s", type(e).__name__, e)
             raw_text = ""
         if not raw_text.strip():
             # Graceful fallback: if the remote free API is unreachable or
@@ -873,21 +876,21 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
                     asyncio.to_thread(_tesseract_ocr, image_bytes),
                     timeout=TESSERACT_TIMEOUT_SECONDS,
                 )
-                print(f"[timing] Tesseract fallback: {time.time()-t2:.1f}s, got {len(raw_text)} chars")
+                logger.info("Tesseract fallback: %.1fs, got %d chars", time.time() - t2, len(raw_text))
             except Exception as e:
-                print(f"[timing] Tesseract fallback failed: {type(e).__name__}: {e}")
+                logger.warning("Tesseract fallback failed: %s: %s", type(e).__name__, e)
                 raw_text = ""
         if not raw_text.strip():
             result = _mock_extract(original_filename)
             result["warnings"] = ["Nepodařilo se přečíst text z dokumentu — zkuste ostřejší fotografii."]
-            print(f"[timing] TOTAL (fell back to mock): {time.time()-t0:.1f}s")
+            logger.info("TOTAL (fell back to mock): %.1fs", time.time() - t0)
             return result
         fields = _extract_fields_from_text(raw_text, quality, mode="ocrspace")
         first, last = _parse_name_from_text(raw_text)
         fields["first_name"] = first
         fields["last_name"] = last
         fields["ocr_raw_text"] = raw_text
-        print(f"[timing] TOTAL: {time.time()-t0:.1f}s")
+        logger.info("TOTAL: %.1fs", time.time() - t0)
         return fields
 
     if settings.OCR_MODE == "local":

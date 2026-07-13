@@ -191,9 +191,7 @@ export default function SimpleDocFiller() {
     try {
       const results = [];
       for (const file of pendingFiles) {
-        console.log("[upload] sending", file.name, file.size, "bytes to", `${API_BASE}/api/recognize`);
         const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, file, authHeader);
-        console.log("[upload] got response", data);
         results.push(data);
       }
       if (pastedText.trim()) {
