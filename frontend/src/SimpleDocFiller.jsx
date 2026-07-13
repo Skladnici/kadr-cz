@@ -373,6 +373,30 @@ export default function SimpleDocFiller() {
     representative: fields.company_representative || "",
   }), [fields.company_name, fields.company_ico, fields.company_dic, fields.company_address, fields.company_representative]);
 
+  // "Místo výkonu práce" (workplace) isn't part of a saved company
+  // profile — there's no dedicated field for it — but in practice it's
+  // almost always the employer's own address, and CompanyPicker never
+  // touched it, so switching companies left a stale workplace behind
+  // from whichever company was selected before. Defaults it to the
+  // current company's address, same protect-manual-edits pattern as the
+  // salary default and the geocoded PSČ: only overwrites workplace while
+  // it's still empty or still holds exactly what *this* effect last put
+  // there, so a value the person typed themselves is never clobbered —
+  // and correctly clears it back out if the newly selected company has
+  // no address on file, instead of leaving the old one stuck.
+  const lastAutoFilledWorkplaceRef = useRef(null);
+  useEffect(() => {
+    const companyAddress = (fields.company_address || "").trim();
+    setFields((f) => {
+      const currentWorkplace = (f.workplace || "").trim();
+      if (currentWorkplace && currentWorkplace !== lastAutoFilledWorkplaceRef.current) {
+        return f; // person typed their own value — leave it alone
+      }
+      lastAutoFilledWorkplaceRef.current = companyAddress || null;
+      return { ...f, workplace: companyAddress };
+    });
+  }, [fields.company_address]);
+
   if (!authHeader) {
     return <LoginForm onLogin={handleLogin} loading={loggingIn} error={loginError} />;
   }
