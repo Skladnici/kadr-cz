@@ -228,7 +228,8 @@ def download(filename: str, background_tasks: BackgroundTasks):
 # Postgres database (not localStorage), so the same list of saved
 # companies shows up no matter which computer/browser someone opens the
 # site from. If Supabase isn't configured (env vars empty), these
-# endpoints return a clear error rather than crashing.
+# endpoints return a clear error rather than crashing. Table schema:
+# create_companies_table.sql at the repo root.
 
 class CompanyIn(BaseModel):
     name: str
