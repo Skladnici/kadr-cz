@@ -409,6 +409,11 @@ export default function SimpleDocFiller() {
   // there, so a value the person typed themselves is never clobbered —
   // and correctly clears it back out if the newly selected company has
   // no address on file, instead of leaving the old one stuck.
+  // (An explicit deselect back to "no company chosen" is handled
+  // separately and unconditionally in CompanyPicker.jsx's handleSelect —
+  // there, no company being selected at all means a company-derived
+  // workplace can't make sense regardless of manual edits, unlike
+  // switching between two real companies, which this effect protects.)
   const lastAutoFilledWorkplaceRef = useRef(null);
   useEffect(() => {
     const companyAddress = (fields.company_address || "").trim();

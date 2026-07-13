@@ -70,6 +70,17 @@ function CompanyPicker({ company, setFields, apiFetch }) {
     if (!id) {
       // "— Vybrat uloženou firmu —" chosen — clear the fields rather
       // than leaving whatever the previously selected company filled in.
+      // workplace is included here too even though it isn't a company_*
+      // field: SimpleDocFiller.jsx syncs it from company_address, but
+      // only ever *protects* a manually-typed workplace from being
+      // overwritten by a different company's address — it deliberately
+      // doesn't force it to "" on its own, since company_address turning
+      // empty also happens when a real, selected company just has no
+      // address on file. An explicit deselect back to "no company at
+      // all" is unambiguous though: a workplace tied to "the selected
+      // company's address" stops making sense once there's no selected
+      // company, manual edit or not — so it's cleared unconditionally
+      // here, not left to the protective sync effect.
       setFields((f) => ({
         ...f,
         company_name: "",
@@ -77,6 +88,7 @@ function CompanyPicker({ company, setFields, apiFetch }) {
         company_dic: "",
         company_address: "",
         company_representative: "",
+        workplace: "",
       }));
       return;
     }
