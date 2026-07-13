@@ -23,7 +23,7 @@ export default function LoginForm({ onLogin, loading, error }) {
     >
       <form
         onSubmit={submit}
-        className="w-full max-w-sm rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] p-7"
+        className="w-full max-w-sm rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] p-7 md:p-9"
       >
         <div className="flex items-center gap-3 mb-6">
           <div
@@ -50,23 +50,23 @@ export default function LoginForm({ onLogin, loading, error }) {
         )}
 
         <label className="block mb-4">
-          <span className="text-[11px] uppercase tracking-wide text-slate-400">Uživatelské jméno</span>
+          <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Uživatelské jméno</span>
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             autoFocus
-            className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
           />
         </label>
         <label className="block mb-7">
-          <span className="text-[11px] uppercase tracking-wide text-slate-400">Heslo</span>
+          <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Heslo</span>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
-            className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+            className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
           />
         </label>
 
@@ -74,7 +74,7 @@ export default function LoginForm({ onLogin, loading, error }) {
           type="submit"
           disabled={loading || !username || !password}
           style={PRIMARY_GRADIENT}
-          className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl px-5 py-2.5 md:px-6 md:py-3.5 text-[13px] md:text-[14px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {loading && <Loader2 size={14} className="animate-spin" />}
           {loading ? "Přihlašuji…" : "Přihlásit se"}

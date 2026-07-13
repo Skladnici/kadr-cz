@@ -49,7 +49,7 @@ function CityAutocomplete({ value, onChange, onSelect, cityTable, placeholder })
         }}
         placeholder={placeholder}
         autoComplete="off"
-        className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+        className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
       />
       {open && matches.length > 0 && (
         <div className="absolute z-20 top-full left-0 right-0 mt-1 rounded-xl border border-slate-200 bg-white shadow-lg max-h-52 overflow-y-auto p-1">
@@ -58,7 +58,7 @@ function CityAutocomplete({ value, onChange, onSelect, cityTable, placeholder })
               key={name}
               onMouseDown={(e) => { e.preventDefault(); select(name); }}
               onMouseEnter={() => setActiveIndex(i)}
-              className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-[13px] text-slate-700 cursor-pointer ${i === activeIndex ? "bg-slate-100" : ""}`}
+              className={`flex items-center gap-2 px-2.5 py-2 md:px-3.5 md:py-2.5 rounded-xl text-[13px] md:text-[14px] text-slate-700 cursor-pointer ${i === activeIndex ? "bg-slate-100" : ""}`}
             >
               <MapPin size={13} className="text-slate-400 shrink-0" />
               <span>{highlight(name)}</span>

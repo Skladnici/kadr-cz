@@ -385,7 +385,7 @@ export default function SimpleDocFiller() {
         background: "var(--gradient-page-bg)",
       }}
     >
-      <div className="w-full max-w-xl">
+      <div className="w-full max-w-xl md:max-w-2xl">
         {/* Header */}
         <div className="flex items-center gap-3 mb-9">
           <div
@@ -445,7 +445,7 @@ export default function SimpleDocFiller() {
 
           {/* Step 1: upload */}
           {step === 1 && (
-            <div className="p-7">
+            <div className="p-7 md:p-9">
               <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Barlow', sans-serif" }}>Nahrajte doklady</h2>
               <p className="mt-1 text-[13px] text-slate-500">
                 Pas, ID karta, povolení k pobytu, vízum — systém rozpozná a předvyplní údaje
@@ -509,7 +509,7 @@ export default function SimpleDocFiller() {
                   onChange={(e) => setPastedText(e.target.value)}
                   placeholder="Vložte sem text dokladu…"
                   rows={5}
-                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-[12.5px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5 md:px-4 md:py-3.5 text-[12.5px] md:text-[14px] font-mono text-slate-700 resize-none focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
                 />
               </details>
 
@@ -518,7 +518,7 @@ export default function SimpleDocFiller() {
                   onClick={handleConfirmUpload}
                   disabled={pendingFiles.length === 0 && !pastedText.trim()}
                   style={PRIMARY_GRADIENT}
-                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 md:px-7 md:py-3.5 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Rozpoznat a pokračovat <ArrowRight size={14} />
                 </button>
@@ -534,7 +534,7 @@ export default function SimpleDocFiller() {
 
           {/* Step 2: scanning */}
           {step === 2 && (
-            <div className="p-7">
+            <div className="p-7 md:p-9">
               <div className="flex flex-col items-center justify-center gap-4 py-14">
                 <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden">
                   <FileText size={26} className="text-slate-300" />
@@ -550,7 +550,7 @@ export default function SimpleDocFiller() {
 
           {/* Step 3: form */}
           {step === 3 && (
-            <div className="p-7">
+            <div className="p-7 md:p-9">
               {previewUrls.length > 0 && (
                 <div className="mb-[22px] flex gap-2 flex-wrap">
                   {previewUrls.map((p, i) => (
@@ -603,7 +603,7 @@ export default function SimpleDocFiller() {
               )}
 
               <div className="mb-[22px]">
-                <label className="text-[11px] uppercase tracking-wide text-slate-400">Typ dokumentu</label>
+                <label className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Typ dokumentu</label>
                 <select
                   value={templateId || ""}
                   onChange={(e) => {
@@ -625,7 +625,7 @@ export default function SimpleDocFiller() {
                       return f;
                     });
                   }}
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-[13.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 md:px-4 md:py-3.5 text-[13.5px] md:text-[15px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
                   {blanks.map((b) => (
                     <option key={b.id} value={b.id}>{b.title}</option>
@@ -652,7 +652,7 @@ export default function SimpleDocFiller() {
                   const showWarning = showIcoWarning || showDicWarning;
                   return (
                     <label key={key} className="block">
-                      <span className="text-[11px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
+                      <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
                         {label}
                         {showVerified && (
                           <span className="inline-flex items-center gap-1 rounded-md bg-[#EAF3DE] text-[#3B6D11] text-[9.5px] font-medium px-1.5 py-0.5 normal-case tracking-normal">
@@ -669,7 +669,7 @@ export default function SimpleDocFiller() {
                           }))
                         }
                         style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
-                        className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
+                        className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
                           ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                       />
                       {showIcoWarning && (
@@ -730,7 +730,7 @@ export default function SimpleDocFiller() {
                   onClick={handleGenerate}
                   disabled={loading || !templateId}
                   style={PRIMARY_GRADIENT}
-                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 md:px-7 md:py-3.5 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-60"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
                   {loading ? "Generuji…" : "Vytvořit dokument"}
@@ -748,7 +748,7 @@ export default function SimpleDocFiller() {
               <div className="relative flex items-center px-8 pt-2">
                 <div className="flex-1 border-t-2 border-dashed border-slate-200" />
               </div>
-              <div className="p-8 pt-6 text-center">
+              <div className="p-8 pt-6 md:p-10 md:pt-8 text-center">
                 <div
                   className="mx-auto flex h-14 w-14 items-center justify-center rounded-full text-white"
                   style={{ background: "radial-gradient(circle at 30% 30%, #22a35f, #157a45)" }}
@@ -771,7 +771,7 @@ export default function SimpleDocFiller() {
                     type="button"
                     onClick={() => handleDownload(result.docx_token, { filename: result.docx_token })}
                     style={PRIMARY_GRADIENT}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-[13px] font-medium text-white transition-[filter] hover:brightness-110"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110"
                   >
                     <Download size={15} /> Stáhnout Word
                   </button>
@@ -779,14 +779,14 @@ export default function SimpleDocFiller() {
                     <button
                       type="button"
                       onClick={() => handleDownload(result.pdf_token, { openInNewTab: true })}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
                       <Printer size={15} /> Otevřít / Tisk (PDF)
                     </button>
                   )}
                   <button
                     onClick={reset}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                   >
                     <RotateCcw size={15} /> Nový dokument
                   </button>
