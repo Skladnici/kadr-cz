@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   Upload, FileText, Check, AlertTriangle, X, Download,
   Printer, Loader2, ArrowRight, ArrowLeft, RotateCcw, ShieldCheck,
@@ -9,6 +9,7 @@ import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
+import { isValidIco, isValidDic } from "./utils/validation";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } from "./utils/api";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
@@ -324,6 +325,37 @@ export default function SimpleDocFiller() {
     }
   };
 
+  // Stable identities so AddressBuilder (wrapped in React.memo) doesn't
+  // re-render on every keystroke in an unrelated field — plain inline
+  // arrow functions here would get a new identity on every render of this
+  // component, defeating the memoization. Safe as empty-deps useCallbacks
+  // because both only ever use the functional setState form.
+  const setCzPart = useCallback((key, value) => {
+    setCzAddressParts((prev) => ({ ...prev, [key]: value }));
+  }, []);
+  const setOriginPart = useCallback((key, value) => {
+    setOriginAddressParts((prev) => ({ ...prev, [key]: value }));
+  }, []);
+  const handleSetOriginCountry = useCallback((next) => {
+    // Fields are shared between UA/EU modes (they don't mean the same
+    // thing in each — UA has no "country" field, EU has no "oblast"
+    // concept) — clear on switch so old values from one mode don't
+    // silently leak into the other.
+    setOriginCountry(next);
+    setOriginAddressParts({});
+  }, []);
+
+  // Narrow slice of `fields` for CompanyPicker (also React.memo'd) — its
+  // identity only changes when a company_* field actually changes, not on
+  // every keystroke elsewhere in the form.
+  const companyFields = useMemo(() => ({
+    name: fields.company_name || "",
+    ico: fields.company_ico || "",
+    dic: fields.company_dic || "",
+    address: fields.company_address || "",
+    representative: fields.company_representative || "",
+  }), [fields.company_name, fields.company_ico, fields.company_dic, fields.company_address, fields.company_representative]);
+
   if (!authHeader) {
     return <LoginForm onLogin={handleLogin} loading={loggingIn} error={loginError} />;
   }
@@ -592,6 +624,14 @@ export default function SimpleDocFiller() {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
                   const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
+                  // Advisory only (see utils/validation.js) — flags a likely
+                  // typo without blocking generation, since foreign
+                  // companies and sole traders without a VAT number are
+                  // legitimate cases these checks can't fully account for.
+                  const value = fields[key] || "";
+                  const showIcoWarning = key === "company_ico" && value.trim() && !isValidIco(value);
+                  const showDicWarning = key === "company_dic" && value.trim() && !isValidDic(value);
+                  const showWarning = showIcoWarning || showDicWarning;
                   return (
                     <label key={key} className="block">
                       <span className="text-[11px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -612,8 +652,18 @@ export default function SimpleDocFiller() {
                         }
                         style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
                         className={`mt-1 w-full rounded-md border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
-                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
+                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                       />
+                      {showIcoWarning && (
+                        <span className="mt-1 block text-[10.5px] text-amber-600">
+                          Neplatné IČO — zkontrolujte, zda má 8 číslic a souhlasí kontrolní číslice.
+                        </span>
+                      )}
+                      {showDicWarning && (
+                        <span className="mt-1 block text-[10.5px] text-amber-600">
+                          Neobvyklý formát DIČ — očekává se dvoupísmenný kód země a 8–10 číslic (např. CZ12345678).
+                        </span>
+                      )}
                     </label>
                   );
                 };
@@ -629,24 +679,16 @@ export default function SimpleDocFiller() {
                     <div className="mb-3">
                       <AddressBuilder
                         czParts={czAddressParts}
-                        setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
+                        setCzPart={setCzPart}
                         originCountry={originCountry}
-                        setOriginCountry={(next) => {
-                          // Fields are shared between UA/EU modes (they don't
-                          // mean the same thing in each — UA has no "country"
-                          // field, EU has no "oblast" concept) — clear on
-                          // switch so old values from one mode don't silently
-                          // leak into the other.
-                          setOriginCountry(next);
-                          setOriginAddressParts({});
-                        }}
+                        setOriginCountry={handleSetOriginCountry}
                         originParts={originAddressParts}
-                        setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
+                        setOriginPart={setOriginPart}
                       />
                     </div>
 
                     {/* 3. Company + everything else (contract terms, payslip specifics) */}
-                    <CompanyPicker fields={fields} setFields={setFields} apiFetch={apiFetch} />
+                    <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
                     <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>

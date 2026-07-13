@@ -1,20 +1,24 @@
+# Secrets
+.env
+.env.local
+backend/.env
+frontend/.env
+
 # Python
 backend/venv/
 backend/**/__pycache__/
 *.pyc
-
-# Backend runtime data (uploaded files, generated documents)
-backend/uploads/
-backend/generated/
+backend/.pytest_cache/
 
 # Node
 frontend/node_modules/
 frontend/dist/
 
-# Env / secrets
-.env
-backend/.env
-frontend/.env
+# Runtime data (recreated on startup by config.py — see UPLOAD_DIR/GENERATED_DIR)
+backend/uploads/*
+backend/generated/*
+!backend/uploads/.gitkeep
+!backend/generated/.gitkeep
 
 # OS / editor cruft
 .DS_Store

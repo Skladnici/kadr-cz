@@ -1,7 +1,13 @@
+import { memo } from "react";
 import CityAutocomplete from "./CityAutocomplete";
 import { CZ_CITY_PSC, UA_CITY_PSC } from "../data/cityData";
 
-export default function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, originParts, setOriginPart }) {
+// Memoized because it sits below SimpleDocFiller's single `fields` state —
+// without this, every keystroke in an unrelated field (salary, position,
+// company name, ...) would re-render the whole address block too. Only
+// pays off because the caller passes stable (useCallback'd) setters —
+// see setCzPart/setOriginPart/handleSetOriginCountry in SimpleDocFiller.
+function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, originParts, setOriginPart }) {
   const cityMatch = czParts.city
     ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === czParts.city.trim().toLowerCase())
     : null;
@@ -144,3 +150,5 @@ export default function AddressBuilder({ czParts, setCzPart, originCountry, setO
     </div>
   );
 }
+
+export default memo(AddressBuilder);

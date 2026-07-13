@@ -41,6 +41,8 @@ lokálně přes Tesseract; pokud selže i to, spadne do MOCK režimu
 
 ### Proměnné prostředí
 
+Zkopírujte `backend/.env.example` do `backend/.env` a doplňte skutečné hodnoty.
+
 | Proměnná | Účel |
 |---|---|
 | `SITE_USERNAME`, `SITE_PASSWORD` | Přihlašovací údaje pro celý web (vyžadováno) |
@@ -49,6 +51,7 @@ lokálně přes Tesseract; pokud selže i to, spadne do MOCK režimu
 | `OCR_SPACE_API_KEY` | Přepne do režimu "ocrspace" (zdarma, bez billing účtu) |
 | `SUPABASE_URL`, `SUPABASE_KEY` | Sdílená databáze firem (bez nich `/api/companies` vrací `503`) |
 | `OCR_MODE_OVERRIDE` | Vynutí konkrétní režim (`live`/`ocrspace`/`local`/`mock`), např. pro testování |
+| `LOG_LEVEL` | Úroveň logování OCR pipeline (výchozí `INFO`) |
 
 ## Spuštění testů
 
