@@ -1,18 +1,35 @@
 """
 Regression tests for blank_service.py — mainly the path-traversal fix
-(template_id whitelist + filename sanitizing) and the stale-file cleanup,
-since both were security-relevant hand-fixes with no prior test coverage.
+(template_id whitelist + filename sanitizing), the stale-file cleanup,
+and the list_templates() caching, since all were hand-fixes with no
+prior test coverage.
 """
+import os
 import time
 
 import pytest
 
 from app.config import settings
+import app.blank_service as blank_service
 from app.blank_service import (
     _safe_filename_part,
     _cleanup_stale_generated_files,
+    list_templates,
     fill_blank,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_templates_cache():
+    """list_templates() caches at module level, keyed by a signature of
+    the real TEMPLATES_DIR by default — reset around every test so one
+    test's monkeypatched settings.TEMPLATES_DIR can't leak a stale cache
+    into another."""
+    blank_service._templates_cache = None
+    blank_service._templates_cache_signature = None
+    yield
+    blank_service._templates_cache = None
+    blank_service._templates_cache_signature = None
 
 
 def test_safe_filename_part_strips_traversal_characters():
@@ -70,3 +87,61 @@ def test_cleanup_stale_generated_files_removes_only_old_files(tmp_path, monkeypa
 
     remaining = {p.name for p in tmp_path.iterdir()}
     assert remaining == {"fresh.docx"}
+
+
+def test_list_templates_does_not_reparse_when_nothing_changed(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TEMPLATES_DIR", tmp_path)
+    (tmp_path / "a_template.docx").write_bytes(b"fake docx bytes")
+
+    call_count = {"n": 0}
+
+    def fake_read_title(path):
+        call_count["n"] += 1
+        return "A Title"
+
+    monkeypatch.setattr(blank_service, "_read_title", fake_read_title)
+
+    first = list_templates()
+    second = list_templates()
+
+    assert first == second == [{"id": "a_template", "title": "A Title"}]
+    # The (expensive, python-docx-based) title read must only happen
+    # once — the second call should be served entirely from cache.
+    assert call_count["n"] == 1
+
+
+def test_list_templates_picks_up_a_newly_added_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TEMPLATES_DIR", tmp_path)
+    monkeypatch.setattr(blank_service, "_read_title", lambda path: None)
+
+    (tmp_path / "a_template.docx").write_bytes(b"fake")
+    assert len(list_templates()) == 1
+
+    (tmp_path / "b_template.docx").write_bytes(b"fake")
+    assert len(list_templates()) == 2
+
+
+def test_list_templates_picks_up_an_edited_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TEMPLATES_DIR", tmp_path)
+
+    titles = {"n": 0}
+
+    def fake_read_title(path):
+        titles["n"] += 1
+        return f"Title {titles['n']}"
+
+    monkeypatch.setattr(blank_service, "_read_title", fake_read_title)
+
+    f = tmp_path / "a_template.docx"
+    f.write_bytes(b"v1")
+    first = list_templates()
+    assert first[0]["title"] == "Title 1"
+
+    # Force the mtime forward explicitly rather than relying on real
+    # wall-clock time passing between writes, which can be flaky on
+    # filesystems with coarse mtime resolution.
+    f.write_bytes(b"v2, longer content than before")
+    os.utime(f, (f.stat().st_mtime + 1, f.stat().st_mtime + 1))
+
+    second = list_templates()
+    assert second[0]["title"] == "Title 2"

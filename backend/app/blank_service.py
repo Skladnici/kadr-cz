@@ -40,14 +40,37 @@ def _cleanup_stale_generated_files() -> None:
             pass  # another request may have already removed it — fine
 
 
+_templates_cache: Optional[list[dict]] = None
+_templates_cache_signature: Optional[tuple] = None
+
+
 def list_templates() -> list[dict]:
-    """Scans the templates folder and returns available blanks."""
-    templates = []
-    for path in sorted(settings.TEMPLATES_DIR.glob("*.docx")):
-        if path.name.startswith("~$"):  # skip Word lock files
-            continue
-        title = _read_title(path) or path.stem.replace("_", " ").title()
-        templates.append({"id": path.stem, "title": title})
+    """Scans the templates folder and returns available blanks.
+
+    This runs on every /api/blanks call *and*, for the template_id
+    whitelist check, on every /api/fill call — so the expensive part
+    (opening each .docx with python-docx to read its title) is cached
+    and only redone when a file was actually added, removed, or
+    modified. The cheap stat()-based signature check that guards it
+    still re-reflects a new/renamed/edited .docx immediately.
+    """
+    global _templates_cache, _templates_cache_signature
+
+    paths = [
+        p for p in sorted(settings.TEMPLATES_DIR.glob("*.docx"))
+        if not p.name.startswith("~$")  # skip Word lock files
+    ]
+    signature = tuple((p.name, p.stat().st_mtime) for p in paths)
+
+    if _templates_cache is not None and signature == _templates_cache_signature:
+        return _templates_cache
+
+    templates = [
+        {"id": p.stem, "title": _read_title(p) or p.stem.replace("_", " ").title()}
+        for p in paths
+    ]
+    _templates_cache = templates
+    _templates_cache_signature = signature
     return templates
 
 
@@ -177,9 +200,14 @@ def convert_to_pdf(docx_path: Path) -> Optional[Path]:
     if not binary:
         return None
     try:
+        # A simple one-page docx converts in a couple of seconds; 60s of
+        # headroom just meant a stuck/hung LibreOffice process held the
+        # whole /api/fill request (and the user's browser) hostage for a
+        # full minute before finally giving up and offering the .docx
+        # without a PDF anyway. 20s is still generous slack.
         subprocess.run(
             [binary, "--headless", "--convert-to", "pdf", "--outdir", str(settings.GENERATED_DIR), str(docx_path)],
-            check=True, capture_output=True, timeout=60,
+            check=True, capture_output=True, timeout=20,
         )
         pdf_path = docx_path.with_suffix(".pdf")
         return pdf_path if pdf_path.exists() else None
