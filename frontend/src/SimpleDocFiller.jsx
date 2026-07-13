@@ -709,6 +709,7 @@ export default function SimpleDocFiller() {
   const [templateId, setTemplateId] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [downloadError, setDownloadError] = useState(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -894,6 +895,7 @@ export default function SimpleDocFiller() {
     setWarnings([]);
     setResult(null);
     setError(null);
+    setDownloadError(null);
     setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setPendingFiles([]);
@@ -901,6 +903,42 @@ export default function SimpleDocFiller() {
   };
 
   const downloadUrl = (token) => `${API_BASE}/api/download/${token}`;
+
+  // Download tokens are single-use — the file is deleted server-side right
+  // after being served (see backend/app/main.py /api/download), so a
+  // second click on the same link (browser back+retry, opening twice,
+  // etc.) now 404s. A plain <a href> can't distinguish that from a normal
+  // download, so we fetch the file ourselves and show an honest message
+  // instead of a raw browser download-failed error.
+  const handleDownload = async (token, { filename, openInNewTab } = {}) => {
+    setDownloadError(null);
+    try {
+      const res = await fetch(downloadUrl(token), { credentials: "include" });
+      if (!res.ok) {
+        setDownloadError(
+          res.status === 404
+            ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
+            : "Stažení se nezdařilo — zkuste to prosím znovu."
+        );
+        return;
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      if (openInNewTab) {
+        window.open(blobUrl, "_blank", "noopener,noreferrer");
+      } else {
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename || token;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch {
+      setDownloadError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
+    }
+  };
 
   return (
     <div
@@ -1273,22 +1311,28 @@ export default function SimpleDocFiller() {
                 </h2>
                 <p className="mt-1 text-[13px] text-slate-500">Stáhněte si soubor nebo ho rovnou vytiskněte.</p>
 
+                {downloadError && (
+                  <div className="mt-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-[12.5px] text-red-700 text-left">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {downloadError}
+                  </div>
+                )}
+
                 <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <a
-                    href={downloadUrl(result.docx_token)}
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(result.docx_token, { filename: result.docx_token })}
                     className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                   >
                     <Download size={15} /> Stáhnout Word
-                  </a>
+                  </button>
                   {result.pdf_token && (
-                    <a
-                      href={downloadUrl(result.pdf_token)}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(result.pdf_token, { openInNewTab: true })}
                       className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
                       <Printer size={15} /> Otevřít / Tisk (PDF)
-                    </a>
+                    </button>
                   )}
                   <button
                     onClick={reset}
