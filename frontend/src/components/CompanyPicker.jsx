@@ -1,0 +1,177 @@
+import { useState, useCallback, useEffect } from "react";
+import { describeRequestError } from "../utils/api";
+
+// Saved company profiles persist server-side (Supabase, not localStorage)
+// so the same list shows up for everyone using the site, on any computer
+// — pick one from the dropdown to auto-fill, or save the currently typed
+// values as a new (or updated) profile.
+
+// CompanyPicker only mounts while step 3 ("Vyplnit") is showing, and gets
+// unmounted/remounted every time the user goes back to step 1 and works on
+// another document. Without this cache, each remount would needlessly
+// re-fetch data that hasn't changed — even though the user never left the
+// "companies" section conceptually, just moved to a different document in
+// the same visit. Module-level so it survives remounts but resets on a
+// real page reload (a fresh page load always starts logged out again —
+// see LoginForm/apiFetch in SimpleDocFiller).
+let companiesCache = null;
+
+export default function CompanyPicker({ fields, setFields, apiFetch }) {
+  const [companies, setCompanies] = useState(companiesCache || []);
+  const [selectedId, setSelectedId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const loadCompanies = useCallback(async (force = false) => {
+    if (!force && companiesCache) {
+      setCompanies(companiesCache);
+      return;
+    }
+    try {
+      const res = await apiFetch("/api/companies");
+      if (!res.ok) {
+        // A 401 already made apiFetch drop back to the login form — no
+        // need to also show an error message behind it.
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst."));
+        }
+        return;
+      }
+      const data = await res.json();
+      companiesCache = data;
+      setCompanies(data);
+      setError(null);
+    } catch {
+      setError("Sdílené firmy se nepodařilo načíst — zkontrolujte připojení k internetu.");
+    }
+  }, [apiFetch]);
+
+  useEffect(() => { loadCompanies(); }, [loadCompanies]);
+
+  const applyCompany = (c) => {
+    setFields((f) => ({
+      ...f,
+      company_name: (c.name || "").toUpperCase(),
+      company_ico: c.ico || "",
+      company_dic: c.dic || "",
+      company_address: c.address || "",
+      company_representative: c.representative || "",
+    }));
+  };
+
+  const handleSelect = (id) => {
+    setSelectedId(id);
+    if (!id) {
+      // "— Vybrat uloženou firmu —" chosen — clear the fields rather
+      // than leaving whatever the previously selected company filled in.
+      setFields((f) => ({
+        ...f,
+        company_name: "",
+        company_ico: "",
+        company_dic: "",
+        company_address: "",
+        company_representative: "",
+      }));
+      return;
+    }
+    const c = companies.find((c) => c.id === id);
+    if (c) applyCompany(c);
+  };
+
+  const handleSaveCurrent = async () => {
+    if (!fields.company_name?.trim()) return;
+    setLoading(true);
+    setError(null);
+    const profile = {
+      name: fields.company_name || "",
+      ico: fields.company_ico || "",
+      dic: fields.company_dic || "",
+      address: fields.company_address || "",
+      representative: fields.company_representative || "",
+    };
+    try {
+      const res = await apiFetch(
+        selectedId ? `/api/companies/${selectedId}` : "/api/companies",
+        {
+          method: selectedId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profile),
+        }
+      );
+      if (!res.ok) {
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Uložení se nezdařilo."));
+        }
+        return;
+      }
+      const saved = await res.json();
+      await loadCompanies(true); // force: the list just changed server-side
+      setSelectedId(saved.id);
+    } catch {
+      setError("Uložení se nezdařilo — zkontrolujte připojení k internetu.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/companies/${selectedId}`, { method: "DELETE" });
+      if (!res.ok) {
+        if (res.status !== 401) {
+          setError(describeRequestError(res.status, "Smazání se nezdařilo."));
+        }
+        return;
+      }
+      setSelectedId("");
+      await loadCompanies(true); // force: the list just changed server-side
+    } catch {
+      setError("Smazání se nezdařilo — zkontrolujte připojení k internetu.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 p-3 bg-slate-50/40 mb-3">
+      <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Sdílené firmy</div>
+      {error && <p className="mb-2 text-[11.5px] text-red-600">{error}</p>}
+      <div className="flex gap-2 items-center flex-wrap">
+        <select
+          value={selectedId}
+          onChange={(e) => handleSelect(e.target.value)}
+          className="flex-1 min-w-[160px] rounded-md border border-slate-200 px-2.5 py-1.5 text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+        >
+          <option value="">— Vybrat uloženou firmu —</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleSaveCurrent}
+          disabled={loading}
+          className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap disabled:opacity-50"
+        >
+          {selectedId ? "Aktualizovat" : "Uložit jako novou"}
+        </button>
+        {selectedId && (
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={loading}
+            className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+          >
+            Smazat
+          </button>
+        )}
+      </div>
+      <p className="mt-1.5 text-[10.5px] text-slate-400">
+        Firmy jsou uložené na serveru — vidí je kdokoliv, kdo tento web používá.
+      </p>
+    </div>
+  );
+}
