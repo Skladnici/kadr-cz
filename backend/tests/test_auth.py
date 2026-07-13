@@ -2,8 +2,10 @@
 Regression tests for the site-wide HTTP Basic Auth gate. Covers the
 behavior manually verified with curl while building it: every /api/*
 route requires SITE_USERNAME/SITE_PASSWORD, GET / is the one public
-route and always sends Clear-Site-Data, and a missing server-side
-config degrades to 503 rather than silently allowing everyone through.
+route, and a missing server-side config degrades to 503 rather than
+silently allowing everyone through. HTTPBasic only inspects the
+Authorization header, so it makes no difference here whether the
+frontend attaches it via a browser-native prompt or its own login form.
 """
 import pytest
 from fastapi.testclient import TestClient
@@ -26,10 +28,9 @@ def unconfigured_auth(monkeypatch):
     monkeypatch.setattr(settings, "SITE_PASSWORD", "")
 
 
-def test_root_is_public_and_sends_clear_site_data():
+def test_root_is_public():
     resp = client.get("/")
     assert resp.status_code == 200
-    assert resp.headers["clear-site-data"] == '"credentials"'
 
 
 def test_protected_route_rejects_missing_credentials(configured_auth):
