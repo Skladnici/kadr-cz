@@ -31,6 +31,14 @@ from app.config import settings
 
 VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
+# _tesseract_ocr() has no timeout of its own — a malformed or adversarial
+# image could hang the thread it runs in indefinitely on a
+# memory/CPU-constrained free instance. asyncio.wait_for can't actually
+# kill the underlying OS thread (Python threads aren't forcibly
+# cancellable), but it does bound how long a request waits for it,
+# freeing the request to fall back to mock data instead of hanging.
+TESSERACT_TIMEOUT_SECONDS = 30
+
 # ---------------------------------------------------------------- doc type
 DOC_TYPE_KEYWORDS = {
     "Občanský průkaz": ["občanský průkaz", "obcansky prukaz", "identity card czech"],
@@ -861,7 +869,10 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             # failing outright, so the feature keeps working either way.
             try:
                 t2 = time.time()
-                raw_text = await asyncio.to_thread(_tesseract_ocr, image_bytes)
+                raw_text = await asyncio.wait_for(
+                    asyncio.to_thread(_tesseract_ocr, image_bytes),
+                    timeout=TESSERACT_TIMEOUT_SECONDS,
+                )
                 print(f"[timing] Tesseract fallback: {time.time()-t2:.1f}s, got {len(raw_text)} chars")
             except Exception as e:
                 print(f"[timing] Tesseract fallback failed: {type(e).__name__}: {e}")
@@ -887,7 +898,10 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
             ]
             return result
         try:
-            raw_text = await asyncio.to_thread(_tesseract_ocr, image_bytes)
+            raw_text = await asyncio.wait_for(
+                asyncio.to_thread(_tesseract_ocr, image_bytes),
+                timeout=TESSERACT_TIMEOUT_SECONDS,
+            )
         except Exception:
             raw_text = ""
         if not raw_text.strip():
