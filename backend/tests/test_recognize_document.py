@@ -12,6 +12,8 @@ a stub and check whether its result actually made it through: if
 asyncio.to_thread(...) had raised anything (NameError included), this
 would come back as the generic mock fallback instead.
 """
+import time
+
 from app.config import settings
 from app.ocr_service import recognize_document
 
@@ -39,3 +41,30 @@ async def test_recognize_document_local_mode_uses_tesseract_result(tmp_path, mon
     # what the missing-import bug caused for every real request.
     assert result["ocr_mode"] == "local"
     assert result["doc_number"] == "123456789"
+
+
+async def test_recognize_document_local_mode_bounded_by_tesseract_timeout(tmp_path, monkeypatch):
+    """A hung/adversarial image must not hold the request hostage —
+    recognize_document() should give up and fall back to mock data once
+    TESSERACT_TIMEOUT_SECONDS elapses, well before Tesseract itself
+    "finishes" (asyncio.wait_for can't kill the underlying OS thread, so
+    it keeps running in the background, but the request doesn't wait
+    for it)."""
+    monkeypatch.setattr(settings, "OCR_MODE", "local")
+    monkeypatch.setattr("app.ocr_service.TESSERACT_TIMEOUT_SECONDS", 0.2)
+
+    def hung_tesseract(image_bytes):
+        time.sleep(1.0)  # simulates Tesseract hanging on a bad image
+        return "should never be seen"
+
+    monkeypatch.setattr("app.ocr_service._tesseract_ocr", hung_tesseract)
+
+    file_path = tmp_path / "test.jpg"
+    file_path.write_bytes(_TINY_JPEG)
+
+    start = time.monotonic()
+    result = await recognize_document(file_path, "test.jpg")
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.9, f"request took {elapsed:.2f}s — timeout was not enforced"
+    assert result["ocr_mode"] == "mock"
