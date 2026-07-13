@@ -9,6 +9,7 @@ import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
+import { isValidIco, isValidDic } from "./utils/validation";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } from "./utils/api";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
@@ -592,6 +593,14 @@ export default function SimpleDocFiller() {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
                   const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
+                  // Advisory only (see utils/validation.js) — flags a likely
+                  // typo without blocking generation, since foreign
+                  // companies and sole traders without a VAT number are
+                  // legitimate cases these checks can't fully account for.
+                  const value = fields[key] || "";
+                  const showIcoWarning = key === "company_ico" && value.trim() && !isValidIco(value);
+                  const showDicWarning = key === "company_dic" && value.trim() && !isValidDic(value);
+                  const showWarning = showIcoWarning || showDicWarning;
                   return (
                     <label key={key} className="block">
                       <span className="text-[11px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -612,8 +621,18 @@ export default function SimpleDocFiller() {
                         }
                         style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
                         className={`mt-1 w-full rounded-md border px-2.5 py-1.5 text-[13px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
-                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
+                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                       />
+                      {showIcoWarning && (
+                        <span className="mt-1 block text-[10.5px] text-amber-600">
+                          Neplatné IČO — zkontrolujte, zda má 8 číslic a souhlasí kontrolní číslice.
+                        </span>
+                      )}
+                      {showDicWarning && (
+                        <span className="mt-1 block text-[10.5px] text-amber-600">
+                          Neobvyklý formát DIČ — očekává se dvoupísmenný kód země a 8–10 číslic (např. CZ12345678).
+                        </span>
+                      )}
                     </label>
                   );
                 };
