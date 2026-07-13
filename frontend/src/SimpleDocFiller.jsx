@@ -1303,7 +1303,9 @@ export default function SimpleDocFiller() {
         </div>
 
         <p className="mt-4 text-center text-[11.5px] text-slate-400">
-          Žádná data se neukládají — vše probíhá jednorázově.
+          Údaje o firmách (název, IČO, DIČ, adresa) se ukládají trvale pro
+          opakované použití. Vygenerované dokumenty s osobními údaji (doklady,
+          mzda, adresa) se neukládají — mažou se hned po stažení.
         </p>
       </div>
 
