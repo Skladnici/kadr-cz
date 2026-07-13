@@ -122,10 +122,16 @@ def _parse_mrz(text: str) -> Optional[str]:
     return None
 
 
-def _quality_score(image_bytes: bytes) -> int:
-    """Rough heuristic placeholder — in production this reads Vision's
-    imageProperties/faceAnnotation confidence. Here we approximate from
-    file size as a stand-in signal so the UI has something real to show."""
+def _estimate_quality_from_file_size(image_bytes: bytes) -> int:
+    """NOT a real image-quality measurement — no blur/resolution/lighting
+    analysis happens here. This is a coarse proxy (bigger file ~ more
+    detail retained by compression) used only because it costs nothing to
+    compute and is directionally better than nothing. A small file that's
+    sharp and well-lit scores exactly the same as a small file that's a
+    blurry mess, and a large-but-blurry photo scores "high" — callers
+    (see the quality<60 warning in _extract_fields_from_text) should treat
+    this as a weak hint, not a verdict. Swap for Vision's
+    imageProperties/faceAnnotation confidence if/when that's wired up."""
     size_kb = len(image_bytes) / 1024
     if size_kb < 50:
         return 55
@@ -333,6 +339,10 @@ def _find_address(text: str) -> Optional[str]:
 
 
 def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
+    """`quality` is a 0-100 confidence estimate, not a measured value: for
+    photos it's _estimate_quality_from_file_size's file-size proxy (see
+    its docstring for why that's a weak signal); pasted text and mock
+    mode just pass a fixed high number since there's no image to assess."""
     doc_type = _detect_doc_type(raw_text)
     country = _detect_country(raw_text)
     language = _detect_language(raw_text)
@@ -425,7 +435,14 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
             pass
 
     if quality < 60:
-        warnings.append("Kvalita fotografie je nízká — doporučujeme nahrát nový sken.")
+        # "quality" here is a file-size heuristic, not a measurement of
+        # actual sharpness/legibility (see _estimate_quality_from_file_size)
+        # — worded as a hedge, not a diagnosis, so it doesn't overstate
+        # what was actually checked.
+        warnings.append(
+            "Kvalita fotografie (odhad podle velikosti souboru) může být nízká "
+            "— pokud se některé údaje nerozpoznaly správně, zkuste nahrát ostřejší nebo větší sken."
+        )
 
     confidence = "high" if quality > 85 else "medium" if quality > 65 else "low"
 
@@ -843,7 +860,7 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
     t0 = time.time()
 
     image_bytes = file_path.read_bytes()
-    quality = _quality_score(image_bytes)
+    quality = _estimate_quality_from_file_size(image_bytes)
     logger.info("file read: %.1fs, size=%.0fKB", time.time() - t0, len(image_bytes) / 1024)
 
     if settings.OCR_MODE == "mock":
