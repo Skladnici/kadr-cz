@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   Upload, FileText, Check, AlertTriangle, X, Download,
   Printer, Loader2, ArrowRight, ArrowLeft, RotateCcw, ShieldCheck,
@@ -325,6 +325,37 @@ export default function SimpleDocFiller() {
     }
   };
 
+  // Stable identities so AddressBuilder (wrapped in React.memo) doesn't
+  // re-render on every keystroke in an unrelated field — plain inline
+  // arrow functions here would get a new identity on every render of this
+  // component, defeating the memoization. Safe as empty-deps useCallbacks
+  // because both only ever use the functional setState form.
+  const setCzPart = useCallback((key, value) => {
+    setCzAddressParts((prev) => ({ ...prev, [key]: value }));
+  }, []);
+  const setOriginPart = useCallback((key, value) => {
+    setOriginAddressParts((prev) => ({ ...prev, [key]: value }));
+  }, []);
+  const handleSetOriginCountry = useCallback((next) => {
+    // Fields are shared between UA/EU modes (they don't mean the same
+    // thing in each — UA has no "country" field, EU has no "oblast"
+    // concept) — clear on switch so old values from one mode don't
+    // silently leak into the other.
+    setOriginCountry(next);
+    setOriginAddressParts({});
+  }, []);
+
+  // Narrow slice of `fields` for CompanyPicker (also React.memo'd) — its
+  // identity only changes when a company_* field actually changes, not on
+  // every keystroke elsewhere in the form.
+  const companyFields = useMemo(() => ({
+    name: fields.company_name || "",
+    ico: fields.company_ico || "",
+    dic: fields.company_dic || "",
+    address: fields.company_address || "",
+    representative: fields.company_representative || "",
+  }), [fields.company_name, fields.company_ico, fields.company_dic, fields.company_address, fields.company_representative]);
+
   if (!authHeader) {
     return <LoginForm onLogin={handleLogin} loading={loggingIn} error={loginError} />;
   }
@@ -648,24 +679,16 @@ export default function SimpleDocFiller() {
                     <div className="mb-3">
                       <AddressBuilder
                         czParts={czAddressParts}
-                        setCzPart={(key, value) => setCzAddressParts((prev) => ({ ...prev, [key]: value }))}
+                        setCzPart={setCzPart}
                         originCountry={originCountry}
-                        setOriginCountry={(next) => {
-                          // Fields are shared between UA/EU modes (they don't
-                          // mean the same thing in each — UA has no "country"
-                          // field, EU has no "oblast" concept) — clear on
-                          // switch so old values from one mode don't silently
-                          // leak into the other.
-                          setOriginCountry(next);
-                          setOriginAddressParts({});
-                        }}
+                        setOriginCountry={handleSetOriginCountry}
                         originParts={originAddressParts}
-                        setOriginPart={(key, value) => setOriginAddressParts((prev) => ({ ...prev, [key]: value }))}
+                        setOriginPart={setOriginPart}
                       />
                     </div>
 
                     {/* 3. Company + everything else (contract terms, payslip specifics) */}
-                    <CompanyPicker fields={fields} setFields={setFields} apiFetch={apiFetch} />
+                    <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
                     <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>

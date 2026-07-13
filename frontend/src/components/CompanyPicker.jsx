@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, memo } from "react";
 import { describeRequestError } from "../utils/api";
 
 // Saved company profiles persist server-side (Supabase, not localStorage)
@@ -16,7 +16,13 @@ import { describeRequestError } from "../utils/api";
 // see LoginForm/apiFetch in SimpleDocFiller).
 let companiesCache = null;
 
-export default function CompanyPicker({ fields, setFields, apiFetch }) {
+// `company` is the {name, ico, dic, address, representative} slice of the
+// form's fields, not the whole `fields` object — SimpleDocFiller derives
+// it with useMemo so its identity only changes when a company_* field
+// actually changes. That, plus memo() here, means typing in an unrelated
+// field (salary, position, ...) doesn't re-render this component or
+// re-run its effects.
+function CompanyPicker({ company, setFields, apiFetch }) {
   const [companies, setCompanies] = useState(companiesCache || []);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -79,15 +85,15 @@ export default function CompanyPicker({ fields, setFields, apiFetch }) {
   };
 
   const handleSaveCurrent = async () => {
-    if (!fields.company_name?.trim()) return;
+    if (!company.name?.trim()) return;
     setLoading(true);
     setError(null);
     const profile = {
-      name: fields.company_name || "",
-      ico: fields.company_ico || "",
-      dic: fields.company_dic || "",
-      address: fields.company_address || "",
-      representative: fields.company_representative || "",
+      name: company.name || "",
+      ico: company.ico || "",
+      dic: company.dic || "",
+      address: company.address || "",
+      representative: company.representative || "",
     };
     try {
       const res = await apiFetch(
@@ -175,3 +181,5 @@ export default function CompanyPicker({ fields, setFields, apiFetch }) {
     </div>
   );
 }
+
+export default memo(CompanyPicker);

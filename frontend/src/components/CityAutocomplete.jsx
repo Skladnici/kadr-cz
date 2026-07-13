@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, memo } from "react";
 import { MapPin } from "lucide-react";
 
 // Custom autocomplete dropdown for city fields — replaces the native
@@ -6,7 +6,7 @@ import { MapPin } from "lucide-react";
 // popup. Shows up to 6 matches with the typed portion highlighted,
 // supports arrow-key navigation + Enter, and calls onSelect(name, psc)
 // so the caller can auto-fill PSČ/indeks in the same step.
-export default function CityAutocomplete({ value, onChange, onSelect, cityTable, placeholder }) {
+function CityAutocomplete({ value, onChange, onSelect, cityTable, placeholder }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const wrapRef = useRef(null);
@@ -69,3 +69,5 @@ export default function CityAutocomplete({ value, onChange, onSelect, cityTable,
     </div>
   );
 }
+
+export default memo(CityAutocomplete);
