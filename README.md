@@ -80,3 +80,11 @@ Všechny kromě `GET /` vyžadují přihlášení (`Authorization: Basic ...`).
 - Nahraná fotka dokladu — smaže se ihned po rozpoznání
 - Vygenerovaný dokument — smaže se ihned po stažení, nebo automaticky po 24 hodinách, pokud si ho nikdo nestáhne
 - Seznam firem — ukládá se trvale v Supabase, sdílený mezi všemi, kdo web používají
+
+## Známá omezení
+
+- **Souběžná úprava firmy:** pokud dva lidé upraví stejnou firmu ve
+  stejnou chvíli, vyhraje ten, jehož uložení proběhne jako poslední —
+  bez varování. Pro malý sdílený tým akceptovatelné riziko; řešení
+  (optimistický zámek přes `updated_at`) je připravené v databázi
+  (`create_companies_table.sql`), ale zatím není implementované v API.
