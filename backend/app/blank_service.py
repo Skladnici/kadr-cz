@@ -13,12 +13,31 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 import re
+import time
 import uuid
 
 from docx import Document as DocxDocument
 from docxtpl import DocxTemplate
 
 from app.config import settings
+
+# Files normally get deleted right after being downloaded (see
+# main.py's /api/download), but a file the user never comes back for
+# (closed the tab, only grabbed the PDF and not the Word copy, etc.)
+# would otherwise sit on disk forever. Anything older than this is swept
+# on the next generation request — no cron/queue needed for a handful of
+# files a day.
+STALE_GENERATED_FILE_MAX_AGE_HOURS = 24
+
+
+def _cleanup_stale_generated_files() -> None:
+    cutoff = time.time() - STALE_GENERATED_FILE_MAX_AGE_HOURS * 3600
+    for path in settings.GENERATED_DIR.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass  # another request may have already removed it — fine
 
 
 def list_templates() -> list[dict]:
@@ -71,6 +90,8 @@ def fill_blank(template_id: str, fields: dict) -> Path:
     the output .docx path. `fields` keys should match the template's
     {{PLACEHOLDER}} names (case-insensitive match on common aliases below).
     """
+    _cleanup_stale_generated_files()
+
     # template_id must be one of the ids we actually discovered on disk —
     # never trust the client's raw string when building a filesystem path
     # (e.g. an absolute path would otherwise override TEMPLATES_DIR entirely).
