@@ -2,10 +2,10 @@
 .env
 .env.local
 backend/.env
+frontend/.env
 
 # Python
 backend/venv/
-backend/__pycache__/
 backend/**/__pycache__/
 *.pyc
 backend/.pytest_cache/
@@ -19,3 +19,7 @@ backend/uploads/*
 backend/generated/*
 !backend/uploads/.gitkeep
 !backend/generated/.gitkeep
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
