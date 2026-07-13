@@ -1,29 +1,43 @@
-// Common Czech cities with their postal code (PSČ) — covers the large
-// majority of real addresses without needing any external lookup
-// service. Smaller towns aren't in this list; the person just types the
-// PSČ manually in that case, same as before.
 // Practical, sizeable set of Czech towns/city districts with PSČ — not
 // the full official ~15,000-entry postal registry (that would need a
 // real downloaded dataset), but covers the large majority of real
 // addresses HR staff will type. Anything not listed here is simply
 // typed in manually, same as before.
+//
+// A single PSČ per city name is only actually true for smaller towns
+// with one post office. The 26 legally-defined "statutární města" (plus
+// bare "Praha" — as opposed to "Praha 1".."Praha 22", which do each have
+// their own accurate, real PSČ) are large enough to span several postal
+// districts, so autofilling one fixed code for them would silently put a
+// wrong PSČ on a real contract depending which part of the city the
+// address is actually in. CZ_CITY_PSC below intentionally has "" for
+// these — see AddressBuilder.jsx, which treats that as "ask the person
+// to type it themselves" instead of auto-filling.
+export const CZ_AMBIGUOUS_PSC_CITIES = new Set([
+  "Praha", "Brno", "Ostrava", "Plzeň", "Liberec", "Olomouc", "České Budějovice",
+  "Hradec Králové", "Ústí nad Labem", "Pardubice", "Zlín", "Havířov", "Kladno",
+  "Most", "Opava", "Frýdek-Místek", "Karviná", "Jihlava", "Teplice",
+  "Karlovy Vary", "Chomutov", "Jablonec nad Nisou", "Mladá Boleslav",
+  "Prostějov", "Přerov", "Třinec", "Děčín",
+]);
+
 export const CZ_CITY_PSC = {
-  "Praha": "100 00",
+  "Praha": "",
   "Praha 1": "110 00", "Praha 2": "120 00", "Praha 3": "130 00", "Praha 4": "140 00",
   "Praha 5": "150 00", "Praha 6": "160 00", "Praha 7": "170 00", "Praha 8": "180 00",
   "Praha 9": "190 00", "Praha 10": "100 00", "Praha 11": "149 00", "Praha 12": "143 00",
   "Praha 13": "155 00", "Praha 14": "198 00", "Praha 15": "109 00", "Praha 16": "165 00",
   "Praha 17": "163 00", "Praha 18": "199 00", "Praha 19": "197 00", "Praha 20": "193 00",
   "Praha 21": "190 16", "Praha 22": "104 00",
-  "Brno": "602 00", "Ostrava": "702 00", "Plzeň": "301 00", "Liberec": "460 01",
-  "Olomouc": "779 00", "České Budějovice": "370 01", "Hradec Králové": "500 02",
-  "Ústí nad Labem": "400 01", "Pardubice": "530 02", "Zlín": "760 01",
-  "Havířov": "736 01", "Kladno": "272 01", "Most": "434 01", "Opava": "746 01",
-  "Frýdek-Místek": "738 01", "Karviná": "733 01", "Jihlava": "586 01",
-  "Teplice": "415 01", "Děčín": "405 02", "Karlovy Vary": "360 01",
-  "Chomutov": "430 01", "Jablonec nad Nisou": "466 01", "Mladá Boleslav": "293 01",
-  "Prostějov": "796 01", "Přerov": "750 02", "Česká Lípa": "470 01",
-  "Třebíč": "674 01", "Třinec": "739 61", "Tábor": "390 02", "Znojmo": "669 02",
+  "Brno": "", "Ostrava": "", "Plzeň": "", "Liberec": "",
+  "Olomouc": "", "České Budějovice": "", "Hradec Králové": "",
+  "Ústí nad Labem": "", "Pardubice": "", "Zlín": "",
+  "Havířov": "", "Kladno": "", "Most": "", "Opava": "",
+  "Frýdek-Místek": "", "Karviná": "", "Jihlava": "",
+  "Teplice": "", "Děčín": "", "Karlovy Vary": "",
+  "Chomutov": "", "Jablonec nad Nisou": "", "Mladá Boleslav": "",
+  "Prostějov": "", "Přerov": "", "Česká Lípa": "470 01",
+  "Třebíč": "674 01", "Třinec": "", "Tábor": "390 02", "Znojmo": "669 02",
   "Kolín": "280 02", "Příbram": "261 01", "Cheb": "350 02", "Trutnov": "541 01",
   "Vsetín": "755 01", "Kroměříž": "767 01", "Litoměřice": "412 01",
   "Písek": "397 01", "Uherské Hradiště": "686 01", "Šumperk": "787 01",

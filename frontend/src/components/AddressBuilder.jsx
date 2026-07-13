@@ -1,6 +1,6 @@
 import { memo } from "react";
 import CityAutocomplete from "./CityAutocomplete";
-import { CZ_CITY_PSC, UA_CITY_PSC } from "../data/cityData";
+import { CZ_CITY_PSC, CZ_AMBIGUOUS_PSC_CITIES, UA_CITY_PSC } from "../data/cityData";
 
 // Memoized because it sits below SimpleDocFiller's single `fields` state —
 // without this, every keystroke in an unrelated field (salary, position,
@@ -8,9 +8,15 @@ import { CZ_CITY_PSC, UA_CITY_PSC } from "../data/cityData";
 // pays off because the caller passes stable (useCallback'd) setters —
 // see setCzPart/setOriginPart/handleSetOriginCountry in SimpleDocFiller.
 function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, originParts, setOriginPart }) {
-  const cityMatch = czParts.city
+  const cityMatchKey = czParts.city
     ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === czParts.city.trim().toLowerCase())
     : null;
+  // Large cities (statutární města) span several postal districts — a
+  // single PSČ per city name would be wrong more often than not, so
+  // these intentionally have "" in CZ_CITY_PSC (see cityData.js) and get
+  // a caution instead of a confident "auto-filled" claim.
+  const isAmbiguousCity = cityMatchKey && CZ_AMBIGUOUS_PSC_CITIES.has(cityMatchKey);
+  const cityMatch = cityMatchKey && !isAmbiguousCity ? cityMatchKey : null;
   const uaCityMatch = originCountry === "ua" && originParts.city
     ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === originParts.city.trim().toLowerCase())
     : null;
@@ -43,12 +49,16 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
           </label>
           <label className="block">
             <span className="text-[11px] text-slate-400">
-              PSČ {cityMatch && <span className="text-emerald-600">· doplněno automaticky</span>}
+              PSČ
+              {cityMatch && <span className="text-emerald-600"> · doplněno automaticky</span>}
+              {isAmbiguousCity && (
+                <span className="text-amber-600"> · liší se podle části města, zadejte ručně</span>
+              )}
             </span>
             <input
               value={czParts.psc || ""}
               onChange={(e) => setCzPart("psc", e.target.value)}
-              placeholder="100 00"
+              placeholder={isAmbiguousCity ? "např. 702 00" : "100 00"}
               className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
