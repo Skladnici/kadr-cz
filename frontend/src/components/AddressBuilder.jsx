@@ -1,6 +1,15 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import CityAutocomplete from "./CityAutocomplete";
 import { CZ_CITY_PSC, CZ_AMBIGUOUS_PSC_CITIES, UA_CITY_PSC } from "../data/cityData";
+import { fetchPscForAddress } from "../utils/geocode";
+
+// Debounced so typing a street doesn't fire a Nominatim request per
+// keystroke — comfortably under their "max 1 request/sec" usage policy.
+const GEOCODE_DEBOUNCE_MS = 1000;
+// Nominatim occasionally hangs rather than erroring — bound how long we
+// wait so the field just falls back to manual entry instead of leaving
+// the "hledám PSČ…" hint stuck forever.
+const GEOCODE_TIMEOUT_MS = 6000;
 
 // Memoized because it sits below SimpleDocFiller's single `fields` state —
 // without this, every keystroke in an unrelated field (salary, position,
@@ -13,13 +22,103 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
     : null;
   // Large cities (statutární města) span several postal districts — a
   // single PSČ per city name would be wrong more often than not, so
-  // these intentionally have "" in CZ_CITY_PSC (see cityData.js) and get
-  // a caution instead of a confident "auto-filled" claim.
+  // these intentionally have "" in CZ_CITY_PSC (see cityData.js). Instead
+  // of leaving the field permanently blank, the effect below asks
+  // Nominatim to resolve the real PSČ once a street has been typed.
   const isAmbiguousCity = cityMatchKey && CZ_AMBIGUOUS_PSC_CITIES.has(cityMatchKey);
   const cityMatch = cityMatchKey && !isAmbiguousCity ? cityMatchKey : null;
   const uaCityMatch = originCountry === "ua" && originParts.city
     ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === originParts.city.trim().toLowerCase())
     : null;
+
+  // --- Live PSČ lookup for ambiguous cities ---------------------------
+  const [geocodeStatus, setGeocodeStatus] = useState("idle"); // idle | loading | done
+  const latestPscRef = useRef(czParts.psc);
+  const lastFilledPscRef = useRef(null); // the value *we* last wrote in
+  const lastQueryRef = useRef(null);
+  const abortRef = useRef(null);
+
+  useEffect(() => { latestPscRef.current = czParts.psc; }, [czParts.psc]);
+
+  useEffect(() => {
+    if (!isAmbiguousCity) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    const street = (czParts.street || "").trim();
+    const city = (czParts.city || "").trim();
+    if (!street || !city) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    const query = `${street}, ${city}`;
+    if (query === lastQueryRef.current) return; // already resolved this exact address
+
+    // Declared here (not inside the timer callback) so the cleanup below
+    // can reach the same controller instance to abort it.
+    let controller = null;
+
+    const timer = setTimeout(() => {
+      lastQueryRef.current = query;
+      controller = new AbortController();
+      abortRef.current = controller;
+      const timeoutId = setTimeout(() => controller.abort(), GEOCODE_TIMEOUT_MS);
+      setGeocodeStatus("loading");
+
+      // Bail out of updating state only if a *newer* request has taken
+      // over (abortRef has since been reassigned or cleared) — not
+      // simply because controller.signal.aborted is true, since our own
+      // GEOCODE_TIMEOUT_MS firing also sets that flag on this exact
+      // controller, and that case still needs to resolve to "done" so
+      // the UI doesn't get stuck showing "hledám PSČ podle adresy…"
+      // forever.
+      const isStillCurrent = () => abortRef.current === controller;
+
+      fetchPscForAddress(street, city, controller.signal)
+        .then((postcode) => {
+          if (!isStillCurrent()) return;
+          if (postcode) {
+            const current = (latestPscRef.current || "").trim();
+            // Never clobber something the person typed themselves —
+            // only fill if the field is still empty, or still holds
+            // exactly what our own last lookup put there.
+            if (!current || current === lastFilledPscRef.current) {
+              setCzPart("psc", postcode);
+              lastFilledPscRef.current = postcode;
+            }
+          }
+          setGeocodeStatus("done");
+        })
+        .catch(() => {
+          if (!isStillCurrent()) return;
+          // Network error, timeout, or Nominatim unreachable — silently
+          // fall back to the manual-entry warning below, same as a
+          // genuine "no result" response.
+          setGeocodeStatus("done");
+        })
+        .finally(() => clearTimeout(timeoutId));
+    }, GEOCODE_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+      // Marks the in-flight request (if any) as no longer current *before*
+      // aborting it, so its .then()/.catch() (which may still fire
+      // asynchronously after this) knows to skip updating state — this is
+      // what stops a stale response from touching state after this effect
+      // was superseded by a newer one, or after the component unmounted.
+      if (controller) {
+        if (abortRef.current === controller) abortRef.current = null;
+        controller.abort();
+      }
+    };
+  }, [isAmbiguousCity, czParts.street, czParts.city, setCzPart]);
+
+  // True only while the field still holds exactly the PSČ our own lookup
+  // wrote — the moment the person edits it, this goes false on its own
+  // and the "podle adresy" hint disappears instead of misdescribing it.
+  const pscFromGeocode = Boolean(
+    isAmbiguousCity && lastFilledPscRef.current && czParts.psc === lastFilledPscRef.current
+  );
 
   return (
     <div className="space-y-4">
@@ -51,7 +150,13 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
             <span className="text-[11px] text-slate-400">
               PSČ
               {cityMatch && <span className="text-emerald-600"> · doplněno automaticky</span>}
-              {isAmbiguousCity && (
+              {isAmbiguousCity && pscFromGeocode && (
+                <span className="text-sky-600"> · doplněno podle adresy</span>
+              )}
+              {isAmbiguousCity && !pscFromGeocode && geocodeStatus === "loading" && (
+                <span className="text-slate-400"> · hledám PSČ podle adresy…</span>
+              )}
+              {isAmbiguousCity && !pscFromGeocode && geocodeStatus !== "loading" && (
                 <span className="text-amber-600"> · liší se podle části města, zadejte ručně</span>
               )}
             </span>

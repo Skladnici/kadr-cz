@@ -799,7 +799,9 @@ export default function SimpleDocFiller() {
         <p className="mt-[22px] text-center text-[11.5px] text-slate-400">
           Údaje o firmách (název, IČO, DIČ, adresa) se ukládají trvale pro
           opakované použití. Vygenerované dokumenty s osobními údaji (doklady,
-          mzda, adresa) se neukládají — mažou se hned po stažení.
+          mzda, adresa) se neukládají — mažou se hned po stažení. PSČ u
+          velkých měst se dohledává podle zadané adresy přes OpenStreetMap
+          (© přispěvatelé OpenStreetMap).
         </p>
       </div>
 
