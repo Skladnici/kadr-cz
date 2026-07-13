@@ -69,8 +69,15 @@ export default function SimpleDocFiller() {
     setLoginError(null);
     const header = toBasicAuthHeader(username, password);
     try {
+      // /api/blanks doubles as the credential check here (any correctly
+      // authenticated GET would do) — reuse its body to seed the blanks
+      // list directly instead of throwing it away and having the effect
+      // below immediately re-fetch the same data over again.
       const res = await fetch(`${API_BASE}/api/blanks`, { headers: { Authorization: header } });
       if (res.ok) {
+        const data = await res.json();
+        setBlanks(data);
+        if (data.length > 0) setTemplateId(data[0].id);
         setAuthHeader(header);
       } else if (res.status === 401) {
         setLoginError("Nesprávné uživatelské jméno nebo heslo.");
@@ -85,7 +92,11 @@ export default function SimpleDocFiller() {
   };
 
   useEffect(() => {
-    if (!authHeader) return;
+    // Already seeded by handleLogin's credential-check response — this
+    // effect only needs to actually fetch when authHeader appears through
+    // some other path (there currently isn't one, but relying on that
+    // would be fragile) or blanks genuinely came back empty.
+    if (!authHeader || blanks.length > 0) return;
     apiFetch("/api/blanks")
       .then((r) => {
         if (!r.ok) {
