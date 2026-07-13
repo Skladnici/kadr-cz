@@ -17,6 +17,7 @@ Two modes, selected automatically by whether GOOGLE_VISION_API_KEY is set:
 To go live: put GOOGLE_VISION_API_KEY=... in backend/.env
 (Get a free-tier key at https://console.cloud.google.com/apis/library/vision.googleapis.com)
 """
+import asyncio
 import base64
 import re
 import mimetypes
@@ -719,7 +720,6 @@ async def _ocr_space_ocr(image_bytes: bytes, filename: str) -> str:
     solves both the speed and reliability problems of running Tesseract
     locally on a memory/CPU-constrained free hosting instance."""
     import time
-    import asyncio
     url = "https://api.ocr.space/parse/image"
 
     t_compress = time.time()
