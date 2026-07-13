@@ -200,9 +200,14 @@ def convert_to_pdf(docx_path: Path) -> Optional[Path]:
     if not binary:
         return None
     try:
+        # A simple one-page docx converts in a couple of seconds; 60s of
+        # headroom just meant a stuck/hung LibreOffice process held the
+        # whole /api/fill request (and the user's browser) hostage for a
+        # full minute before finally giving up and offering the .docx
+        # without a PDF anyway. 20s is still generous slack.
         subprocess.run(
             [binary, "--headless", "--convert-to", "pdf", "--outdir", str(settings.GENERATED_DIR), str(docx_path)],
-            check=True, capture_output=True, timeout=60,
+            check=True, capture_output=True, timeout=20,
         )
         pdf_path = docx_path.with_suffix(".pdf")
         return pdf_path if pdf_path.exists() else None

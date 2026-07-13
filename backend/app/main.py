@@ -7,6 +7,7 @@ no database. Run:
 
     uvicorn app.main:app --reload --port 8000
 """
+import asyncio
 import secrets
 import uuid
 from pathlib import Path
@@ -170,7 +171,7 @@ class FillRequest(BaseModel):
 
 
 @app.post("/api/fill", dependencies=[Depends(_require_site_auth)])
-def fill(payload: FillRequest):
+async def fill(payload: FillRequest):
     """Fills the chosen blank with the given fields and returns a
     download token; nothing is saved to a database."""
     try:
@@ -180,7 +181,10 @@ def fill(payload: FillRequest):
     except Exception as e:
         raise HTTPException(500, f"Chyba při vyplňování: {e}")
 
-    pdf_path = convert_to_pdf(docx_path)
+    # convert_to_pdf() shells out to LibreOffice and can take real
+    # wall-clock seconds — offload it so it doesn't tie up this request's
+    # thread any longer than the subprocess call itself needs.
+    pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
 
     return {
         "docx_token": docx_path.name,
