@@ -34,7 +34,9 @@ function uploadFileViaXHR(url, file, timeoutMs = 90000) {
           reject(new Error("invalid JSON response"));
         }
       } else {
-        reject(new Error(`server error ${xhr.status}`));
+        const err = new Error(`server error ${xhr.status}`);
+        err.status = xhr.status;
+        reject(err);
       }
     };
     xhr.onerror = () => reject(new Error("network error"));
@@ -48,6 +50,28 @@ function uploadFileViaXHR(url, file, timeoutMs = 90000) {
 const API_BASE = typeof window !== "undefined" && window.__HR_API_BASE__
   ? window.__HR_API_BASE__
   : "http://localhost:8000";
+
+// Turns a failed request's HTTP status into an honest Czech message,
+// instead of always blaming "the backend isn't running" — most
+// importantly, distinguishing "you need to log in" (401 — e.g. the
+// browser's Basic Auth prompt was cancelled or credentials expired)
+// from a genuinely unreachable/broken backend, since every /api/* route
+// now requires the site-wide login.
+function describeRequestError(status, fallbackAction) {
+  if (status === 401) {
+    return "Je potřeba se přihlásit. Obnovte stránku (F5) a zadejte přihlašovací údaje, až se o ně prohlížeč přihlásí.";
+  }
+  if (status === 503) {
+    return "Tato funkce není na serveru nastavená — kontaktujte správce webu.";
+  }
+  if (status === 404) {
+    return "Požadovaná data nebyla nalezena.";
+  }
+  if (typeof status === "number" && status >= 500) {
+    return "Na serveru došlo k chybě — zkuste to prosím za chvíli znovu.";
+  }
+  return `${fallbackAction} Zkontrolujte, zda backend běží na ${API_BASE}.`;
+}
 
 // Fields shown for review/editing after recognition, and sent to /api/fill.
 // Third item marks which templates this field is relevant for — "all"
@@ -539,13 +563,16 @@ function CompanyPicker({ fields, setFields }) {
     }
     try {
       const res = await fetch(`${API_BASE}/api/companies`, { credentials: "include" });
-      if (!res.ok) throw new Error("failed");
+      if (!res.ok) {
+        setError(describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst."));
+        return;
+      }
       const data = await res.json();
       companiesCache = data;
       setCompanies(data);
       setError(null);
     } catch {
-      setError("Sdílené firmy se nepodařilo načíst ze serveru.");
+      setError("Sdílené firmy se nepodařilo načíst — zkontrolujte připojení k internetu.");
     }
   }, []);
 
@@ -602,12 +629,15 @@ function CompanyPicker({ fields, setFields }) {
           body: JSON.stringify(profile),
         }
       );
-      if (!res.ok) throw new Error("failed");
+      if (!res.ok) {
+        setError(describeRequestError(res.status, "Uložení se nezdařilo."));
+        return;
+      }
       const saved = await res.json();
       await loadCompanies(true); // force: the list just changed server-side
       setSelectedId(saved.id);
     } catch {
-      setError("Uložení se nezdařilo — zkontrolujte, zda je server dostupný.");
+      setError("Uložení se nezdařilo — zkontrolujte připojení k internetu.");
     } finally {
       setLoading(false);
     }
@@ -619,11 +649,14 @@ function CompanyPicker({ fields, setFields }) {
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/companies/${selectedId}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error("failed");
+      if (!res.ok) {
+        setError(describeRequestError(res.status, "Smazání se nezdařilo."));
+        return;
+      }
       setSelectedId("");
       await loadCompanies(true); // force: the list just changed server-side
     } catch {
-      setError("Smazání se nezdařilo — zkontrolujte, zda je server dostupný.");
+      setError("Smazání se nezdařilo — zkontrolujte připojení k internetu.");
     } finally {
       setLoading(false);
     }
@@ -722,13 +755,20 @@ export default function SimpleDocFiller() {
       .catch(() => {})
       .then(() =>
         fetch(`${API_BASE}/api/blanks`, { credentials: "include" })
-          .then((r) => r.json())
+          .then((r) => {
+            if (!r.ok) {
+              const err = new Error("failed");
+              err.status = r.status;
+              throw err;
+            }
+            return r.json();
+          })
           .then((data) => {
             setBlanks(data);
             if (data.length > 0) setTemplateId(data[0].id);
           })
       )
-      .catch(() => setError(`Nepodařilo se načíst seznam formulářů. Zkontrolujte, zda backend běží na ${API_BASE}.`));
+      .catch((e) => setError(describeRequestError(e?.status, "Nepodařilo se načíst seznam formulářů.")));
   }, []);
 
   // Shared by both the file-upload path and the paste-text path: takes
@@ -829,7 +869,11 @@ export default function SimpleDocFiller() {
           credentials: "include",
           body: JSON.stringify({ text: pastedText }),
         });
-        if (!res.ok) throw new Error("server error");
+        if (!res.ok) {
+          const err = new Error("server error");
+          err.status = res.status;
+          throw err;
+        }
         results.push(await res.json());
       }
       applyRecognizedResults(results);
@@ -837,7 +881,7 @@ export default function SimpleDocFiller() {
       if (e.message === "timeout") {
         setError("Rozpoznávání trvá příliš dlouho (přes 90 s) — server je pravděpodobně přetížený. Zkuste to znovu za chvíli, nebo nahrajte menší/ostřejší fotografii.");
       } else {
-        setError(`Nepodařilo se rozpoznat dokument (${e.message}). Zkontrolujte, zda backend běží na ${API_BASE}.`);
+        setError(describeRequestError(e.status, "Nepodařilo se rozpoznat dokument."));
       }
       setStep(1);
     }
@@ -875,12 +919,16 @@ export default function SimpleDocFiller() {
           address_origin: composeOriginAddress(originCountry, originAddressParts),
         }),
       });
-      if (!res.ok) throw new Error("server error");
+      if (!res.ok) {
+        const err = new Error("server error");
+        err.status = res.status;
+        throw err;
+      }
       const data = await res.json();
       setResult(data);
       setStep(4);
     } catch (e) {
-      setError(`Nepodařilo se vygenerovat dokument. Zkontrolujte, zda backend běží na ${API_BASE}.`);
+      setError(describeRequestError(e.status, "Nepodařilo se vygenerovat dokument."));
     } finally {
       setLoading(false);
     }
@@ -918,7 +966,7 @@ export default function SimpleDocFiller() {
         setDownloadError(
           res.status === 404
             ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
-            : "Stažení se nezdařilo — zkuste to prosím znovu."
+            : describeRequestError(res.status, "Stažení se nezdařilo.")
         );
         return;
       }
