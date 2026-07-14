@@ -825,7 +825,16 @@ export default function SimpleDocFiller() {
                       {personFields.map(renderField)}
                     </div>
 
-                    {/* 2. Addresses next */}
+                    {/* 2. Company next, before the address — picking it here
+                        means fields.company_address is already set by the
+                        time the address section below renders, so the
+                        workplace auto-fill effect and the address's own PSČ
+                        geocoding run before the person has a chance to type
+                        an address by hand, and the protect-manual-edits
+                        guards on both never end up fighting the sync. */}
+                    <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
+
+                    {/* 3. Address, now that a company (if any) is already picked */}
                     <div className="mb-4">
                       <AddressBuilder
                         czParts={czAddressParts}
@@ -837,8 +846,7 @@ export default function SimpleDocFiller() {
                       />
                     </div>
 
-                    {/* 3. Company + everything else (contract terms, payslip specifics) */}
-                    <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
+                    {/* 4. Everything else (contract terms, payslip specifics) */}
                     <div className="grid grid-cols-2 gap-x-4 gap-y-4 max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>
