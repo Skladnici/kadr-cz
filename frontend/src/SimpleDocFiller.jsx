@@ -162,21 +162,30 @@ export default function SimpleDocFiller() {
 
     // Identity fields (name, birth date, doc number) can come back non-empty
     // from more than one uploaded file — a visa sticker carries its own
-    // MRZ-style name line too, alongside a passport/ID's. But a visa's MRZ
-    // is far more OCR-error-prone (glare, curvature, smaller print, often
-    // crowded by stamps) than a passport's dedicated biometric-page MRZ, so
-    // whichever file happens to be uploaded/processed first shouldn't just
-    // win by default — that let a garbled visa read silently override a
-    // clean passport read that arrived second. Rank sources by reliability
-    // instead: prefer a result whose doc_number checksum-verified (only
-    // possible for genuine ICAO passport/ID MRZ, see
-    // _extract_passport_number_from_mrz in ocr_service.py), then prefer any
-    // non-visa document, and only fall back to plain upload order if
-    // neither signal distinguishes them.
-    const pickReliableResult = (key) =>
-      results.find((r) => r[key] && r[key] !== "—" && r.doc_number_verified) ||
-      results.find((r) => r[key] && r[key] !== "—" && r.doc_type !== "Vízum") ||
-      results.find((r) => r[key] && r[key] !== "—");
+    // MRZ-style name line too, alongside a passport/ID's. Neither "is this
+    // doc_number checksum-verified" nor "is this a non-visa document" is a
+    // reliable enough signal on its own for the *name* fields — a real test
+    // found a passport whose own MRZ read out worse (OCR turned its '<'
+    // separators/filler into unrelated-script characters) than the visa's,
+    // even though the passport's doc_number happened to still verify. So
+    // for names, first check the raw MRZ text itself for contamination —
+    // a genuine ICAO 9303 MRZ line contains only A-Z, digits, '<' and
+    // whitespace; anything else means OCR garbled that zone, regardless of
+    // which document it came from or whether its doc_number checksummed
+    // clean. A result with no MRZ at all (name came from a label instead)
+    // is treated as neutral rather than penalized, since there's nothing
+    // to judge here.
+    const hasCleanMrz = (r) => !r.mrz_raw || /^[A-Z0-9<\s]+$/.test(r.mrz_raw);
+    const pickReliableResult = (key) => {
+      const isNameField = key === "first_name" || key === "last_name";
+      const clean = (r) => !isNameField || hasCleanMrz(r);
+      return (
+        results.find((r) => r[key] && r[key] !== "—" && r.doc_number_verified && clean(r)) ||
+        results.find((r) => r[key] && r[key] !== "—" && clean(r)) ||
+        results.find((r) => r[key] && r[key] !== "—" && r.doc_type !== "Vízum") ||
+        results.find((r) => r[key] && r[key] !== "—")
+      );
+    };
     const pickReliable = (key) => pickReliableResult(key)?.[key] || "";
 
     const docNumberSource = pickReliableResult("doc_number");
