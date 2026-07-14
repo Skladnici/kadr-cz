@@ -27,6 +27,14 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
   // Nominatim to resolve the real PSČ once a street has been typed.
   const isAmbiguousCity = cityMatchKey && CZ_AMBIGUOUS_PSC_CITIES.has(cityMatchKey);
   const cityMatch = cityMatchKey && !isAmbiguousCity ? cityMatchKey : null;
+  // CZ_CITY_PSC only covers a practical subset of towns (see its comment) —
+  // a typed city that matches nothing there isn't necessarily invalid, it's
+  // just outside that static list (a small village, e.g. "Jesenice"). Same
+  // live-geocoding fallback as the ambiguous-city case below, rather than
+  // leaving the field silently blank just because it isn't one of the ~27
+  // large cities.
+  const isUnlistedCity = Boolean(czParts.city && czParts.city.trim()) && !cityMatchKey;
+  const shouldGeocode = isAmbiguousCity || isUnlistedCity;
   const uaCityMatch = originCountry === "ua" && originParts.city
     ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === originParts.city.trim().toLowerCase())
     : null;
@@ -41,7 +49,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
   useEffect(() => { latestPscRef.current = czParts.psc; }, [czParts.psc]);
 
   useEffect(() => {
-    if (!isAmbiguousCity) {
+    if (!shouldGeocode) {
       setGeocodeStatus("idle");
       return;
     }
@@ -111,13 +119,13 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
         controller.abort();
       }
     };
-  }, [isAmbiguousCity, czParts.street, czParts.city, setCzPart]);
+  }, [shouldGeocode, czParts.street, czParts.city, setCzPart]);
 
   // True only while the field still holds exactly the PSČ our own lookup
   // wrote — the moment the person edits it, this goes false on its own
   // and the "podle adresy" hint disappears instead of misdescribing it.
   const pscFromGeocode = Boolean(
-    isAmbiguousCity && lastFilledPscRef.current && czParts.psc === lastFilledPscRef.current
+    shouldGeocode && lastFilledPscRef.current && czParts.psc === lastFilledPscRef.current
   );
 
   return (
@@ -150,20 +158,23 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
             <span className="text-[11px] md:text-[12px] text-slate-400">
               PSČ
               {cityMatch && <span className="text-emerald-600"> · doplněno automaticky</span>}
-              {isAmbiguousCity && pscFromGeocode && (
+              {shouldGeocode && pscFromGeocode && (
                 <span className="text-sky-600"> · doplněno podle adresy</span>
               )}
-              {isAmbiguousCity && !pscFromGeocode && geocodeStatus === "loading" && (
+              {shouldGeocode && !pscFromGeocode && geocodeStatus === "loading" && (
                 <span className="text-slate-400"> · hledám PSČ podle adresy…</span>
               )}
               {isAmbiguousCity && !pscFromGeocode && geocodeStatus !== "loading" && (
                 <span className="text-amber-600"> · liší se podle části města, zadejte ručně</span>
               )}
+              {isUnlistedCity && !pscFromGeocode && geocodeStatus !== "loading" && (
+                <span className="text-amber-600"> · nepodařilo se najít PSČ, zadejte ručně</span>
+              )}
             </span>
             <input
               value={czParts.psc || ""}
               onChange={(e) => setCzPart("psc", e.target.value)}
-              placeholder={isAmbiguousCity ? "např. 702 00" : "100 00"}
+              placeholder={shouldGeocode ? "např. 702 00" : "100 00"}
               className="mt-1 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
             />
           </label>
