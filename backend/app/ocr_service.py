@@ -114,9 +114,39 @@ def _find_dates(text: str) -> list[str]:
     return found
 
 
+# ICAO 9303 MRZ lines are fixed-width and contain only A-Z, 0-9 and '<'
+# (the filler/separator character) — nothing else is ever legitimately
+# printed there.
+_MRZ_VALID_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<")
+
+
+def _looks_like_mrz_line(candidate: str, min_valid_ratio: float) -> bool:
+    """Right length plus mostly-MRZ-charset composition, rather than
+    requiring a literal '<<' — OCR has been observed corrupting *every*
+    '<' on a line (separators and filler alike) into unrelated glyphs,
+    which would erase all adjacent '<<' pairs while the line is still
+    unmistakably MRZ-shaped otherwise. Requiring '<<' literally (as a
+    prior version of this check did) means exactly the most-corrupted —
+    and therefore most important to flag — lines silently vanish instead
+    of being recognized as MRZ at all."""
+    if not (20 <= len(candidate) <= 45):
+        return False
+    if "<<" in candidate:
+        return True
+    if candidate.count("<") < 3:
+        return False
+    valid = sum(1 for c in candidate if c.upper() in _MRZ_VALID_CHARS)
+    return valid / len(candidate) >= min_valid_ratio
+
+
 def _parse_mrz(text: str) -> Optional[str]:
-    """Very lightweight MRZ line detector (two lines of 44 chars w/ '<')."""
-    lines = [l.strip() for l in text.splitlines() if "<<" in l]
+    """Very lightweight MRZ line detector (two lines of ~44 chars).
+    Deliberately permissive (low valid_ratio floor) — this feeds
+    mrz_raw, which callers (see _normalize_mrz_text below, and the
+    frontend's MRZ-purity ranking) rely on to see the true, uncorrected
+    OCR read and judge how contaminated it is. Missing a corrupted line
+    here would hide contamination instead of surfacing it."""
+    lines = [l.strip() for l in text.splitlines() if _looks_like_mrz_line(l.strip(), min_valid_ratio=0.6)]
     if lines:
         return "\n".join(lines[-2:])
     return None
@@ -300,12 +330,40 @@ def _verify_and_correct(raw: str, check_char: str) -> tuple[str, bool]:
     return raw, False
 
 
+def _normalize_mrz_text(text: str) -> str:
+    """Coerces stray, clearly-invalid characters back to '<' — but only
+    within lines that already look overwhelmingly like genuine MRZ (see
+    _looks_like_mrz_line; a stricter 0.8 valid-ratio floor here, versus
+    _parse_mrz's 0.6, since this one destructively rewrites the line and
+    so needs more confidence it's really MRZ before doing so — an
+    ordinary short label line that happens to be mostly uppercase letters
+    and digits, e.g. "Č. DOKLADU AB1234567", must never get "fixed" into
+    fake MRZ structure).
+    Used only as a pre-pass for the name/doc-number extraction below —
+    deliberately NOT applied to what _parse_mrz returns as mrz_raw, which
+    stays the true, unaltered OCR read. That way a caller merging results
+    from multiple uploaded documents can still tell how contaminated a
+    given read actually was (see the frontend's MRZ-purity-based ranking
+    when merging OCR results from several files), instead of every read
+    looking artificially clean after correction."""
+    out_lines = []
+    for line in text.splitlines():
+        candidate = line.strip()
+        if _looks_like_mrz_line(candidate, min_valid_ratio=0.8):
+            out_lines.append(
+                "".join(c.upper() if c.upper() in _MRZ_VALID_CHARS else "<" for c in candidate)
+            )
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool]:
     """Reads the document number straight from the MRZ's own field +
     check digit, rather than guessing from printed (often smudged or
     glare-affected) text elsewhere on the page — this is the same field
     real e-passport gates rely on, and it self-verifies via checksum."""
-    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}\d{6}\d[MF<]\d{6}\d", text)
+    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}\d{6}\d[MF<]\d{6}\d", _normalize_mrz_text(text))
     if not m:
         return None, False
     raw, check = m.group(1), m.group(2)
@@ -559,7 +617,11 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     3. Nothing found — left for manual entry; the raw recognized text is
        still shown to the user so they can copy it themselves.
     """
-    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", text)
+    # Normalized first: OCR misreading one of the '<' separators/filler
+    # into an unrelated glyph would otherwise break this exact "<<" match
+    # even when the surname/given name letters themselves read fine — see
+    # _normalize_mrz_text's docstring.
+    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", _normalize_mrz_text(text))
     if mrz_match:
         raw_last = mrz_match.group(1)
         # Standard MRZ has no separator between the 3-letter country code

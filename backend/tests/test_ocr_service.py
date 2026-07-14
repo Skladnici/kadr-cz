@@ -21,6 +21,7 @@ from app.ocr_service import (
     _extract_passport_number_from_mrz,
     _interpret_two_digit_year,
     _parse_name_from_text,
+    _parse_mrz,
     _extract_fields_from_text,
     _find_visa_info,
 )
@@ -104,6 +105,34 @@ def test_extract_passport_number_from_mrz_self_verifies():
 
 def test_extract_passport_number_from_mrz_none_without_mrz():
     assert _extract_passport_number_from_mrz("no mrz line here") == (None, False)
+
+
+def test_parse_mrz_still_captures_line_with_no_surviving_double_angle_bracket():
+    # Real-world case: OCR misread every '<' on the name line (both the
+    # "<<" separator and the trailing filler) into unrelated glyphs, so no
+    # "<<" survives anywhere on the line even though it's still clearly
+    # MRZ-shaped. mrz_raw must still surface this line — callers (the
+    # frontend's MRZ-purity ranking) rely on seeing the true, contaminated
+    # read to deprioritize it; if _parse_mrz drops the line because it
+    # never finds a literal "<<", the contamination becomes invisible and
+    # a worse OCR read can win purely because a "cleaner" doc_type/
+    # checksum signal masks it.
+    corrupted_name_line = "PELEKHく〜DBYTRO" + "".join("<へ" for _ in range(15))
+    corrupted_name_line = corrupted_name_line[:44]
+    data_line = "AB1234567<4UKR9001015M300101<<<<<<<<<<<<<<<<"
+    raw_text = f"PASSPORT OF UKRAINE\n{corrupted_name_line}\n{data_line}"
+
+    mrz = _parse_mrz(raw_text)
+
+    assert mrz is not None
+    assert "PELEKH" in mrz
+    # The point of surfacing it: it must fail a strict MRZ-charset check.
+    import re
+    assert not re.match(r"^[A-Z0-9<\s]+\Z", mrz)
+
+
+def test_parse_mrz_ignores_ordinary_short_label_line():
+    assert _parse_mrz("C. DOKLADU AB1234567 PLATNOST DO 2030") is None
 
 
 def test_interpret_two_digit_year_birth_boundary():
