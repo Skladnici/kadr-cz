@@ -195,6 +195,41 @@ def test_parse_name_ignores_header_false_positive_before_real_mrz():
     assert _parse_name_from_text(text) == ("Dmytro", "Pelekh")
 
 
+def test_parse_mrz_recognizes_fullwidth_unicode_lookalike_of_angle_bracket():
+    # Real-world case from an actual EU visa OCR read: the MRZ line's '<'
+    # separators came back as U+FF1C "＜" FULLWIDTH LESS-THAN SIGN — visually
+    # near-identical to ASCII '<' but a different codepoint — with the
+    # trailing filler run misread as Japanese katakana "く" instead of any
+    # kind of angle bracket at all. With zero literal ASCII '<' anywhere on
+    # the line, the old exact-match check found it "doesn't look like MRZ"
+    # and the parser fell back to the visa's bilingual header instead (see
+    # test_parse_name_ignores_header_false_positive_before_real_mrz for that
+    # exact failure mode reappearing with a different corruption source).
+    mrz_line = "VDCZEPELEKH＜＜DMYTRO" + "く" * 7  # ＜＜ ... くくくくくくく
+    data_line = "1234567＜8CZE9003125M270915＜＜＜＜＜＜＜＜＜＜02"
+    raw_text = f"VIZUM<<VISA\n{mrz_line}\n{data_line}"
+
+    mrz = _parse_mrz(raw_text)
+
+    assert mrz is not None
+    assert "PELEKH" in mrz
+
+
+def test_parse_name_from_visa_with_fullwidth_unicode_mrz_lookalike():
+    # Same real-world OCR read as above, end-to-end through name parsing —
+    # must resolve to the actual holder, not the "Visa"/"Vízum" header
+    # false positive the bug report described.
+    text = (
+        "SCHENGEN\n"
+        "VIZUM<<VISA\n"
+        "1. PELEKH DMYTRO\n"
+        "Platnost / Valid until: 15.09.2027\n"
+        "VDCZEPELEKH＜＜DMYTRO" + "く" * 7 + "\n"
+        "1234567＜8CZE9003125M270915＜＜＜＜＜＜＜＜＜＜02"
+    )
+    assert _parse_name_from_text(text) == ("Dmytro", "Pelekh")
+
+
 def test_parse_name_matches_across_passport_and_visa_for_same_person():
     # The point of both fixes above: a passport and visa MRZ for the same
     # person must resolve to the identical name, so the frontend's

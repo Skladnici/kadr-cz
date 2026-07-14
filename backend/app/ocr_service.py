@@ -119,6 +119,26 @@ def _find_dates(text: str) -> list[str]:
 # printed there.
 _MRZ_VALID_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<")
 
+# OCR has been observed emitting a full-width or angle-bracket-shaped
+# Unicode look-alike of the ASCII '<' filler/separator instead of the real
+# character — e.g. U+FF1C "＜" FULLWIDTH LESS-THAN SIGN, seen verbatim on a
+# real EU visa MRZ line ("VDCZEPELEKH＜＜DMYTRO..."). Visually near-identical
+# to '<', but a different codepoint, so an exact match against
+# _MRZ_VALID_CHARS misses it entirely — with zero literal ASCII '<' left on
+# the line, it fails the MRZ-shape check below and the parser falls back to
+# matching the document's bilingual header instead (see
+# test_parse_name_ignores_header_false_positive_before_real_mrz for that
+# exact failure mode). Used only to *decide* whether a line looks like
+# MRZ — the line text callers actually see (mrz_raw) stays the true,
+# uncorrected OCR read; see _parse_mrz's docstring for why that matters.
+_MRZ_LOOKALIKE_CHARS = "＜＞‹›〈〉"
+
+
+def _normalize_mrz_lookalikes(candidate: str) -> str:
+    for ch in _MRZ_LOOKALIKE_CHARS:
+        candidate = candidate.replace(ch, "<")
+    return candidate
+
 
 def _looks_like_mrz_line(candidate: str, min_valid_ratio: float) -> bool:
     """Right length plus mostly-MRZ-charset composition, rather than
@@ -131,6 +151,7 @@ def _looks_like_mrz_line(candidate: str, min_valid_ratio: float) -> bool:
     of being recognized as MRZ at all."""
     if not (20 <= len(candidate) <= 45):
         return False
+    candidate = _normalize_mrz_lookalikes(candidate)
     if "<<" in candidate:
         return True
     if candidate.count("<") < 3:
