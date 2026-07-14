@@ -829,22 +829,32 @@ export default function SimpleDocFiller() {
                     {/* 2. Company section: picker + its own particulars
                         (IČO, název, adresa firmy, zástupce) as one unbroken
                         block, so they read as "the company" rather than
-                        being split apart by the employee's address. Picking
-                        the company here also means fields.company_address
-                        is already set by the time AddressBuilder renders
-                        below, so the workplace auto-fill effect and the
-                        address's own PSČ geocoding run before the person has
-                        a chance to type an address by hand, and the
-                        protect-manual-edits guards on both never end up
-                        fighting the sync. */}
+                        being split apart by other sections. Picking the
+                        company here also means fields.company_address is
+                        already set well before AddressBuilder renders at
+                        the very end of the form, so the workplace
+                        auto-fill effect (keyed off fields.company_address,
+                        not render position) has long since run by the time
+                        the person gets to typing an address, and the
+                        protect-manual-edits guard never ends up fighting
+                        the sync regardless of how far down the page the
+                        address section sits. */}
                     <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
                     <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px]">
                       {companyReqFields.map(renderField)}
                     </div>
 
-                    {/* 3. Employee's own address, a separate, unrelated
-                        section — comes right after the company block is
-                        fully done, not interleaved with it. */}
+                    {/* 3. Everything else about the employee's contract
+                        (position, salary, dates, ...) */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px] max-h-[300px] overflow-y-auto pr-1">
+                      {restFields.map(renderField)}
+                    </div>
+
+                    {/* 4. Employee's own address, last — a separate,
+                        unrelated section that doesn't need to gate anything
+                        after it, so it closes out the form. Its own PSČ
+                        geocoding is self-contained inside AddressBuilder and
+                        equally unaffected by where in the page it renders. */}
                     <div className="mb-4">
                       <AddressBuilder
                         czParts={czAddressParts}
@@ -854,11 +864,6 @@ export default function SimpleDocFiller() {
                         originParts={originAddressParts}
                         setOriginPart={setOriginPart}
                       />
-                    </div>
-
-                    {/* 4. Everything else (contract terms, payslip specifics) */}
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 max-h-[300px] overflow-y-auto pr-1">
-                      {restFields.map(renderField)}
                     </div>
                   </>
                 );
