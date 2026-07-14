@@ -18,12 +18,15 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Request, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.ocr_service import recognize_document
@@ -51,6 +54,64 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Applies to every response this API sends. This backend itself only ever
+# serves JSON (plus FastAPI's own /docs, /redoc, /openapi.json) — the
+# actual product UI is a separate frontend origin, so this CSP has no
+# bearing on that page's own Google Fonts loading. It's still allowed
+# through here (font-src/style-src) so that if this backend ever serves
+# HTML of its own directly, an existing site-wide reference wouldn't need
+# rediscovering. /docs and /redoc are exempted from the strict
+# script-src/style-src rules below since FastAPI's bundled Swagger/ReDoc UI
+# loads its JS/CSS from a CDN, not from this app's own origin.
+_DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path not in _DOCS_PATHS:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'"
+        )
+    return response
+
+
+# Rate limiting for the two endpoints that hit an external, quota-limited
+# service (OCR.space, free tier: ~500 requests/day for the whole site) or
+# that do real disk/CPU work generating documents (LibreOffice PDF
+# conversion) — a runaway client (buggy retry loop, or someone hammering
+# the upload button) could otherwise burn through the daily OCR quota or
+# pile up disk writes well before the site-wide auth would ever stop them,
+# since auth just proves *who* is asking, not how fast. Keyed by IP rather
+# than by logged-in identity — everyone shares one SITE_USERNAME/PASSWORD,
+# so there's no per-user identity to key on anyway.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+RATE_LIMIT_MESSAGE = (
+    "Příliš mnoho požadavků z vaší adresy — zkuste to prosím znovu za minutu."
+)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": RATE_LIMIT_MESSAGE},
+        headers={"Retry-After": "60"},
+    )
 
 
 _site_security = HTTPBasic()
@@ -92,7 +153,8 @@ def get_blanks():
 
 
 @app.post("/api/recognize", dependencies=[Depends(_require_site_auth)])
-async def recognize(file: UploadFile = File(...)):
+@limiter.limit("10/minute")
+async def recognize(request: Request, file: UploadFile = File(...)):
     """Upload a document photo/scan/PDF -> get back AI-extracted fields."""
     ext = Path(file.filename).suffix.lower()
     if ext not in settings.ALLOWED_EXTENSIONS:
@@ -176,7 +238,8 @@ class FillRequest(BaseModel):
 
 
 @app.post("/api/fill", dependencies=[Depends(_require_site_auth)])
-async def fill(payload: FillRequest):
+@limiter.limit("10/minute")
+async def fill(request: Request, payload: FillRequest):
     """Fills the chosen blank with the given fields and returns a
     download token; nothing is saved to a database."""
     try:

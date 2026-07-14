@@ -9,3 +9,4 @@ docxtpl==0.18.0
 pytesseract==0.3.13
 Pillow==10.4.0
 pillow-heif==0.18.0
+slowapi==0.1.10
