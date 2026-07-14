@@ -160,12 +160,33 @@ export default function SimpleDocFiller() {
       return "";
     };
 
+    // Identity fields (name, birth date, doc number) can come back non-empty
+    // from more than one uploaded file — a visa sticker carries its own
+    // MRZ-style name line too, alongside a passport/ID's. But a visa's MRZ
+    // is far more OCR-error-prone (glare, curvature, smaller print, often
+    // crowded by stamps) than a passport's dedicated biometric-page MRZ, so
+    // whichever file happens to be uploaded/processed first shouldn't just
+    // win by default — that let a garbled visa read silently override a
+    // clean passport read that arrived second. Rank sources by reliability
+    // instead: prefer a result whose doc_number checksum-verified (only
+    // possible for genuine ICAO passport/ID MRZ, see
+    // _extract_passport_number_from_mrz in ocr_service.py), then prefer any
+    // non-visa document, and only fall back to plain upload order if
+    // neither signal distinguishes them.
+    const pickReliableResult = (key) =>
+      results.find((r) => r[key] && r[key] !== "—" && r.doc_number_verified) ||
+      results.find((r) => r[key] && r[key] !== "—" && r.doc_type !== "Vízum") ||
+      results.find((r) => r[key] && r[key] !== "—");
+    const pickReliable = (key) => pickReliableResult(key)?.[key] || "";
+
+    const docNumberSource = pickReliableResult("doc_number");
+
     setFields({
-      first_name: pick("first_name").toUpperCase(),
-      last_name: pick("last_name").toUpperCase(),
-      birth_date: pick("birth_date"),
+      first_name: pickReliable("first_name").toUpperCase(),
+      last_name: pickReliable("last_name").toUpperCase(),
+      birth_date: pickReliable("birth_date"),
       nationality: pick("nationality"),
-      doc_number: pick("doc_number"),
+      doc_number: docNumberSource?.doc_number || "",
       visa_number: pick("visa_number"),
       visa_validity: pick("visa_validity"),
       position: "",
@@ -181,7 +202,11 @@ export default function SimpleDocFiller() {
       company_address: "",
       company_representative: "",
     });
-    setDocNumberVerified(results.some((r) => r.doc_number_verified));
+    // Tied to whichever source actually won doc_number above, not just
+    // "was any uploaded file verified" — otherwise the "Ověřeno kontrolním
+    // součtem" badge could show next to a number that isn't the one that
+    // was actually checksum-verified.
+    setDocNumberVerified(Boolean(docNumberSource?.doc_number_verified));
 
     const recognizedAddress = pick("address");
     const newWarnings = [...results.flatMap((r) => r.warnings || [])];
