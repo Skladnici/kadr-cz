@@ -611,26 +611,42 @@ NAME_LABEL_PATTERNS = [
 
 def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     """Best-effort name extraction, in order of reliability:
-    1. MRZ 'SURNAME<<GIVEN' pattern (passports) — most reliable.
+    1. MRZ 'SURNAME<<GIVEN' pattern (passports, visas) — most reliable.
     2. Labelled fields 'Jméno'/'Příjmení' or 'Given name'/'Surname'
        (Czech ID cards, residence permits — bilingual labels).
     3. Nothing found — left for manual entry; the raw recognized text is
        still shown to the user so they can copy it themselves.
     """
+    # Restricted to genuine MRZ-shaped lines (via _parse_mrz) rather than
+    # searching the whole raw text: a document's bilingual header (e.g.
+    # "VÍZUM / VISA") sits above the real MRZ block, and if OCR misreads
+    # its "/" as "<<" — plausible, they're visually similar strokes — a
+    # search across the whole text would match that header first (re.search
+    # returns the leftmost match) and return "Visa"/"Vízum" as the name
+    # instead of ever looking at the actual MRZ line below it. Restricting
+    # to _parse_mrz's output means only lines that are actually the right
+    # shape for MRZ (see _looks_like_mrz_line) are ever considered here.
+    mrz_lines = _parse_mrz(text)
     # Normalized first: OCR misreading one of the '<' separators/filler
     # into an unrelated glyph would otherwise break this exact "<<" match
     # even when the surname/given name letters themselves read fine — see
     # _normalize_mrz_text's docstring.
-    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", _normalize_mrz_text(text))
+    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", _normalize_mrz_text(mrz_lines)) if mrz_lines else None
     if mrz_match:
         raw_last = mrz_match.group(1)
         # Standard MRZ has no separator between the 3-letter country code
         # and the surname that follows it ("P<UKRMOKHNIA<<VASYL..."), so
         # our regex captures them glued together ("UKRMOKHNIA"). Strip a
-        # recognized country code from the front if present.
+        # recognized country code if present near the front. Passports have
+        # it right at position 0; visa MRZ lines are shifted right by the
+        # 'V' + filler document-type prefix ("V<CZEPELEKH..."), and that
+        # filler is exactly the kind of character OCR misreads into a
+        # stray letter (e.g. "VDCZEPELEKH") — so look a couple of
+        # characters in rather than requiring the code at the very start.
         for code in ("UKR", "CZE", "POL", "SVK", "DEU", "AUT", "HUN", "ROU", "MDA"):
-            if raw_last.startswith(code) and len(raw_last) > len(code):
-                raw_last = raw_last[len(code):]
+            idx = raw_last.find(code)
+            if 0 <= idx <= 2 and len(raw_last) > idx + len(code):
+                raw_last = raw_last[idx + len(code):]
                 break
         last = raw_last.replace("<", " ").strip().title()
         first = mrz_match.group(2).replace("<", " ").strip().title()

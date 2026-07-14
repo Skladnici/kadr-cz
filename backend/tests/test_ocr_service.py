@@ -166,6 +166,47 @@ def test_parse_name_returns_none_when_nothing_matches():
     assert _parse_name_from_text("just some unrelated text") == (None, None)
 
 
+def test_parse_name_from_mrz_strips_country_code_shifted_by_visa_prefix():
+    # Visa MRZ lines are "V<CZE..." (doc-type 'V' + filler + country code),
+    # unlike a passport's "P<UKR..." where the code is right at position 0.
+    # OCR misread the filler '<' into a stray letter, gluing it onto the
+    # country code ("VDCZEPELEKH" instead of "V<CZEPELEKH"), which used to
+    # defeat the country-code strip (it only checked position 0).
+    text = "VDCZEPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(text) == ("Dmytro", "Pelekh")
+
+
+def test_parse_name_ignores_header_false_positive_before_real_mrz():
+    # Real bug: a Schengen visa's bilingual header ("VÍZUM / VISA") got
+    # OCR'd with its '/' misread as '<<' and its diacritic dropped
+    # ("VIZUM<<VISA"), which the old unconstrained regex matched first
+    # (it appears before the real MRZ block at the bottom of the page) —
+    # returning "Visa"/"Vízum" as the person's name instead of ever
+    # looking at the genuine MRZ line below it.
+    text = (
+        "SCHENGEN\n"
+        "VIZUM<<VISA\n"
+        "1. PELEKH DMYTRO\n"
+        "2. UA 12.03.1990\n"
+        "Platnost / Valid until: 15.09.2027\n"
+        "VDCZEPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<\n"
+        "1234567<8CZE9003125M270915<<<<<<<<<<<<<<<02"
+    )
+    assert _parse_name_from_text(text) == ("Dmytro", "Pelekh")
+
+
+def test_parse_name_matches_across_passport_and_visa_for_same_person():
+    # The point of both fixes above: a passport and visa MRZ for the same
+    # person must resolve to the identical name, so the frontend's
+    # cross-document name-mismatch warning doesn't fire a false positive.
+    visa_text = (
+        "VIZUM<<VISA\n"
+        "VDCZEPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    )
+    passport_text = "P<UKRPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(visa_text) == _parse_name_from_text(passport_text)
+
+
 def test_extract_fields_from_labeled_czech_id():
     text = (
         "OBČANSKÝ PRŮKAZ\n"
