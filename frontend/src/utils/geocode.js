@@ -1,9 +1,11 @@
 // Thin wrapper around Nominatim's free public geocoding endpoint — used
-// only to resolve a real PSČ for the large multi-district Czech cities
-// where CZ_CITY_PSC intentionally has no single correct value (see
-// CZ_AMBIGUOUS_PSC_CITIES in data/cityData.js). The caller is responsible
-// for debouncing and for supplying an AbortSignal (both for cancelling a
-// superseded request and for enforcing a timeout) — see AddressBuilder.jsx.
+// to resolve a real PSČ wherever CZ_CITY_PSC can't supply one: the large
+// multi-district cities that intentionally have no single correct value
+// (see CZ_AMBIGUOUS_PSC_CITIES in data/cityData.js), and any city that
+// simply isn't in that static list at all (a small town/village).
+// The caller is responsible for debouncing and for supplying an
+// AbortSignal (both for cancelling a superseded request and for
+// enforcing a timeout) — see AddressBuilder.jsx.
 //
 // Browser fetch() cannot set a custom User-Agent header (the platform
 // treats it as forbidden/unsafe to override), so this relies on the

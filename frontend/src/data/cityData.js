@@ -1,8 +1,9 @@
 // Practical, sizeable set of Czech towns/city districts with PSČ — not
 // the full official ~15,000-entry postal registry (that would need a
 // real downloaded dataset), but covers the large majority of real
-// addresses HR staff will type. Anything not listed here is simply
-// typed in manually, same as before.
+// addresses HR staff will type. Anything not listed here (a small town
+// or village) falls back to live Nominatim geocoding instead — see
+// AddressBuilder.jsx's isUnlistedCity/shouldGeocode.
 //
 // A single PSČ per city name is only actually true for smaller towns
 // with one post office. The 26 legally-defined "statutární města" (plus

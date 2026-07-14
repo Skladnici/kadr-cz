@@ -21,7 +21,11 @@ kadr-cz/
 │   └── requirements-dev.txt  + pytest pro lokální testy
 └── frontend/
     └── src/
-        └── SimpleDocFiller.jsx   celé frontendové UI (přihlášení + vyplnění), jeden soubor
+        ├── SimpleDocFiller.jsx      hlavní obrazovka (kroky nahrání → rozpoznání → vyplnění → hotovo)
+        ├── components/              LoginForm, AddressBuilder, CityAutocomplete, CompanyPicker
+        ├── constants/fields.js      definice polí formuláře
+        ├── data/cityData.js         statický seznam měst/PSČ (CZ + UA)
+        └── utils/                   geocode.js (živý dohled PSČ přes Nominatim), api.js, address.js, validation.js
 ```
 
 ## Spuštění backendu lokálně
@@ -60,6 +64,12 @@ cd backend
 pytest
 ```
 
+GitHub Actions (`.github/workflows/backend-tests.yml`) spouští stejnou
+sadu automaticky na každý pull request do `main` a na každý push do
+`main`. Frontend zatím žádné automatizované testy nemá (e2e/Playwright by
+potřeboval reálný prohlížeč a externí služby — Nominatim, OCR.space — je
+to samostatný, náročnější úkol).
+
 ## Jak přidat nový typ formuláře
 
 Stačí přidat nový `.docx` soubor do `backend/app/templates/` s poli ve
@@ -77,6 +87,17 @@ Všechny kromě `GET /` vyžadují přihlášení (`Authorization: Basic ...`).
 - `POST /api/fill` — vyplní zvolenou šablonu, vrátí token ke stažení
 - `GET /api/download/{token}` — stáhne vygenerovaný dokument; token je jednorázový, soubor se po stažení smaže
 - `GET/POST/PUT/DELETE /api/companies` — sdílený seznam firem (Supabase) pro opakované použití IČO/DIČ/adresy
+
+## Zabezpečení
+
+- Každá odpověď backendu nese `Content-Security-Policy`,
+  `X-Content-Type-Options`, `X-Frame-Options` a `Referrer-Policy`
+  (`/docs`/`/redoc`/`/openapi.json` mají mírnější CSP, protože Swagger UI
+  načítá vlastní JS/CSS z CDN).
+- `POST /api/recognize` a `POST /api/fill` mají limit 10 požadavků za
+  minutu na IP adresu (`slowapi`) — chrání denní kvótu OCR.space a
+  omezuje zbytečnou zátěž generování dokumentů. Po překročení vrací
+  `429` se srozumitelnou českou hláškou. Ostatní endpointy limit nemají.
 
 ## Co se ukládá a co ne
 

@@ -39,7 +39,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
     ? Object.keys(UA_CITY_PSC).find((c) => c.toLowerCase() === originParts.city.trim().toLowerCase())
     : null;
 
-  // --- Live PSČ lookup for ambiguous cities ---------------------------
+  // --- Live PSČ lookup for ambiguous or unlisted cities ---------------
   const [geocodeStatus, setGeocodeStatus] = useState("idle"); // idle | loading | done
   const latestPscRef = useRef(czParts.psc);
   const lastFilledPscRef = useRef(null); // the value *we* last wrote in
