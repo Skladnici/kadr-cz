@@ -7,7 +7,7 @@ import {
 import LoginForm from "./components/LoginForm";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
-import { FIELD_DEFS, PERSON_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
+import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { isValidIco, isValidDic } from "./utils/validation";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } from "./utils/api";
@@ -768,7 +768,8 @@ export default function SimpleDocFiller() {
               {(() => {
                 const relevantFields = FIELD_DEFS.filter(([, , scope]) => isFieldRelevant(scope, templateId));
                 const personFields = relevantFields.filter(([key]) => PERSON_FIELD_KEYS.has(key));
-                const restFields = relevantFields.filter(([key]) => !PERSON_FIELD_KEYS.has(key));
+                const companyReqFields = relevantFields.filter(([key]) => COMPANY_FIELD_KEYS.has(key));
+                const restFields = relevantFields.filter(([key]) => !PERSON_FIELD_KEYS.has(key) && !COMPANY_FIELD_KEYS.has(key));
 
                 const renderField = ([key, label]) => {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
@@ -825,16 +826,25 @@ export default function SimpleDocFiller() {
                       {personFields.map(renderField)}
                     </div>
 
-                    {/* 2. Company next, before the address — picking it here
-                        means fields.company_address is already set by the
-                        time the address section below renders, so the
-                        workplace auto-fill effect and the address's own PSČ
-                        geocoding run before the person has a chance to type
-                        an address by hand, and the protect-manual-edits
-                        guards on both never end up fighting the sync. */}
+                    {/* 2. Company section: picker + its own particulars
+                        (IČO, název, adresa firmy, zástupce) as one unbroken
+                        block, so they read as "the company" rather than
+                        being split apart by the employee's address. Picking
+                        the company here also means fields.company_address
+                        is already set by the time AddressBuilder renders
+                        below, so the workplace auto-fill effect and the
+                        address's own PSČ geocoding run before the person has
+                        a chance to type an address by hand, and the
+                        protect-manual-edits guards on both never end up
+                        fighting the sync. */}
                     <CompanyPicker company={companyFields} setFields={setFields} apiFetch={apiFetch} />
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px]">
+                      {companyReqFields.map(renderField)}
+                    </div>
 
-                    {/* 3. Address, now that a company (if any) is already picked */}
+                    {/* 3. Employee's own address, a separate, unrelated
+                        section — comes right after the company block is
+                        fully done, not interleaved with it. */}
                     <div className="mb-4">
                       <AddressBuilder
                         czParts={czAddressParts}

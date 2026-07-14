@@ -50,6 +50,13 @@ export const PERSON_FIELD_KEYS = new Set([
   "visa_number", "visa_validity", "residence_type",
 ]);
 
+// Company's own particulars — rendered as one visual block right after
+// CompanyPicker (which fills them), instead of scattered among the
+// contract-terms/payslip fields further down.
+export const COMPANY_FIELD_KEYS = new Set([
+  "company_name", "company_ico", "company_dic", "company_address", "company_representative",
+]);
+
 export function isFieldRelevant(scope, templateId) {
   if (scope === "all" || !templateId) return true;
   return scope.some((prefix) => templateId.startsWith(prefix));
