@@ -1,0 +1,41 @@
+name: Backend tests
+
+# Frontend/e2e (Playwright, real browser + Nominatim/OCR.space) is
+# intentionally out of scope here — it needs a real browser and external
+# services, which is a separate, heavier CI setup. This workflow only
+# runs the backend's pytest suite, which is fully self-contained (OCR
+# and LibreOffice calls are mocked/monkeypatched or gracefully degrade
+# when those binaries aren't installed — see test_recognize_document.py
+# and test_fill_endpoint.py).
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.11.9 matches backend/runtime.txt and the Dockerfile's
+      # python:3.11-slim base image — not this repo's local dev venv
+      # (3.12), which is incidental to this machine, not the project.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest
