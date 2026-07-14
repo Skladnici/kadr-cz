@@ -217,8 +217,36 @@ export default function SimpleDocFiller() {
     // was actually checksum-verified.
     setDocNumberVerified(Boolean(docNumberSource?.doc_number_verified));
 
+    // A letter misread within the valid MRZ alphabet (e.g. "M" -> "B") is
+    // invisible to hasCleanMrz above — both readings are still all-valid
+    // MRZ characters, just wrong. The only remaining signal for that class
+    // of error is disagreement between documents: if two uploaded files
+    // both name a person, but spell it differently, at least one of them
+    // is wrong and no automatic check here can tell which. So this only
+    // warns — it never blocks or auto-picks a "winner" — leaving the final
+    // call to the person who can look at the actual photos, same as the
+    // honest photo-quality hedge above.
+    const nameMismatchWarnings = [["first_name", "Jméno"], ["last_name", "Příjmení"]].flatMap(
+      ([key, label]) => {
+        const variants = [];
+        results.forEach((r, i) => {
+          const value = r[key];
+          if (!value || value === "—") return;
+          const normalized = value.trim().toUpperCase();
+          if (!variants.some((v) => v.normalized === normalized)) {
+            variants.push({ normalized, display: value, fileNumber: i + 1 });
+          }
+        });
+        if (variants.length < 2) return [];
+        const listed = variants.map((v) => `„${v.display}" (soubor ${v.fileNumber})`).join(", ");
+        return [
+          `Pozor: ${label} bylo na nahraných dokumentech rozpoznáno odlišně — ${listed}. Zkontrolujte prosím ručně podle fotografií a vyberte správnou variantu.`,
+        ];
+      }
+    );
+
     const recognizedAddress = pick("address");
-    const newWarnings = [...results.flatMap((r) => r.warnings || [])];
+    const newWarnings = [...results.flatMap((r) => r.warnings || []), ...nameMismatchWarnings];
     if (recognizedAddress) {
       newWarnings.push(
         `V dokumentu byl nalezen možný adresní text: „${recognizedAddress}" — zkontrolujte a případně zkopírujte ručně, automaticky se nevyplňuje.`
