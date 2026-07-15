@@ -242,6 +242,52 @@ def test_parse_name_matches_across_passport_and_visa_for_same_person():
     assert _parse_name_from_text(visa_text) == _parse_name_from_text(passport_text)
 
 
+def test_parse_name_strips_country_code_not_in_hardcoded_list():
+    # Real bug: the previous implementation stripped the MRZ country code
+    # by searching for one of nine hardcoded codes (UKR/CZE/POL/SVK/DEU/
+    # AUT/HUN/ROU/MDA). A visa issued by any other Schengen country (here
+    # Italy) left the code glued onto the surname ("Itapelekh" instead of
+    # "Pelekh") — and because that garbled-but-still-MRZ-valid-charset name
+    # could still outrank a correctly-read passport in the frontend's merge
+    # logic (see SimpleDocFiller.jsx's pickReliableResult), uploading a
+    # visa alongside a passport could make name recognition *worse* than
+    # uploading the passport alone. Fixed by stripping the country code by
+    # its fixed ICAO 9303 line position instead of a whitelist.
+    visa_clean_filler = "V<ITAPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(visa_clean_filler) == ("Dmytro", "Pelekh")
+
+    visa_corrupted_filler = "VXITAPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(visa_corrupted_filler) == ("Dmytro", "Pelekh")
+
+    passport_unlisted_country = "P<GRCPAPADOPOULOS<<NIKOS<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(passport_unlisted_country) == ("Nikos", "Papadopoulos")
+
+
+def test_parse_name_from_realistic_visa_text_with_unlisted_country():
+    # End-to-end, against a full visa-sticker-shaped text block (bilingual
+    # header, visa number/country, validity dates, entries/duration
+    # fields, MRZ) — must resolve to the same name as the holder's
+    # passport rather than being contaminated by any of that surrounding
+    # visa-specific structure.
+    visa_text = (
+        "SCHENGEN\n"
+        "VIZUM / VISA\n"
+        "GRC 7654321\n"
+        "1. PELEKH DMYTRO\n"
+        "2. UA 12.03.1990\n"
+        "TYP/TYPE D\n"
+        "PLATNE OD/VALID FROM 01.09.2024 DO/UNTIL 15.09.2027\n"
+        "POCET VSTUPU/NUMBER OF ENTRIES MULTIPLE\n"
+        "DELKA POBYTU/DURATION OF STAY 90 DNI/DAYS\n"
+        "VYDANO V/ISSUED IN ATHENS\n"
+        "V<GRCPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<\n"
+        "1234567<8UKR9003125M270915<<<<<<<<<<<<<<02"
+    )
+    passport_text = "P<UKRPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<"
+    assert _parse_name_from_text(visa_text) == ("Dmytro", "Pelekh")
+    assert _parse_name_from_text(visa_text) == _parse_name_from_text(passport_text)
+
+
 def test_extract_fields_from_labeled_czech_id():
     text = (
         "OBČANSKÝ PRŮKAZ\n"

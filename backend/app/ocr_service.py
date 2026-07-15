@@ -652,23 +652,33 @@ def _parse_name_from_text(text: str) -> tuple[Optional[str], Optional[str]]:
     # into an unrelated glyph would otherwise break this exact "<<" match
     # even when the surname/given name letters themselves read fine — see
     # _normalize_mrz_text's docstring.
-    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", _normalize_mrz_text(mrz_lines)) if mrz_lines else None
+    normalized_mrz = _normalize_mrz_text(mrz_lines) if mrz_lines else None
+    mrz_match = re.search(r"([A-Z]+)<<([A-Z<]+)", normalized_mrz) if normalized_mrz else None
     if mrz_match:
         raw_last = mrz_match.group(1)
         # Standard MRZ has no separator between the 3-letter country code
         # and the surname that follows it ("P<UKRMOKHNIA<<VASYL..."), so
-        # our regex captures them glued together ("UKRMOKHNIA"). Strip a
-        # recognized country code if present near the front. Passports have
-        # it right at position 0; visa MRZ lines are shifted right by the
-        # 'V' + filler document-type prefix ("V<CZEPELEKH..."), and that
-        # filler is exactly the kind of character OCR misreads into a
-        # stray letter (e.g. "VDCZEPELEKH") — so look a couple of
-        # characters in rather than requiring the code at the very start.
-        for code in ("UKR", "CZE", "POL", "SVK", "DEU", "AUT", "HUN", "ROU", "MDA"):
-            idx = raw_last.find(code)
-            if 0 <= idx <= 2 and len(raw_last) > idx + len(code):
-                raw_last = raw_last[idx + len(code):]
-                break
+        # our regex captures them glued together ("UKRMOKHNIA"). ICAO 9303
+        # fixes the doc-type char + filler + 3-letter country/nationality
+        # code to exactly line positions 0-4 on a passport ("P<UKR...") or
+        # visa ("V<CZE...") name line — how much of that 5-char prefix ends
+        # up glued onto raw_last depends only on whether the filler OCR'd
+        # as a literal '<' (breaks the uppercase-letter run our regex
+        # matches on, so it's excluded automatically — raw_last starts
+        # right at the country code) or got misread into a stray letter
+        # instead (doesn't break the run, so it's included — e.g.
+        # "VDCZEPELEKH"). Strip by the match's ABSOLUTE POSITION on its own
+        # line rather than searching for one of a handful of hardcoded
+        # country codes: a whitelist silently fails — gluing the country
+        # code onto the surname — for any of the ~200 valid ICAO codes it
+        # doesn't happen to enumerate (e.g. a visa issued by a country this
+        # file never listed, which is exactly what real bug reports of
+        # "worse recognition with a visa attached" turned out to be).
+        line_start = normalized_mrz.rfind("\n", 0, mrz_match.start(1)) + 1
+        if normalized_mrz[line_start:line_start + 1] in ("P", "V"):
+            prefix_len = 5 - (mrz_match.start(1) - line_start)
+            if 0 < prefix_len < len(raw_last):
+                raw_last = raw_last[prefix_len:]
         last = raw_last.replace("<", " ").strip().title()
         first = mrz_match.group(2).replace("<", " ").strip().title()
         # OCR sometimes drops one of the two '<' separators, causing this
