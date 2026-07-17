@@ -20,11 +20,13 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
   const cityMatchKey = czParts.city
     ? Object.keys(CZ_CITY_PSC).find((c) => c.toLowerCase() === czParts.city.trim().toLowerCase())
     : null;
-  // Large cities (statutární města) span several postal districts — a
-  // single PSČ per city name would be wrong more often than not, so
-  // these intentionally have "" in CZ_CITY_PSC (see cityData.js). Instead
-  // of leaving the field permanently blank, the effect below asks
-  // Nominatim to resolve the real PSČ once a street has been typed.
+  // Large cities (statutární města), Praha's numbered districts (Praha 1..22 —
+  // postal codes there follow cadastral/post-office zones, not the district
+  // boundaries), and a few other towns that turned out to span more than one
+  // real PSČ all intentionally have "" in CZ_CITY_PSC (see cityData.js and
+  // CZ_AMBIGUOUS_PSC_CITIES there for why). Instead of leaving the field
+  // permanently blank, the effect below asks Nominatim to resolve the real
+  // PSČ once a street has been typed.
   const isAmbiguousCity = cityMatchKey && CZ_AMBIGUOUS_PSC_CITIES.has(cityMatchKey);
   const cityMatch = cityMatchKey && !isAmbiguousCity ? cityMatchKey : null;
   // CZ_CITY_PSC only covers a practical subset of towns (see its comment) —
