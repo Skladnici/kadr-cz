@@ -8,6 +8,7 @@ import LoginForm from "./components/LoginForm";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
+import StatsWidget from "./components/StatsWidget";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { isValidIco, isValidDic } from "./utils/validation";
@@ -50,6 +51,11 @@ export default function SimpleDocFiller() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [downloadError, setDownloadError] = useState(null);
+  // Bumped after each successful generation to tell StatsWidget to
+  // re-fetch /api/stats — a plain counter prop rather than some shared
+  // event bus, since this is the only place that ever needs to trigger
+  // it and StatsWidget already re-fetches on mount regardless.
+  const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
   const fileInputRef = useRef(null);
 
   // Backed by sessionStorage (not localStorage, not memory-only) so a
@@ -380,6 +386,7 @@ export default function SimpleDocFiller() {
       const data = await res.json();
       setResult(data);
       setStep(4);
+      setStatsRefreshSignal((n) => n + 1);
     } catch (e) {
       if (e.status !== 401) {
         setError(describeRequestError(e.status, "Nepodařilo se vygenerovat dokument."));
@@ -1056,6 +1063,8 @@ export default function SimpleDocFiller() {
           přes OpenStreetMap (© přispěvatelé OpenStreetMap).
         </p>
       </div>
+
+      <StatsWidget apiFetch={apiFetch} refreshSignal={statsRefreshSignal} />
 
       {lightboxUrl && (
         <div

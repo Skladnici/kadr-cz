@@ -65,3 +65,8 @@ def test_download_route_requires_auth_before_checking_file_existence(configured_
 def test_companies_route_requires_auth(configured_auth):
     resp = client.get("/api/companies")
     assert resp.status_code == 401
+
+
+def test_stats_route_requires_auth(configured_auth):
+    resp = client.get("/api/stats")
+    assert resp.status_code == 401

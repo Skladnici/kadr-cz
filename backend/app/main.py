@@ -254,6 +254,11 @@ async def fill(request: Request, payload: FillRequest):
     # thread any longer than the subprocess call itself needs.
     pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
 
+    # Best-effort usage counter (see _log_generation below) — logged only
+    # once generation has actually succeeded, and never allowed to turn a
+    # successful fill into a failed request.
+    await _log_generation(payload.template_id, payload.company_name)
+
     return {
         "docx_token": docx_path.name,
         "pdf_token": pdf_path.name if pdf_path else None,
@@ -383,3 +388,58 @@ async def update_company(company_id: str, payload: CompanyIn):
 async def delete_company(company_id: str):
     await _supabase_companies_request("DELETE", params={"id": f"eq.{company_id}"})
     return None
+
+
+# ---------------------------------------------------------------- Stats
+# Lightweight, all-time usage counter: how many documents were generated
+# per company. No employee/personal data — see create_generation_log_table.sql.
+# Logged best-effort from fill() above on every successful generation: if
+# Supabase isn't configured, or the insert itself fails, the document is
+# still generated and served normally — only the counter silently misses
+# that one entry, since a stats widget is not worth failing a real
+# document request over.
+
+_DOCUMENT_TYPE_LABELS = {
+    "dpp_template": "DPP",
+    "dpc_template": "DPČ",
+    "hpp_template": "HPP",
+    "ukonceni_pracovniho_pomeru": "Ukončení poměru",
+    "vyplatni_paska": "Výplatní páska",
+}
+
+
+async def _log_generation(template_id: str, company_name: Optional[str]) -> None:
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return
+    document_type = _DOCUMENT_TYPE_LABELS.get(template_id, template_id)
+    name = (company_name or "").strip() or None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/generation_log",
+                headers=_supabase_headers(),
+                json={"company_name": name, "document_type": document_type},
+            )
+        if resp.status_code >= 400:
+            logging.getLogger(__name__).warning(
+                "generation_log insert failed (%s): %s", resp.status_code, resp.text
+            )
+    except Exception:
+        logging.getLogger(__name__).warning("generation_log insert failed", exc_info=True)
+
+
+@app.get("/api/stats", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+async def get_stats():
+    """Per-company document counts, all-time, no date breakdown — powers
+    the corner stats widget (StatsWidget.jsx). Reads the generation_stats
+    view (a plain GROUP BY that PostgREST's REST API can't express
+    directly) rather than aggregating every row in Python."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/generation_stats",
+            headers=_supabase_headers(),
+            params={"select": "*"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp.json()
