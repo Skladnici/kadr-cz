@@ -15,13 +15,16 @@
 // administrative-district boundaries, so a single "Praha 4" address can
 // legitimately be 140 xx, 141 xx, or 143 xx depending on the street
 // (confirmed via Nominatim, e.g. "Jihozápadní V 1023/15, Praha 4" is
-// really 141 00, not the previously-hardcoded 140 00). A handful of
-// non-statutory towns turned out to have the same issue on a smaller
-// scale (e.g. Kolín spans 280 02 *and* 280 00; Chrudim spans 537 01 *and*
-// 537 05) and are included below too. CZ_CITY_PSC has "" for everything
-// in this set — see AddressBuilder.jsx, which treats that as "ask the
-// person to type it themselves" (or resolves it via live geocoding)
-// instead of auto-filling a potentially-wrong value.
+// really 141 00, not the previously-hardcoded 140 00). A full audit of
+// every non-statutory town then in this file (two independent Nominatim
+// passes — post-office-name search, then spatial ring sampling around
+// each town's center — each cross-checked against okres to reject same-
+// name villages elsewhere) found 111 more towns with the same problem on
+// a smaller scale (e.g. Kolín spans 280 02 *and* 280 00), all included
+// below too. CZ_CITY_PSC has "" for everything in this set — see
+// AddressBuilder.jsx, which treats that as "ask the person to type it
+// themselves" (or resolves it via live geocoding) instead of auto-filling
+// a potentially-wrong value.
 export const CZ_AMBIGUOUS_PSC_CITIES = new Set([
   "Praha", "Brno", "Ostrava", "Plzeň", "Liberec", "Olomouc", "České Budějovice",
   "Hradec Králové", "Ústí nad Labem", "Pardubice", "Zlín", "Havířov", "Kladno",
@@ -44,6 +47,26 @@ export const CZ_AMBIGUOUS_PSC_CITIES = new Set([
   "Milovice", "Nepomuk", "Sušice", "Český Krumlov", "Bílovec", "Fulnek",
   "Vítkov", "Písek", "Havlíčkův Brod", "Nymburk", "Benešov", "Jičín",
   "Krnov", "Vrchlabí", "Boskovice", "Turnov", "Poděbrady", "Kaplice",
+  // Second pass over the remaining ~118 towns using spatial sampling (16
+  // reverse-geocoded points in two rings around each town's center, cross-
+  // checked against the same okres as the point matching the previously-
+  // hardcoded PSČ, to filter out same-name villages in other regions —
+  // one such case, "Kladruby", was caught and correctly excluded this way:
+  // its "extra" codes turned out to belong to a same-named village in
+  // okres Benešov, not the real Kladruby u Stříbra this app means).
+  "Klatovy", "Rakovník", "Hodonín", "Vlašim", "Sokolov", "Beroun", "Louny",
+  "Svitavy", "Domažlice", "Rokycany", "Kopřivnice", "Valašské Meziříčí",
+  "Rychnov nad Kněžnou", "Semily", "Žďár nad Sázavou", "Kralupy nad Vltavou",
+  "Neratovice", "Roudnice nad Labem", "Varnsdorf", "Rumburk", "Žatec",
+  "Uherský Brod", "Slavkov u Brna", "Tišnov", "Rosice", "Rájec-Jestřebí",
+  "Letovice", "Miroslav", "Chotěboř", "Ledeč nad Sázavou", "Nový Bydžov",
+  "Dvůr Králové nad Labem", "Police nad Metují", "Hostinné", "Železný Brod",
+  "Hořice", "Sedlčany", "Dobříš", "Zdice", "Mníšek pod Brdy", "Říčany",
+  "Čelákovice", "Lysá nad Labem", "Sadská", "Bakov nad Jizerou", "Přeštice",
+  "Nýřany", "Stod", "Horšovský Týn", "Horažďovice", "Vodňany", "Třeboň",
+  "Suchdol nad Lužnicí", "Milevsko", "Sezimovo Ústí", "Moravské Budějovice",
+  "Jemnice", "Veselí nad Moravou", "Strážnice", "Uherský Ostroh",
+  "Rožnov pod Radhoštěm", "Frenštát pod Radhoštěm", "Odry", "Hlučín", "Hať",
 ]);
 
 export const CZ_CITY_PSC = {
@@ -66,61 +89,61 @@ export const CZ_CITY_PSC = {
   "Kolín": "", "Příbram": "", "Cheb": "", "Trutnov": "",
   "Vsetín": "", "Kroměříž": "767 01", "Litoměřice": "",
   "Písek": "", "Uherské Hradiště": "", "Šumperk": "",
-  "Nový Jičín": "", "Chrudim": "", "Klatovy": "339 01",
+  "Nový Jičín": "", "Chrudim": "", "Klatovy": "",
   "Vyškov": "", "Jindřichův Hradec": "", "Břeclav": "",
-  "Rakovník": "269 01", "Strakonice": "386 01", "Havlíčkův Brod": "",
-  "Hodonín": "695 01", "Bruntál": "792 01", "Vlašim": "258 01",
-  "Sokolov": "356 01", "Kutná Hora": "", "Beroun": "266 01",
-  "Blansko": "678 01", "Louny": "440 01", "Náchod": "",
-  "Svitavy": "568 02", "Jičín": "", "Domažlice": "344 01",
-  "Rokycany": "337 01", "Litvínov": "", "Krnov": "",
-  "Kopřivnice": "742 21", "Otrokovice": "", "Valašské Meziříčí": "757 01",
-  "Rychnov nad Kněžnou": "516 01", "Semily": "513 01", "Žďár nad Sázavou": "591 01",
-  "Nymburk": "", "Benešov": "", "Kralupy nad Vltavou": "278 01",
-  "Neratovice": "277 11", "Roudnice nad Labem": "413 01", "Varnsdorf": "407 47",
-  "Frýdlant": "464 01", "Rumburk": "408 01", "Vrchlabí": "",
-  "Kadaň": "432 01", "Žatec": "438 01", "Aš": "352 01",
-  "Kyjov": "", "Uherský Brod": "688 01", "Hranice": "",
+  "Rakovník": "", "Strakonice": "386 01", "Havlíčkův Brod": "",
+  "Hodonín": "", "Bruntál": "792 01", "Vlašim": "",
+  "Sokolov": "", "Kutná Hora": "", "Beroun": "",
+  "Blansko": "678 01", "Louny": "", "Náchod": "",
+  "Svitavy": "", "Jičín": "", "Domažlice": "",
+  "Rokycany": "", "Litvínov": "", "Krnov": "",
+  "Kopřivnice": "", "Otrokovice": "", "Valašské Meziříčí": "",
+  "Rychnov nad Kněžnou": "", "Semily": "", "Žďár nad Sázavou": "",
+  "Nymburk": "", "Benešov": "", "Kralupy nad Vltavou": "",
+  "Neratovice": "", "Roudnice nad Labem": "", "Varnsdorf": "",
+  "Frýdlant": "464 01", "Rumburk": "", "Vrchlabí": "",
+  "Kadaň": "432 01", "Žatec": "", "Aš": "352 01",
+  "Kyjov": "", "Uherský Brod": "", "Hranice": "",
   "Studénka": "", "Orlová": "", "Bohumín": "",
   "Boskovice": "", "Kuřim": "664 34", "Ivančice": "664 91",
-  "Slavkov u Brna": "684 01", "Tišnov": "666 01", "Rosice": "665 01",
-  "Adamov": "679 04", "Rájec-Jestřebí": "679 02", "Letovice": "679 61",
-  "Moravský Krumlov": "672 01", "Miroslav": "671 72", "Pohořelice": "691 23",
+  "Slavkov u Brna": "", "Tišnov": "", "Rosice": "",
+  "Adamov": "679 04", "Rájec-Jestřebí": "", "Letovice": "",
+  "Moravský Krumlov": "672 01", "Miroslav": "", "Pohořelice": "691 23",
   "Dačice": "380 01", "Telč": "588 56", "Kamenice nad Lipou": "394 70",
-  "Pelhřimov": "393 01", "Humpolec": "396 01", "Chotěboř": "583 01",
-  "Světlá nad Sázavou": "582 91", "Ledeč nad Sázavou": "584 01",
-  "Chlumec nad Cidlinou": "503 51", "Nový Bydžov": "504 01",
-  "Dvůr Králové nad Labem": "544 01", "Broumov": "",
-  "Police nad Metují": "549 54", "Hostinné": "543 71",
-  "Turnov": "", "Český Dub": "463 43", "Železný Brod": "468 22",
-  "Nová Paka": "509 01", "Hořice": "508 01", "Lomnice nad Popelkou": "512 51",
-  "Sedlčany": "264 01", "Dobříš": "263 01", "Hořovice": "268 01",
-  "Zdice": "267 51", "Mníšek pod Brdy": "252 10", "Jílové u Prahy": "254 01",
-  "Říčany": "251 01", "Brandýs nad Labem-Stará Boleslav": "",
-  "Čelákovice": "250 88", "Lysá nad Labem": "289 22", "Poděbrady": "",
-  "Sadská": "289 12", "Milovice": "", "Bakov nad Jizerou": "294 01",
+  "Pelhřimov": "393 01", "Humpolec": "396 01", "Chotěboř": "",
+  "Světlá nad Sázavou": "582 91", "Ledeč nad Sázavou": "",
+  "Chlumec nad Cidlinou": "503 51", "Nový Bydžov": "",
+  "Dvůr Králové nad Labem": "", "Broumov": "",
+  "Police nad Metují": "", "Hostinné": "",
+  "Turnov": "", "Český Dub": "463 43", "Železný Brod": "",
+  "Nová Paka": "509 01", "Hořice": "", "Lomnice nad Popelkou": "512 51",
+  "Sedlčany": "", "Dobříš": "", "Hořovice": "268 01",
+  "Zdice": "", "Mníšek pod Brdy": "", "Jílové u Prahy": "254 01",
+  "Říčany": "", "Brandýs nad Labem-Stará Boleslav": "",
+  "Čelákovice": "", "Lysá nad Labem": "", "Poděbrady": "",
+  "Sadská": "", "Milovice": "", "Bakov nad Jizerou": "",
   "Bělá pod Bezdězem": "294 21", "Dobrovice": "294 41", "Mšeno": "277 35",
   "Mělník": "276 01", "Kladruby": "349 61", "Stříbro": "349 01",
-  "Přeštice": "334 01", "Nepomuk": "", "Blovice": "336 01",
-  "Nýřany": "330 23", "Stod": "333 01", "Horšovský Týn": "346 01",
-  "Sušice": "", "Horažďovice": "341 01", "Kašperské Hory": "341 92",
+  "Přeštice": "", "Nepomuk": "", "Blovice": "336 01",
+  "Nýřany": "", "Stod": "", "Horšovský Týn": "",
+  "Sušice": "", "Horažďovice": "", "Kašperské Hory": "341 92",
   "Vimperk": "385 01", "Prachatice": "383 01", "Netolice": "384 11",
-  "Vodňany": "389 01", "Trhové Sviny": "374 01", "Kaplice": "",
+  "Vodňany": "", "Trhové Sviny": "374 01", "Kaplice": "",
   "Český Krumlov": "", "Lipno nad Vltavou": "382 78",
-  "Třeboň": "379 01", "Suchdol nad Lužnicí": "378 06", "Nová Bystřice": "378 33",
-  "Milevsko": "399 01", "Bechyně": "391 65", "Sezimovo Ústí": "391 02",
+  "Třeboň": "", "Suchdol nad Lužnicí": "", "Nová Bystřice": "378 33",
+  "Milevsko": "", "Bechyně": "391 65", "Sezimovo Ústí": "",
   "Soběslav": "392 01", "Veselí nad Lužnicí": "391 81",
   "Bystřice nad Pernštejnem": "593 01", "Nové Město na Moravě": "592 31",
   "Velké Meziříčí": "594 01", "Náměšť nad Oslavou": "675 71",
-  "Moravské Budějovice": "676 02", "Jemnice": "675 31",
+  "Moravské Budějovice": "", "Jemnice": "",
   "Slavonice": "378 81", "Jaroměřice nad Rokytnou": "675 51",
-  "Bzenec": "696 81", "Veselí nad Moravou": "698 01",
-  "Strážnice": "696 62", "Uherský Ostroh": "687 24",
+  "Bzenec": "696 81", "Veselí nad Moravou": "",
+  "Strážnice": "", "Uherský Ostroh": "",
   "Bojkovice": "687 71", "Luhačovice": "763 26", "Slavičín": "763 21",
-  "Valašské Klobouky": "766 01", "Rožnov pod Radhoštěm": "756 61",
-  "Frenštát pod Radhoštěm": "744 01", "Bílovec": "",
-  "Fulnek": "", "Odry": "742 35", "Vítkov": "",
-  "Hlučín": "748 01", "Kravaře": "747 21", "Hať": "747 16",
+  "Valašské Klobouky": "766 01", "Rožnov pod Radhoštěm": "",
+  "Frenštát pod Radhoštěm": "", "Bílovec": "",
+  "Fulnek": "", "Odry": "", "Vítkov": "",
+  "Hlučín": "", "Kravaře": "747 21", "Hať": "",
 };
 
 // Ukrainian oblast capitals and major cities with the central poshtovyi
