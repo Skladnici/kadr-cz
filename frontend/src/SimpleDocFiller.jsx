@@ -7,9 +7,11 @@ import {
 import LoginForm from "./components/LoginForm";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
+import MinorWarningIcon from "./components/MinorWarningIcon";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { isValidIco, isValidDic } from "./utils/validation";
+import { calculateAge } from "./utils/age";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } from "./utils/api";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
@@ -116,7 +118,19 @@ export default function SimpleDocFiller() {
         setLoginError(describeRequestError(res.status, "Přihlášení se nezdařilo."));
       }
     } catch {
-      setLoginError("Přihlášení se nezdařilo — zkontrolujte připojení k internetu.");
+      // fetch() throws the same generic TypeError for every unreachable-
+      // server case (offline, DNS failure, backend down, CORS rejection,
+      // wrong API_BASE) — the browser deliberately doesn't expose which,
+      // so this can't pinpoint the exact cause either. But it can at
+      // least stop *always* blaming "no internet": navigator.onLine only
+      // reports true offline-ness, so when it says the browser is online,
+      // the honest message points at the backend/API_BASE instead of an
+      // internet connection that isn't actually the problem.
+      setLoginError(
+        typeof navigator !== "undefined" && navigator.onLine === false
+          ? "Přihlášení se nezdařilo — zkontrolujte připojení k internetu."
+          : `Nepodařilo se spojit se serverem na ${API_BASE} — zkontrolujte, zda backend běží a je z tohoto prohlížeče dostupný (URL, CORS).`
+      );
     } finally {
       setLoggingIn(false);
     }
@@ -459,6 +473,13 @@ export default function SimpleDocFiller() {
     address: fields.company_address || "",
     representative: fields.company_representative || "",
   }), [fields.company_name, fields.company_ico, fields.company_dic, fields.company_address, fields.company_representative]);
+
+  // Recomputed from whatever is currently in birth_date — reacts equally
+  // to an OCR-filled value and to the person typing/correcting it by
+  // hand, since both end up in the same field. Advisory only (see
+  // MinorWarningIcon) — never blocks generation.
+  const personAge = useMemo(() => calculateAge(fields.birth_date), [fields.birth_date]);
+  const isPersonMinor = personAge !== null && personAge < 18;
 
   // "Místo výkonu práce" (workplace) isn't part of a saved company
   // profile — there's no dedicated field for it — but in practice it's
@@ -844,7 +865,25 @@ export default function SimpleDocFiller() {
                   const value = fields[key] || "";
                   const showIcoWarning = key === "company_ico" && value.trim() && !isValidIco(value);
                   const showDicWarning = key === "company_dic" && value.trim() && !isValidDic(value);
-                  const showWarning = showIcoWarning || showDicWarning;
+                  // Field border stays highlighted independently of the
+                  // MinorWarningIcon popover's own open/closed state — see
+                  // that component's own comment for why.
+                  const showMinorBorder = key === "birth_date" && isPersonMinor;
+                  const showWarning = showIcoWarning || showDicWarning || showMinorBorder;
+                  const inputEl = (
+                    <input
+                      value={fields[key] || ""}
+                      onChange={(e) =>
+                        setFields((f) => ({
+                          ...f,
+                          [key]: isUppercase ? e.target.value.toUpperCase() : e.target.value,
+                        }))
+                      }
+                      style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
+                      className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
+                        ${showMinorBorder ? "pr-8 " : ""}${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
+                    />
+                  );
                   return (
                     <label key={key} className="block">
                       <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -855,18 +894,14 @@ export default function SimpleDocFiller() {
                           </span>
                         )}
                       </span>
-                      <input
-                        value={fields[key] || ""}
-                        onChange={(e) =>
-                          setFields((f) => ({
-                            ...f,
-                            [key]: isUppercase ? e.target.value.toUpperCase() : e.target.value,
-                          }))
-                        }
-                        style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
-                        className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
-                          ${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
-                      />
+                      {showMinorBorder ? (
+                        <div className="relative">
+                          {inputEl}
+                          <MinorWarningIcon />
+                        </div>
+                      ) : (
+                        inputEl
+                      )}
                       {showIcoWarning && (
                         <span className="mt-1 block text-[10.5px] text-amber-600">
                           Neplatné IČO — zkontrolujte, zda má 8 číslic a souhlasí kontrolní číslice.
