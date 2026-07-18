@@ -40,3 +40,20 @@ order by document_count desc;
 -- secret, gates every request behind its own site-wide login before
 -- ever reaching Supabase), so RLS is left disabled here.
 -- alter table generation_log enable row level security;
+
+-- A table/view created via raw SQL (unlike Supabase's Table Editor UI,
+-- which grants this automatically) has no privileges for the
+-- anon/authenticated/service_role roles PostgREST's API keys map to —
+-- without this, PostgREST's schema-cache introspection silently omits
+-- the object entirely, so /api/stats and the /api/fill logging fail
+-- with "Could not find the table ... in the schema cache" (PGRST205)
+-- even though the table/view genuinely exists and RLS is disabled.
+grant select, insert on generation_log to anon, authenticated, service_role;
+grant select on generation_stats to anon, authenticated, service_role;
+
+-- Run after any of the above changes schema-cache-visible state
+-- (CREATE/GRANT) — Supabase's Dashboard SQL editor usually fires this
+-- automatically, but it doesn't hurt to be explicit, and it's required
+-- if these statements are ever run through a direct psql connection
+-- instead.
+NOTIFY pgrst, 'reload schema';
