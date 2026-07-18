@@ -243,14 +243,12 @@ export default function PersonCard({
             </div>
           </div>
 
-          {/* Auto-merge (see BatchDocFiller's strongIdentityMatch) needs
-              BOTH birth date and a cross-referenced document number to
-              agree before it merges with no click; here only one of the
-              two came out matching, so it's surfaced as a suggestion
-              instead — a rare coincidental single-signal match between
-              two different people should stay a human decision, even
-              though "Rozdělit" above means it wouldn't be unrecoverable
-              either way. */}
+          {/* Auto-merge (see BatchDocFiller's canAutoMerge) already
+              handles a matching birth date with no click — this only
+              shows up when birth date DIDN'T match (or one side is
+              missing it) but the document-number cross-check still hit,
+              so it's surfaced as a suggestion rather than merged
+              automatically. */}
           {possibleMatch && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5">
               <AlertTriangle size={13} className="text-amber-500 shrink-0" />
@@ -258,7 +256,7 @@ export default function PersonCard({
                 Možná stejná osoba jako „
                 {[possibleMatch.fields.first_name, possibleMatch.fields.last_name].filter(Boolean).join(" ")
                   || possibleMatch.previews[0]?.name}
-                " — jména se přesně neshodují, ale datum narození nebo číslo dokladu ano. Zkontrolujte a případně sloučte.
+                " — číslo dokladu odpovídá, ale datum narození ne. Zkontrolujte a případně sloučte.
               </span>
               <button
                 type="button"

@@ -26,11 +26,11 @@ const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative:
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
 // the same person end up as two cards this way; they're re-combined
-// into one either automatically (see strongIdentityMatch, below) when
-// birth date and a cross-referenced document number both agree, or via
-// "Sloučit s další kartou" on the card (see PersonCard) otherwise —
-// either way through the exact same utils/recognizeMerge.js logic
-// single mode uses for "several files, one person".
+// into one either automatically (see canAutoMerge, below) when birth
+// date agrees, or via "Sloučit s další kartou" on the card (see
+// PersonCard) otherwise — either way through the exact same
+// utils/recognizeMerge.js logic single mode uses for "several files,
+// one person".
 function makePersonCard(file) {
   const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
   const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
@@ -46,7 +46,7 @@ function makePersonCard(file) {
     status: "pending", // pending | recognizing | done | error
     error: null,
     rawResults: [], // raw /api/recognize responses — kept so a later merge (or split) can re-run mergeRecognizedResults on the resulting set
-    mergeNote: null, // why an automatic merge happened, e.g. "Sloučeno: datum narození + číslo dokladu" — set by strongIdentityMatch's auto-merge, null otherwise
+    mergeNote: null, // why an automatic merge happened, e.g. "Sloučeno: datum narození" — set by canAutoMerge's auto-merge, null otherwise
     fields: { ...EMPTY_PERSON_FIELDS },
     docNumberVerified: false,
     warnings: [],
@@ -90,29 +90,24 @@ function applyRecognizedResult(person, result) {
   };
 }
 
-// Auto-merge relies purely on two numeric/checked MRZ fields, never on
-// the name itself — a visa's MRZ name line can blur into pure noise
-// (real case: passport read "NEKHAICHYK/IRYNA" cleanly; that same
-// person's visa MRZ name line came out as repeated-letter garbage)
-// while the very same line's numeric fields stayed legible. Both
-// signals below must agree for an automatic merge (see
-// strongIdentityMatch); either alone only surfaces a manual "Sloučit"
-// suggestion (findPossibleMatch), since a single coincidental match
-// between two different people in the same batch is rare but not
-// impossible. Trusting the two-signal case enough to merge with no
-// click is only reasonable because a wrong auto-merge can always be
-// undone afterwards — see "Rozdělit" (splitPerson) below.
+// Auto-merge relies on birth date, never on the name itself — a visa's
+// MRZ name line can blur into pure noise (real case: passport read
+// "NEKHAICHYK/IRYNA" cleanly; that same person's visa MRZ name line
+// came out as repeated-letter garbage) while the same line's birth-date
+// digits stayed legible. Confirmed across three real passport+visa
+// pairs in one batch: birth date matched correctly every time. A
+// coincidental birth-date collision between two different people in
+// the same batch is a real but small risk for realistic batch sizes
+// (single/low tens of people) — and trusting it enough to merge with
+// no click is only reasonable because a wrong auto-merge can always be
+// undone afterwards, see "Rozdělit" (splitPerson) below.
 function normalizeDocNumber(s) {
   return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
 // Plain Levenshtein distance with an early exit once the running best
 // case for a row already exceeds maxDist — document numbers are short
-// (≈6-10 chars) so this costs nothing. A small edit distance absorbs
-// the specific single-character OCR mixups real MRZ reads produce
-// (0/O, 1/I, 5/S, 2/Z, 6/G, 8/B — see backend's own _OCR_CONFUSIONS)
-// without having to hardcode that same confusion table on the frontend
-// too — any 1-2 character slip, whichever direction, is covered.
+// (≈6-10 chars) so this costs nothing.
 function levenshteinAtMost(a, b, maxDist) {
   if (Math.abs(a.length - b.length) > maxDist) return false;
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -150,9 +145,16 @@ function birthDateMatches(a, b) {
   return Boolean(birthA) && birthA === birthB;
 }
 
-// Either direction counts: card A's own doc_number against card B's
-// visa-referenced number, or vice versa — whichever of the pair is the
-// passport and which is the visa isn't known up front.
+// NOT currently a reliable signal in practice: real-photo testing across
+// three passport+visa pairs showed the backend's visa_referenced_doc_
+// number consistently pulling the visa's own type/category code (e.g.
+// "TD..." — nothing resembling a passport number) instead of an actual
+// passport-number reference, regardless of scan quality. Left in place
+// only as a bonus confirmation label on an already birth-date-matched
+// merge (see mergeNote below) and as a fallback suggestion signal — but
+// no longer gates the auto-merge decision itself. If the backend
+// extraction is ever fixed to read the right MRZ field, this starts
+// contributing real corroboration for free.
 function docNumberCrossMatches(a, b) {
   return (
     docNumbersMatch(a.fields.doc_number, referencedDocNumber(b)) ||
@@ -160,20 +162,23 @@ function docNumberCrossMatches(a, b) {
   );
 }
 
-// The auto-merge trigger: BOTH signals must agree.
-function strongIdentityMatch(a, b) {
-  return birthDateMatches(a, b) && docNumberCrossMatches(a, b);
+// The auto-merge trigger: birth date alone.
+function canAutoMerge(a, b) {
+  return birthDateMatches(a, b);
 }
 
-// Exactly one of the two signals matches — not auto-merged (see comment
-// above strongIdentityMatch), just surfaced as a one-click suggestion
-// (PersonCard's "Možná stejná osoba").
+// Surfaced as a one-click "Možná stejná osoba" suggestion rather than
+// auto-merged — birth-date matches are handled automatically above
+// (so by the time cards coexist as separate "done" cards, birth date
+// either didn't match or was missing on one side); this only catches
+// the doc-number cross-check on its own, for whenever that extraction
+// gets fixed and starts being trustworthy.
 function findPossibleMatch(candidates, person) {
-  return candidates.find((c) => birthDateMatches(person, c) || docNumberCrossMatches(person, c)) || null;
+  return candidates.find((c) => docNumberCrossMatches(person, c)) || null;
 }
 
-// Shared by the automatic (strongIdentityMatch) merge in the recognize
-// queue and the manual "Sloučit s další kartou" button — re-runs the
+// Shared by the automatic (canAutoMerge) merge in the recognize queue
+// and the manual "Sloučit s další kartou" button — re-runs the
 // same mergeRecognizedResults() single mode uses on the two cards'
 // combined raw /api/recognize responses, so a merged card picks fields
 // exactly as if both files had been uploaded together from the start.
@@ -289,12 +294,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     setGenerateStats({ total: 0, done: 0 });
   }, [blanks]);
 
-  // Manual fallback for when the automatic identity-match merge (see
-  // strongIdentityMatch/runRecognizeQueue below) didn't fire — e.g. only
-  // one of the two signals came out matching, or neither did but the
-  // person reviewing can see from the photos that it's the same person
-  // anyway. A deliberate click, using the exact same combineCards() the
-  // automatic path uses.
+  // Manual fallback for when the automatic birth-date merge (see
+  // canAutoMerge/runRecognizeQueue below) didn't fire — e.g. birth date
+  // itself didn't come out matching but the person reviewing can see
+  // from the photos that it's the same person anyway. A deliberate
+  // click, using the exact same combineCards() the automatic path uses.
   const mergeCards = useCallback((keepId, mergeId) => {
     if (keepId === mergeId) return;
     setPeople((prev) => {
@@ -311,8 +315,8 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // cards' fields from their own (now-smaller) rawResults set via the
   // same mergeRecognizedResults() used everywhere else. No re-upload or
   // re-OCR needed — the raw /api/recognize response for every file is
-  // already kept around for exactly this. This is what makes the new
-  // two-signal auto-merge (strongIdentityMatch) safe to run with no
+  // already kept around for exactly this. This is what makes the
+  // birth-date auto-merge (canAutoMerge) safe to run with no
   // confirmation click: a wrong automatic merge is never unrecoverable.
   const splitPerson = useCallback((id) => {
     setPeople((prev) => {
@@ -381,57 +385,22 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           const justRecognized = afterRecognize.find((p) => p.id === item.id);
           // A passport and its own visa sticker land as separate cards
           // (one /api/recognize call per file) — auto-merge them back
-          // into one the moment the second one finishes, when birth date
-          // AND the cross-referenced document number both agree (see
-          // strongIdentityMatch). The "Sloučit s další kartou" button on
-          // the card (or the "Možná stejná osoba" suggestion, when only
-          // one of the two signals matched) is the fallback otherwise.
-          // TEMP DEBUG — remove once auto-merge is confirmed working on
-          // real photos. Search "AUTOMERGE-DEBUG" to find every line to
-          // strip.
-          console.log("[AUTOMERGE-DEBUG] raw /api/recognize result for", item.file.name, {
-            birth_date: result.birth_date,
-            doc_number: result.doc_number,
-            doc_number_verified: result.doc_number_verified,
-            visa_referenced_doc_number: result.visa_referenced_doc_number,
-            doc_type: result.doc_type,
-            first_name: result.first_name,
-            last_name: result.last_name,
-          });
-          console.log("[AUTOMERGE-DEBUG] derived fields for this card:", {
-            fileName: item.file.name,
-            birth_date: justRecognized.fields.birth_date,
-            doc_number: justRecognized.fields.doc_number,
-            referencedDocNumber: referencedDocNumber(justRecognized),
-          });
-          const candidatesForLog = afterRecognize.filter((p) => p.id !== item.id && p.status === "done");
-          console.log(
-            "[AUTOMERGE-DEBUG] comparing against",
-            candidatesForLog.length,
-            "existing done card(s):",
-            candidatesForLog.map((p) => ({
-              fileNames: p.previews.map((pv) => pv.name).join(", "),
-              birth_date: p.fields.birth_date,
-              doc_number: p.fields.doc_number,
-              referencedDocNumber: referencedDocNumber(p),
-              birthDateMatches: birthDateMatches(p, justRecognized),
-              docNumberCrossMatches: docNumberCrossMatches(p, justRecognized),
-              strongIdentityMatch: strongIdentityMatch(p, justRecognized),
-            }))
-          );
+          // into one the moment the second one finishes, whenever birth
+          // date agrees (see canAutoMerge). The "Sloučit s další kartou"
+          // button on the card (or the "Možná stejná osoba" suggestion,
+          // for a doc-number-only cross-check hit) is the fallback
+          // otherwise.
           const match = afterRecognize.find(
-            (p) => p.id !== item.id && p.status === "done" && strongIdentityMatch(p, justRecognized)
+            (p) => p.id !== item.id && p.status === "done" && canAutoMerge(p, justRecognized)
           );
-          console.log("[AUTOMERGE-DEBUG] match found?", Boolean(match));
           if (!match) return afterRecognize;
           autoMerged = true;
+          const mergeNote = docNumberCrossMatches(match, justRecognized)
+            ? "Sloučeno: datum narození, číslo dokladu potvrzeno"
+            : "Sloučeno: datum narození";
           return afterRecognize
             .filter((p) => p.id !== justRecognized.id)
-            .map((p) => (
-              p.id === match.id
-                ? combineCards(match, justRecognized, "Sloučeno: datum narození + číslo dokladu")
-                : p
-            ));
+            .map((p) => (p.id === match.id ? combineCards(match, justRecognized, mergeNote) : p));
         });
         if (autoMerged) peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
       } catch (e) {

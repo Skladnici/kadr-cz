@@ -12,11 +12,11 @@
 // variants found, pick the right one" warning is the only signal they
 // get if the files don't actually belong together. Batch mode passes
 // true: there, files only ever get linked into one card after an
-// independent birth-date + document-number check already ran (see
-// BatchDocFiller's strongIdentityMatch / the manual "Sloučit" click), so
-// a differing name is just OCR noise on an already-confirmed identity —
-// worth a nudge to eyeball it, not an alarming variant-by-variant dump
-// telling the person to go pick the "correct" one themselves.
+// independent birth-date match already ran (see BatchDocFiller's
+// canAutoMerge / the manual "Sloučit" click), so a differing name is
+// just OCR noise on an already-confirmed identity — worth a nudge to
+// eyeball it, not an alarming variant-by-variant dump telling the
+// person to go pick the "correct" one themselves.
 export function mergeRecognizedResults(results, { compactNameWarning = false } = {}) {
   const pick = (key) => {
     for (const r of results) {
