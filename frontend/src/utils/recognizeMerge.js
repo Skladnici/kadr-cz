@@ -5,7 +5,19 @@
 // both the single-person form and batch mode's per-person recognition run
 // through exactly the same reconciliation logic, instead of batch mode
 // inventing its own way to decide which fields "win" across documents.
-export function mergeRecognizedResults(results) {
+//
+// compactNameWarning: single mode leaves this off (the default) — there,
+// the person combining several uploaded files IS the identity check (no
+// automatic verification happens), so the detailed "here are the exact
+// variants found, pick the right one" warning is the only signal they
+// get if the files don't actually belong together. Batch mode passes
+// true: there, files only ever get linked into one card after an
+// independent birth-date + document-number check already ran (see
+// BatchDocFiller's strongIdentityMatch / the manual "Sloučit" click), so
+// a differing name is just OCR noise on an already-confirmed identity —
+// worth a nudge to eyeball it, not an alarming variant-by-variant dump
+// telling the person to go pick the "correct" one themselves.
+export function mergeRecognizedResults(results, { compactNameWarning = false } = {}) {
   const pick = (key) => {
     for (const r of results) {
       if (r[key] && r[key] !== "—") return r[key];
@@ -64,6 +76,9 @@ export function mergeRecognizedResults(results) {
         }
       });
       if (variants.length < 2) return [];
+      if (compactNameWarning) {
+        return [`${label} se liší mezi doklady — zkontrolujte.`];
+      }
       const listed = variants.map((v) => `„${v.display}" (soubor ${v.fileNumber})`).join(", ");
       return [
         `Pozor: ${label} bylo na nahraných dokumentech rozpoznáno odlišně — ${listed}. Zkontrolujte prosím ručně podle fotografií a vyberte správnou variantu.`,

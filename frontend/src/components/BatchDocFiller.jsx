@@ -182,7 +182,7 @@ function findPossibleMatch(candidates, person) {
 // note the "keep" card already had (usually none).
 function combineCards(keep, merge, mergeNote) {
   const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
-  const merged = mergeRecognizedResults(combinedRawResults);
+  const merged = mergeRecognizedResults(combinedRawResults, { compactNameWarning: true });
   return {
     ...keep,
     files: [...keep.files, ...merge.files],
@@ -327,7 +327,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       );
 
       const remainingResults = person.rawResults.slice(0, lastIndex);
-      const remainingMerged = mergeRecognizedResults(remainingResults);
+      const remainingMerged = mergeRecognizedResults(remainingResults, { compactNameWarning: true });
       const remainingCard = {
         ...person,
         files: person.files.slice(0, lastIndex),
@@ -386,9 +386,43 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           // strongIdentityMatch). The "Sloučit s další kartou" button on
           // the card (or the "Možná stejná osoba" suggestion, when only
           // one of the two signals matched) is the fallback otherwise.
+          // TEMP DEBUG — remove once auto-merge is confirmed working on
+          // real photos. Search "AUTOMERGE-DEBUG" to find every line to
+          // strip.
+          console.log("[AUTOMERGE-DEBUG] raw /api/recognize result for", item.file.name, {
+            birth_date: result.birth_date,
+            doc_number: result.doc_number,
+            doc_number_verified: result.doc_number_verified,
+            visa_referenced_doc_number: result.visa_referenced_doc_number,
+            doc_type: result.doc_type,
+            first_name: result.first_name,
+            last_name: result.last_name,
+          });
+          console.log("[AUTOMERGE-DEBUG] derived fields for this card:", {
+            fileName: item.file.name,
+            birth_date: justRecognized.fields.birth_date,
+            doc_number: justRecognized.fields.doc_number,
+            referencedDocNumber: referencedDocNumber(justRecognized),
+          });
+          const candidatesForLog = afterRecognize.filter((p) => p.id !== item.id && p.status === "done");
+          console.log(
+            "[AUTOMERGE-DEBUG] comparing against",
+            candidatesForLog.length,
+            "existing done card(s):",
+            candidatesForLog.map((p) => ({
+              fileNames: p.previews.map((pv) => pv.name).join(", "),
+              birth_date: p.fields.birth_date,
+              doc_number: p.fields.doc_number,
+              referencedDocNumber: referencedDocNumber(p),
+              birthDateMatches: birthDateMatches(p, justRecognized),
+              docNumberCrossMatches: docNumberCrossMatches(p, justRecognized),
+              strongIdentityMatch: strongIdentityMatch(p, justRecognized),
+            }))
+          );
           const match = afterRecognize.find(
             (p) => p.id !== item.id && p.status === "done" && strongIdentityMatch(p, justRecognized)
           );
+          console.log("[AUTOMERGE-DEBUG] match found?", Boolean(match));
           if (!match) return afterRecognize;
           autoMerged = true;
           return afterRecognize
