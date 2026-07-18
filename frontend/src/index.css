@@ -15,3 +15,31 @@
 body {
   font-family: 'Barlow', 'Segoe UI', system-ui, sans-serif;
 }
+
+/* Evening/night dimming for the document-filling form (SimpleDocFiller) —
+   the whole effect is a soft, uniform darkening of the page/card/fields,
+   never a stark black patch against the rest of the light UI. Scoped to
+   inputs/textareas/selects that still carry the plain ".border-slate-200"
+   state, so the verified (green) and warning (amber) field highlights
+   underneath keep showing through untouched — and to buttons and other
+   non-field elements never matching at all. */
+.night-mode {
+  background-color: #eef1f5;
+}
+
+.night-mode .form-card {
+  background-color: #f4f6f8;
+}
+
+.night-mode input.border-slate-200,
+.night-mode textarea.border-slate-200,
+.night-mode select.border-slate-200 {
+  background-color: #e2e6eb;
+  border-color: #c3c9d1;
+  color: #2a3341;
+}
+
+.night-mode input.border-slate-200::placeholder,
+.night-mode textarea.border-slate-200::placeholder {
+  color: #5b6472;
+}

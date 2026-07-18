@@ -58,6 +58,17 @@ export default function SimpleDocFiller() {
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
   const fileInputRef = useRef(null);
 
+  // Softens the form's fields/card in the evening/night — checked once on
+  // page load (no live timer, per design decision), so it doesn't shift
+  // under someone's hands mid-session. Deliberately scoped to the form
+  // itself (see the "night-mode" class below and its rules in index.css),
+  // not a full site dark mode — header, buttons and StatsWidget are left
+  // untouched.
+  const [isNightMode] = useState(() => {
+    const hour = new Date().getHours();
+    return hour >= 20 || hour < 7;
+  });
+
   // Backed by sessionStorage (not localStorage, not memory-only) so a
   // page reload (F5) or browser back/forward doesn't force a fresh
   // login — sessionStorage survives those — while still asking again
@@ -601,10 +612,13 @@ export default function SimpleDocFiller() {
 
   return (
     <div
-      className="min-h-screen w-full flex items-start justify-center py-10 px-4"
+      className={`min-h-screen w-full flex items-start justify-center py-10 px-4${isNightMode ? " night-mode" : ""}`}
       style={{
         fontFamily: "'Barlow', 'Segoe UI', system-ui, sans-serif",
-        background: "var(--gradient-page-bg)",
+        // Night mode's page-background color lives in index.css instead
+        // (an inline style would otherwise always win over that class
+        // rule, no matter its specificity).
+        ...(isNightMode ? {} : { background: "var(--gradient-page-bg)" }),
       }}
     >
       <div className="w-full max-w-xl md:max-w-2xl">
@@ -658,7 +672,7 @@ export default function SimpleDocFiller() {
           })}
         </div>
 
-        <div className="rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] overflow-hidden">
+        <div className="form-card rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] overflow-hidden">
           {error && (
             <div className="m-5 mb-0 flex items-start gap-2 rounded-xl bg-red-50 p-3 text-[12.5px] text-red-700">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
