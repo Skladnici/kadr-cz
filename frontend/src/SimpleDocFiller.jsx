@@ -9,6 +9,7 @@ import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
 import StatsWidget from "./components/StatsWidget";
+import BatchDocFiller from "./components/BatchDocFiller";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { isValidIco, isValidDic } from "./utils/validation";
@@ -32,6 +33,12 @@ const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
 const AUTH_STORAGE_KEY = "kadr_cz_auth_header";
 
 export default function SimpleDocFiller() {
+  // "single" is the original one-person flow below, untouched; "batch"
+  // renders <BatchDocFiller> instead (see the form-card JSX further
+  // down) — both stay mounted the whole time (toggled via a "hidden"
+  // class, not conditional JSX) so switching tabs never discards
+  // in-progress work in either mode.
+  const [mode, setMode] = useState("single");
   const [step, setStep] = useState(1); // 1 upload, 2 scanning, 3 form, 4 done
   const [fields, setFields] = useState({});
   const [previewUrls, setPreviewUrls] = useState([]);
@@ -641,38 +648,65 @@ export default function SimpleDocFiller() {
           </div>
         </div>
 
-        {/* Step tracker */}
-        <div className="flex items-center gap-1.5 mb-6">
-          {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
-            const n = i + 1;
-            const state = step > n ? "done" : step === n ? "active" : "todo";
-            return (
-              <div
-                key={label}
-                className={`flex-1 h-[3px] rounded-full transition-colors ${
-                  state === "done" || state === "active" ? "bg-[#185FA5]" : "bg-slate-200"
-                }`}
-                title={label}
-              />
-            );
-          })}
+        {/* Mode toggle — batch mode is an additional option alongside the
+            original single-person flow, not a replacement for it (see
+            the "hidden" (not unmounted) branches below). */}
+        <div className="flex items-center gap-1 mb-6 rounded-xl bg-slate-100 p-1 w-fit">
+          <button
+            type="button"
+            onClick={() => setMode("single")}
+            className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors ${
+              mode === "single" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
+            }`}
+          >
+            Jeden dokument
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("batch")}
+            className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors ${
+              mode === "batch" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
+            }`}
+          >
+            Hromadné zpracování
+          </button>
         </div>
-        <div className="flex items-center justify-between mb-8 -mt-4 px-0.5">
-          {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
-            const n = i + 1;
-            const state = step > n ? "done" : step === n ? "active" : "todo";
-            return (
-              <span
-                key={label}
-                className={`text-[10.5px] ${state === "todo" ? "text-slate-400" : "text-[#0B1220] font-medium"}`}
-              >
-                {label}
-              </span>
-            );
-          })}
+
+        {/* Step tracker (single mode only) */}
+        <div className={mode === "single" ? "" : "hidden"}>
+          <div className="flex items-center gap-1.5 mb-6">
+            {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
+              const n = i + 1;
+              const state = step > n ? "done" : step === n ? "active" : "todo";
+              return (
+                <div
+                  key={label}
+                  className={`flex-1 h-[3px] rounded-full transition-colors ${
+                    state === "done" || state === "active" ? "bg-[#185FA5]" : "bg-slate-200"
+                  }`}
+                  title={label}
+                />
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between mb-8 -mt-4 px-0.5">
+            {["Nahrát", "Rozpoznání", "Vyplnit", "Hotovo"].map((label, i) => {
+              const n = i + 1;
+              const state = step > n ? "done" : step === n ? "active" : "todo";
+              return (
+                <span
+                  key={label}
+                  className={`text-[10.5px] ${state === "todo" ? "text-slate-400" : "text-[#0B1220] font-medium"}`}
+                >
+                  {label}
+                </span>
+              );
+            })}
+          </div>
         </div>
 
         <div className="form-card rounded-[20px] border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.18)] overflow-hidden">
+        <div className={mode === "single" ? "" : "hidden"}>
           {error && (
             <div className="m-5 mb-0 flex items-start gap-2 rounded-xl bg-red-50 p-3 text-[12.5px] text-red-700">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" /> {error}
@@ -1067,6 +1101,16 @@ export default function SimpleDocFiller() {
               </div>
             </div>
           )}
+        </div>
+
+        <div className={mode === "batch" ? "" : "hidden"}>
+          <BatchDocFiller
+            apiFetch={apiFetch}
+            authHeader={authHeader}
+            blanks={blanks}
+            onAuthExpired={() => setAuthHeader(null)}
+          />
+        </div>
         </div>
 
         <p className="mt-[22px] text-center text-[11.5px] text-slate-400">
