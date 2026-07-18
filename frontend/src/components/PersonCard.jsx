@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, Download, FileText, Link2, Loader2, Printer, X,
+  AlertTriangle, Check, ChevronDown, Download, FileText, Link2, Loader2, Printer, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 
@@ -76,6 +76,7 @@ export default function PersonCard({
   onDownload,
   onRemove,
   onMerge,
+  onSplit,
   onToggleExpand,
   onOpenLightbox,
   onUpdateFields,
@@ -170,6 +171,7 @@ export default function PersonCard({
               )}
             </div>
             {mergeLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{mergeLabel}</div>}
+            {person.mergeNote && <div className="text-[10.5px] text-amber-600 mt-0.5">{person.mergeNote}</div>}
           </div>
           <ChevronDown
             size={14}
@@ -206,7 +208,19 @@ export default function PersonCard({
 
           {/* Naskenované doklady */}
           <div>
-            <div className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400 mb-2">Naskenované doklady</div>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Naskenované doklady</div>
+              {person.rawResults.length >= 2 && (
+                <button
+                  type="button"
+                  onClick={onSplit}
+                  title="Rozdělit zpět na samostatné karty"
+                  className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 hover:text-slate-600"
+                >
+                  <Scissors size={11} /> Rozdělit
+                </button>
+              )}
+            </div>
             <div className="flex gap-2 flex-wrap">
               {person.previews.map((p, i) => (
                 <button
@@ -229,13 +243,14 @@ export default function PersonCard({
             </div>
           </div>
 
-          {/* Auto-merge (see BatchDocFiller's namesMatch) didn't fire here
-              because the names themselves didn't agree closely enough —
-              but birth date or a cross-referenced document number still
-              suggests these two cards may be the same person. Surfaced
-              as a one-click suggestion rather than merged automatically:
-              there's no way to un-merge, so a rare coincidental match
-              between two different people must stay a human decision. */}
+          {/* Auto-merge (see BatchDocFiller's strongIdentityMatch) needs
+              BOTH birth date and a cross-referenced document number to
+              agree before it merges with no click; here only one of the
+              two came out matching, so it's surfaced as a suggestion
+              instead — a rare coincidental single-signal match between
+              two different people should stay a human decision, even
+              though "Rozdělit" above means it wouldn't be unrecoverable
+              either way. */}
           {possibleMatch && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5">
               <AlertTriangle size={13} className="text-amber-500 shrink-0" />

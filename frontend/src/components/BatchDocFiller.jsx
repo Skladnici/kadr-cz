@@ -25,11 +25,12 @@ const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative:
 
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
-// the same person end up as two cards this way; "Sloučit s další kartou"
-// on the card (see PersonCard) explicitly merges two of them back into
-// one, through the exact same utils/recognizeMerge.js logic single mode
-// uses for "several files, one person" — never automatic content-based
-// guessing.
+// the same person end up as two cards this way; they're re-combined
+// into one either automatically (see strongIdentityMatch, below) when
+// birth date and a cross-referenced document number both agree, or via
+// "Sloučit s další kartou" on the card (see PersonCard) otherwise —
+// either way through the exact same utils/recognizeMerge.js logic
+// single mode uses for "several files, one person".
 function makePersonCard(file) {
   const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
   const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
@@ -44,7 +45,8 @@ function makePersonCard(file) {
     }],
     status: "pending", // pending | recognizing | done | error
     error: null,
-    rawResults: [], // raw /api/recognize responses — kept so a later merge can re-run mergeRecognizedResults on the combined set
+    rawResults: [], // raw /api/recognize responses — kept so a later merge (or split) can re-run mergeRecognizedResults on the resulting set
+    mergeNote: null, // why an automatic merge happened, e.g. "Sloučeno: datum narození + číslo dokladu" — set by strongIdentityMatch's auto-merge, null otherwise
     fields: { ...EMPTY_PERSON_FIELDS },
     docNumberVerified: false,
     warnings: [],
@@ -88,98 +90,97 @@ function applyRecognizedResult(person, result) {
   };
 }
 
-// A visa's MRZ zone is ICAO 9303 plain ASCII — it never carries
-// diacritics, by the standard's own design. A passport's name, by
-// contrast, only comes out the same way when its own MRZ reads cleanly;
-// the moment that read is too poor to trust, _parse_name_from_text falls
-// back to the document's printed/labelled name instead (see
-// backend/app/ocr_service.py), which — being real printed Czech text —
-// keeps its diacritics. So "NOVÁK" (passport, label fallback) vs "NOVAK"
-// (visa, MRZ) is a completely routine pairing for the *same* person, not
-// a mismatch — comparing them naively (case-insensitive only) missed
-// this and was the actual reason automatic merging silently failed on
-// real photos even though the underlying comparison was wired up
-// correctly. Also folds hyphens/apostrophes to spaces, since OCR is
-// inconsistent about whether it keeps them in compound surnames.
-const COMBINING_DIACRITICS = new RegExp("[̀-ͯ]", "g");
-
-function normalizeName(s) {
-  return (s || "")
-    .normalize("NFD").replace(COMBINING_DIACRITICS, "")
-    .replace(/[-']/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+// Auto-merge relies purely on two numeric/checked MRZ fields, never on
+// the name itself — a visa's MRZ name line can blur into pure noise
+// (real case: passport read "NEKHAICHYK/IRYNA" cleanly; that same
+// person's visa MRZ name line came out as repeated-letter garbage)
+// while the very same line's numeric fields stayed legible. Both
+// signals below must agree for an automatic merge (see
+// strongIdentityMatch); either alone only surfaces a manual "Sloučit"
+// suggestion (findPossibleMatch), since a single coincidental match
+// between two different people in the same batch is rare but not
+// impossible. Trusting the two-signal case enough to merge with no
+// click is only reasonable because a wrong auto-merge can always be
+// undone afterwards — see "Rozdělit" (splitPerson) below.
+function normalizeDocNumber(s) {
+  return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-// Two cards are considered "the same person" when their surnames match
-// (after the diacritic/punctuation normalization above) and their given
-// names either also match or at least one side doesn't have one to
-// compare — a visa's MRZ-derived given name occasionally truncates or
-// reorders a middle name, so requiring a perfect match on both sides
-// would miss real matches too often. If the given names disagree outright
-// even so, a matching birth date is treated as strong enough
-// corroboration on its own — a purely numeric field with far less room
-// for this kind of OCR/transliteration noise than a name has.
-function namesMatch(a, b) {
-  const lastA = normalizeName(a.last_name);
-  const lastB = normalizeName(b.last_name);
-  if (!lastA || !lastB || lastA !== lastB) return false;
-  const firstA = normalizeName(a.first_name);
-  const firstB = normalizeName(b.first_name);
-  if (!firstA || !firstB || firstA === firstB) return true;
-  const birthA = (a.birth_date || "").trim();
-  const birthB = (b.birth_date || "").trim();
+// Plain Levenshtein distance with an early exit once the running best
+// case for a row already exceeds maxDist — document numbers are short
+// (≈6-10 chars) so this costs nothing. A small edit distance absorbs
+// the specific single-character OCR mixups real MRZ reads produce
+// (0/O, 1/I, 5/S, 2/Z, 6/G, 8/B — see backend's own _OCR_CONFUSIONS)
+// without having to hardcode that same confusion table on the frontend
+// too — any 1-2 character slip, whichever direction, is covered.
+function levenshteinAtMost(a, b, maxDist) {
+  if (Math.abs(a.length - b.length) > maxDist) return false;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    let rowMin = curr[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      rowMin = Math.min(rowMin, curr[j]);
+    }
+    if (rowMin > maxDist) return false;
+    prev = curr;
+  }
+  return prev[b.length] <= maxDist;
+}
+
+// Too-short strings are excluded — a 2-character edit distance against
+// a 3-4 character fragment would accept almost anything, defeating the
+// point of a "cross-check" at all.
+function docNumbersMatch(a, b) {
+  const na = normalizeDocNumber(a);
+  const nb = normalizeDocNumber(b);
+  if (na.length < 5 || nb.length < 5) return false;
+  return levenshteinAtMost(na, nb, 2);
+}
+
+function referencedDocNumber(person) {
+  return person.rawResults.find((r) => r.visa_referenced_doc_number)?.visa_referenced_doc_number || "";
+}
+
+function birthDateMatches(a, b) {
+  const birthA = (a.fields.birth_date || "").trim();
+  const birthB = (b.fields.birth_date || "").trim();
   return Boolean(birthA) && birthA === birthB;
 }
 
-// namesMatch (above) requires the surname to match before it'll even
-// look at birth date — real enough most of the time, but a visa MRZ
-// read can come out so blurred that the surname itself is pure noise
-// (see real case: "NEKHAICHYK" on the passport vs "KIRYNA" read off a
-// blurred visa MRZ line — no surname agreement at all, yet the same
-// line's numeric birth-date field read out fine: numeric MRZ fields
-// have far less room for OCR error than a run of letters does). This
-// covers that gap using two numeric/checked signals instead of names:
-//   1. Matching birth date on both cards.
-//   2. A passport number one visa's MRZ references (see backend's
-//      visa_referenced_doc_number, itself best-effort) matching the
-//      other card's own doc_number.
-// Deliberately NOT auto-merged like namesMatch's result is — a
-// coincidental birth-date match between two different real people in
-// the same batch is rare but not impossible, and merging two different
-// people's documents onto one legal contract with no way to un-merge
-// is a much worse failure than asking for one extra click. This only
-// powers a suggestion (see PersonCard's "Možná stejná osoba") that the
-// person reviewing must confirm themselves.
-function referencedDocNumber(person) {
-  const hit = person.rawResults.find((r) => r.visa_referenced_doc_number);
-  return normalizeName(hit?.visa_referenced_doc_number || "");
-}
-
-function findPossibleMatch(candidates, person) {
-  const birth = (person.fields.birth_date || "").trim();
-  const ownDoc = normalizeName(person.fields.doc_number || "");
-  const ownReferenced = referencedDocNumber(person);
+// Either direction counts: card A's own doc_number against card B's
+// visa-referenced number, or vice versa — whichever of the pair is the
+// passport and which is the visa isn't known up front.
+function docNumberCrossMatches(a, b) {
   return (
-    candidates.find((c) => {
-      const cBirth = (c.fields.birth_date || "").trim();
-      if (birth && cBirth && birth === cBirth) return true;
-      const cDoc = normalizeName(c.fields.doc_number || "");
-      const cReferenced = referencedDocNumber(c);
-      if (ownDoc && cReferenced && ownDoc === cReferenced) return true;
-      if (cDoc && ownReferenced && cDoc === ownReferenced) return true;
-      return false;
-    }) || null
+    docNumbersMatch(a.fields.doc_number, referencedDocNumber(b)) ||
+    docNumbersMatch(b.fields.doc_number, referencedDocNumber(a))
   );
 }
 
-// Shared by both the automatic (name-match) merge in the recognize queue
-// and the manual "Sloučit s další kartou" fallback button — re-runs the
+// The auto-merge trigger: BOTH signals must agree.
+function strongIdentityMatch(a, b) {
+  return birthDateMatches(a, b) && docNumberCrossMatches(a, b);
+}
+
+// Exactly one of the two signals matches — not auto-merged (see comment
+// above strongIdentityMatch), just surfaced as a one-click suggestion
+// (PersonCard's "Možná stejná osoba").
+function findPossibleMatch(candidates, person) {
+  return candidates.find((c) => birthDateMatches(person, c) || docNumberCrossMatches(person, c)) || null;
+}
+
+// Shared by the automatic (strongIdentityMatch) merge in the recognize
+// queue and the manual "Sloučit s další kartou" button — re-runs the
 // same mergeRecognizedResults() single mode uses on the two cards'
 // combined raw /api/recognize responses, so a merged card picks fields
 // exactly as if both files had been uploaded together from the start.
-function combineCards(keep, merge) {
+// mergeNote, when passed, records WHY an automatic merge happened, so
+// the card can show it (see PersonCard) — manual merges leave whatever
+// note the "keep" card already had (usually none).
+function combineCards(keep, merge, mergeNote) {
   const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
   const merged = mergeRecognizedResults(combinedRawResults);
   return {
@@ -203,7 +204,20 @@ function combineCards(keep, merge) {
     warnings: merged.warnings,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
+    mergeNote: mergeNote !== undefined ? mergeNote : keep.mergeNote,
   };
+}
+
+// Rebuilds a single-file "done" card straight from an already-fetched
+// /api/recognize response — used by splitPerson to peel a file back out
+// of a merged card without re-uploading or re-running OCR. Reuses the
+// original preview object (which already has its own blob URL) instead
+// of makePersonCard's own URL.createObjectURL(file), which would create
+// a second, redundant object URL for the same file and leak the first.
+function buildCardFromRawResult(file, preview, rawResult) {
+  const base = makePersonCard(file);
+  if (base.previews[0]?.url) URL.revokeObjectURL(base.previews[0].url);
+  return applyRecognizedResult({ ...base, previews: [preview] }, rawResult);
 }
 
 export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExpired }) {
@@ -275,10 +289,12 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     setGenerateStats({ total: 0, done: 0 });
   }, [blanks]);
 
-  // Manual fallback for when the automatic name-match merge (see
-  // runRecognizeQueue below) didn't fire — e.g. OCR read the surname
-  // differently enough on the two documents. A deliberate click, using
-  // the exact same combineCards() the automatic path uses.
+  // Manual fallback for when the automatic identity-match merge (see
+  // strongIdentityMatch/runRecognizeQueue below) didn't fire — e.g. only
+  // one of the two signals came out matching, or neither did but the
+  // person reviewing can see from the photos that it's the same person
+  // anyway. A deliberate click, using the exact same combineCards() the
+  // automatic path uses.
   const mergeCards = useCallback((keepId, mergeId) => {
     if (keepId === mergeId) return;
     setPeople((prev) => {
@@ -290,6 +306,54 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
   }, []);
 
+  // Undoes a merge (automatic or manual) — peels the most recently
+  // merged-in file back into its own separate card, re-deriving both
+  // cards' fields from their own (now-smaller) rawResults set via the
+  // same mergeRecognizedResults() used everywhere else. No re-upload or
+  // re-OCR needed — the raw /api/recognize response for every file is
+  // already kept around for exactly this. This is what makes the new
+  // two-signal auto-merge (strongIdentityMatch) safe to run with no
+  // confirmation click: a wrong automatic merge is never unrecoverable.
+  const splitPerson = useCallback((id) => {
+    setPeople((prev) => {
+      const person = prev.find((p) => p.id === id);
+      if (!person || person.rawResults.length < 2) return prev;
+      const lastIndex = person.rawResults.length - 1;
+
+      const peeledCard = buildCardFromRawResult(
+        person.files[lastIndex],
+        person.previews[lastIndex],
+        person.rawResults[lastIndex]
+      );
+
+      const remainingResults = person.rawResults.slice(0, lastIndex);
+      const remainingMerged = mergeRecognizedResults(remainingResults);
+      const remainingCard = {
+        ...person,
+        files: person.files.slice(0, lastIndex),
+        previews: person.previews.slice(0, lastIndex),
+        rawResults: remainingResults,
+        fields: {
+          first_name: remainingMerged.fields.first_name,
+          last_name: remainingMerged.fields.last_name,
+          birth_date: remainingMerged.fields.birth_date,
+          doc_number: remainingMerged.fields.doc_number,
+          visa_number: remainingMerged.fields.visa_number,
+          visa_validity: remainingMerged.fields.visa_validity,
+          residence_type: person.fields.residence_type,
+        },
+        docNumberVerified: remainingMerged.docNumberVerified,
+        warnings: remainingMerged.warnings,
+        rawText: remainingMerged.rawText,
+        ocrMode: remainingMerged.ocrMode,
+        mergeNote: null,
+      };
+
+      return [...prev.filter((p) => p.id !== id), remainingCard, peeledCard];
+    });
+    peopleCountRef.current += 1;
+  }, []);
+
   // Sequential, rate-limit-paced worker, one file/card at a time —
   // re-entrant-safe: if it's already running when more files get added,
   // this call just returns and the running loop picks the new items up on
@@ -299,8 +363,8 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // Because it's strictly sequential (never two files in flight at once),
   // by the time any file finishes recognizing, every earlier-queued file
   // has already settled into "done" or "error" — so checking the rest of
-  // the list for a name match right here is always looking at final,
-  // stable data, never a half-finished card.
+  // the list for an identity match right here is always looking at
+  // final, stable data, never a half-finished card.
   const runRecognizeQueue = useCallback(async () => {
     if (isRecognizingRef.current) return;
     isRecognizingRef.current = true;
@@ -317,18 +381,23 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           const justRecognized = afterRecognize.find((p) => p.id === item.id);
           // A passport and its own visa sticker land as separate cards
           // (one /api/recognize call per file) — auto-merge them back
-          // into one the moment the second one finishes, by matching the
-          // name they both read. This is the primary path; the "Sloučit
-          // s další kartou" button on the card is only the fallback for
-          // when the names didn't come out close enough to match.
+          // into one the moment the second one finishes, when birth date
+          // AND the cross-referenced document number both agree (see
+          // strongIdentityMatch). The "Sloučit s další kartou" button on
+          // the card (or the "Možná stejná osoba" suggestion, when only
+          // one of the two signals matched) is the fallback otherwise.
           const match = afterRecognize.find(
-            (p) => p.id !== item.id && p.status === "done" && namesMatch(p.fields, justRecognized.fields)
+            (p) => p.id !== item.id && p.status === "done" && strongIdentityMatch(p, justRecognized)
           );
           if (!match) return afterRecognize;
           autoMerged = true;
           return afterRecognize
             .filter((p) => p.id !== justRecognized.id)
-            .map((p) => (p.id === match.id ? combineCards(match, justRecognized) : p));
+            .map((p) => (
+              p.id === match.id
+                ? combineCards(match, justRecognized, "Sloučeno: datum narození + číslo dokladu")
+                : p
+            ));
         });
         if (autoMerged) peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
       } catch (e) {
@@ -655,6 +724,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               onDownload={handleDownload}
               onRemove={() => removePerson(person.id)}
               onMerge={(otherId) => mergeCards(person.id, otherId)}
+              onSplit={() => splitPerson(person.id)}
               onToggleExpand={() => updatePerson(person.id, (p) => ({ ...p, expanded: !p.expanded }))}
               onOpenLightbox={setLightboxUrl}
               onUpdateFields={(patch) => updatePerson(person.id, (p) => ({ ...p, fields: { ...p.fields, ...patch } }))}
