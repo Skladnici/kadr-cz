@@ -2,7 +2,8 @@
 Regression tests for the per-IP rate limits on /api/recognize (backed by
 OCR.space's free tier, ~500 requests/day for the whole site) and
 /api/fill (real disk writes + a LibreOffice subprocess) — both capped at
-10 requests/minute in main.py via slowapi. Deliberately NOT covering
+10 requests/minute — and the looser 60/minute general-purpose cap on
+/api/stats, all via slowapi in main.py. Deliberately NOT covering
 /api/companies, /api/blanks, or /api/download here: they aren't rate
 limited (no external quota behind them, or a separate concern) and
 test_auth.py already covers their auth behavior.
@@ -13,6 +14,7 @@ leftover counts from whatever else in the suite already called these two
 endpoints (e.g. test_full_user_cycle.py), making pass/fail depend on
 test execution order.
 """
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -135,3 +137,38 @@ def test_recognize_text_is_not_rate_limited(configured_auth):
             json={"text": "CESTOVNÍ PAS\nNOVÁK JAN"},
         )
         assert resp.status_code == 200
+
+
+@pytest.fixture
+def fake_supabase_stats(monkeypatch):
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "fake-anon-key")
+
+    async def fake_request(self, method, url, *, headers=None, params=None, json=None, **_ignored):
+        assert url.endswith("/generation_stats")
+        return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+
+def _stats_once(auth):
+    return client.get("/api/stats", auth=auth)
+
+
+def test_stats_allows_ordinary_burst_within_limit(configured_auth, fake_supabase_stats):
+    for _ in range(20):
+        assert _stats_once(configured_auth).status_code == 200
+
+
+def test_stats_blocks_after_exceeding_60_per_minute(configured_auth, fake_supabase_stats):
+    responses = [_stats_once(configured_auth) for _ in range(60)]
+    assert all(r.status_code == 200 for r in responses), (
+        "the 60 requests within the limit must all succeed normally"
+    )
+
+    over_limit_resp = _stats_once(configured_auth)
+    assert over_limit_resp.status_code == 429
+    assert over_limit_resp.json()["detail"] == (
+        "Příliš mnoho požadavků z vaší adresy — zkuste to prosím znovu za minutu."
+    )
+    assert "Retry-After" in over_limit_resp.headers

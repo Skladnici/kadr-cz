@@ -67,3 +67,20 @@ def test_docs_route_is_exempt_from_strict_csp():
     assert resp.status_code == 200
     assert "Content-Security-Policy" not in resp.headers
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_plain_http_request_gets_no_hsts_header():
+    # Local dev (and TestClient, which doesn't set X-Forwarded-Proto) is
+    # plain http:// — sending HSTS there would make the browser force
+    # https:// on localhost afterwards, breaking the dev server.
+    resp = client.get("/")
+    assert "Strict-Transport-Security" not in resp.headers
+
+
+def test_request_forwarded_as_https_gets_hsts_header():
+    # Render terminates TLS at its edge proxy and forwards to this
+    # container over plain HTTP, setting X-Forwarded-Proto: https on the
+    # way — that header is what marks a request as having actually
+    # arrived over TLS in production.
+    resp = client.get("/", headers={"X-Forwarded-Proto": "https"})
+    assert resp.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"

@@ -14,6 +14,7 @@ reused across contracts and visitors. Run:
 import asyncio
 import logging
 import secrets
+import time
 import uuid
 from pathlib import Path
 
@@ -74,6 +75,15 @@ async def _security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Only sent once the request has actually arrived over TLS. Render
+    # terminates TLS at its edge proxy and forwards to this container over
+    # plain HTTP, setting X-Forwarded-Proto: https on the way — uvicorn's
+    # own request.url.scheme stays "http" regardless, so that header is the
+    # only reliable signal. Localhost dev (plain http://, no proxy) never
+    # sets it, so HSTS is naturally skipped there — sending it locally
+    # would make the browser force https:// on localhost afterwards.
+    if request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path not in _DOCS_PATHS:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
@@ -88,15 +98,19 @@ async def _security_headers(request: Request, call_next):
     return response
 
 
-# Rate limiting for the two endpoints that hit an external, quota-limited
-# service (OCR.space, free tier: ~500 requests/day for the whole site) or
-# that do real disk/CPU work generating documents (LibreOffice PDF
-# conversion) — a runaway client (buggy retry loop, or someone hammering
-# the upload button) could otherwise burn through the daily OCR quota or
-# pile up disk writes well before the site-wide auth would ever stop them,
-# since auth just proves *who* is asking, not how fast. Keyed by IP rather
-# than by logged-in identity — everyone shares one SITE_USERNAME/PASSWORD,
-# so there's no per-user identity to key on anyway.
+# Rate limiting. /api/recognize and /api/fill get a tight 10/minute cap —
+# they hit an external, quota-limited service (OCR.space, free tier: ~500
+# requests/day for the whole site) or do real disk/CPU work (LibreOffice
+# PDF conversion) — a runaway client (buggy retry loop, or someone
+# hammering the upload button) could otherwise burn through the daily OCR
+# quota or pile up disk writes well before the site-wide auth would ever
+# stop them, since auth just proves *who* is asking, not how fast.
+# /api/stats gets a looser 60/minute general-purpose cap — it's cheap
+# (a single Supabase read), so it just needs a sane ceiling against
+# accidental or deliberate hammering, not a quota-driven one. Keyed by IP
+# rather than by logged-in identity — everyone shares one
+# SITE_USERNAME/PASSWORD, so there's no per-user identity to key on
+# anyway.
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
@@ -116,8 +130,58 @@ async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded)
 
 _site_security = HTTPBasic()
 
+# Brute-force protection for the shared SITE_USERNAME/SITE_PASSWORD: 5 wrong
+# guesses from one IP within 5 minutes locks that IP out for 15 minutes.
+# Everyone shares one login, so an attacker only needs to guess one
+# password — without this, slowapi's plain request-count limits above
+# would still let them try five wrong passwords a minute indefinitely.
+# In-memory and per-process (matches limiter's own in-memory store) — this
+# app runs as a single Render instance, no multi-worker/Redis setup to
+# share state across.
+LOGIN_ATTEMPT_WINDOW_SECONDS = 5 * 60
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+LOGIN_LOCKOUT_MESSAGE = (
+    "Příliš mnoho neúspěšných pokusů o přihlášení z vaší adresy — "
+    "zkuste to prosím znovu za 15 minut."
+)
 
-def _require_site_auth(credentials: HTTPBasicCredentials = Depends(_site_security)):
+_login_attempts: dict = {}  # ip -> {"failures": [timestamp, ...], "locked_until": float | None}
+
+
+def _login_lockout_remaining(ip: str, now: float) -> float:
+    """Seconds left in ip's lockout, or 0 if it isn't currently locked.
+    Also prunes failures older than the attempt window so a lockout can't
+    be re-triggered by stale attempts once it has expired."""
+    entry = _login_attempts.get(ip)
+    if not entry:
+        return 0
+    if entry["locked_until"] and now < entry["locked_until"]:
+        return entry["locked_until"] - now
+    entry["locked_until"] = None
+    entry["failures"] = [t for t in entry["failures"] if now - t < LOGIN_ATTEMPT_WINDOW_SECONDS]
+    if not entry["failures"]:
+        del _login_attempts[ip]
+    return 0
+
+
+def _record_login_failure(ip: str, now: float) -> float:
+    """Records a failed attempt and returns the resulting lockout's
+    remaining seconds (0 if this failure didn't trigger one)."""
+    entry = _login_attempts.setdefault(ip, {"failures": [], "locked_until": None})
+    entry["failures"] = [t for t in entry["failures"] if now - t < LOGIN_ATTEMPT_WINDOW_SECONDS]
+    entry["failures"].append(now)
+    if len(entry["failures"]) >= LOGIN_MAX_FAILURES:
+        entry["locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+        return LOGIN_LOCKOUT_SECONDS
+    return 0
+
+
+def _clear_login_failures(ip: str) -> None:
+    _login_attempts.pop(ip, None)
+
+
+def _require_site_auth(request: Request, credentials: HTTPBasicCredentials = Depends(_site_security)):
     """Gates every /api/* route behind a single shared username/password.
     FastAPI's HTTPBasic only inspects the Authorization: Basic header — it
     doesn't care whether a browser's native prompt put it there or the
@@ -130,14 +194,33 @@ def _require_site_auth(credentials: HTTPBasicCredentials = Depends(_site_securit
             "Přístup na server není nastaven — chybí SITE_USERNAME / "
             "SITE_PASSWORD na serveru.",
         )
+
+    ip = get_remote_address(request)
+    now = time.time()
+    remaining = _login_lockout_remaining(ip, now)
+    if remaining > 0:
+        raise HTTPException(
+            429,
+            LOGIN_LOCKOUT_MESSAGE,
+            headers={"Retry-After": str(int(remaining))},
+        )
+
     valid_username = secrets.compare_digest(credentials.username, settings.SITE_USERNAME)
     valid_password = secrets.compare_digest(credentials.password, settings.SITE_PASSWORD)
     if not (valid_username and valid_password):
+        remaining = _record_login_failure(ip, now)
+        if remaining > 0:
+            raise HTTPException(
+                429,
+                LOGIN_LOCKOUT_MESSAGE,
+                headers={"Retry-After": str(int(remaining))},
+            )
         raise HTTPException(
             401,
             "Neplatné přihlašovací údaje.",
             headers={"WWW-Authenticate": "Basic"},
         )
+    _clear_login_failures(ip)
 
 
 @app.get("/")
@@ -429,7 +512,8 @@ async def _log_generation(template_id: str, company_name: Optional[str]) -> None
 
 
 @app.get("/api/stats", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
-async def get_stats():
+@limiter.limit("60/minute")
+async def get_stats(request: Request):
     """Per-company document counts, all-time, no date breakdown — powers
     the corner stats widget (StatsWidget.jsx). Reads the generation_stats
     view (a plain GROUP BY that PostgREST's REST API can't express
