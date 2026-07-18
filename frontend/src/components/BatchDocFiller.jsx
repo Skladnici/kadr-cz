@@ -88,6 +88,83 @@ function applyRecognizedResult(person, result) {
   };
 }
 
+// A visa's MRZ zone is ICAO 9303 plain ASCII — it never carries
+// diacritics, by the standard's own design. A passport's name, by
+// contrast, only comes out the same way when its own MRZ reads cleanly;
+// the moment that read is too poor to trust, _parse_name_from_text falls
+// back to the document's printed/labelled name instead (see
+// backend/app/ocr_service.py), which — being real printed Czech text —
+// keeps its diacritics. So "NOVÁK" (passport, label fallback) vs "NOVAK"
+// (visa, MRZ) is a completely routine pairing for the *same* person, not
+// a mismatch — comparing them naively (case-insensitive only) missed
+// this and was the actual reason automatic merging silently failed on
+// real photos even though the underlying comparison was wired up
+// correctly. Also folds hyphens/apostrophes to spaces, since OCR is
+// inconsistent about whether it keeps them in compound surnames.
+const COMBINING_DIACRITICS = new RegExp("[̀-ͯ]", "g");
+
+function normalizeName(s) {
+  return (s || "")
+    .normalize("NFD").replace(COMBINING_DIACRITICS, "")
+    .replace(/[-']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+// Two cards are considered "the same person" when their surnames match
+// (after the diacritic/punctuation normalization above) and their given
+// names either also match or at least one side doesn't have one to
+// compare — a visa's MRZ-derived given name occasionally truncates or
+// reorders a middle name, so requiring a perfect match on both sides
+// would miss real matches too often. If the given names disagree outright
+// even so, a matching birth date is treated as strong enough
+// corroboration on its own — a purely numeric field with far less room
+// for this kind of OCR/transliteration noise than a name has.
+function namesMatch(a, b) {
+  const lastA = normalizeName(a.last_name);
+  const lastB = normalizeName(b.last_name);
+  if (!lastA || !lastB || lastA !== lastB) return false;
+  const firstA = normalizeName(a.first_name);
+  const firstB = normalizeName(b.first_name);
+  if (!firstA || !firstB || firstA === firstB) return true;
+  const birthA = (a.birth_date || "").trim();
+  const birthB = (b.birth_date || "").trim();
+  return Boolean(birthA) && birthA === birthB;
+}
+
+// Shared by both the automatic (name-match) merge in the recognize queue
+// and the manual "Sloučit s další kartou" fallback button — re-runs the
+// same mergeRecognizedResults() single mode uses on the two cards'
+// combined raw /api/recognize responses, so a merged card picks fields
+// exactly as if both files had been uploaded together from the start.
+function combineCards(keep, merge) {
+  const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
+  const merged = mergeRecognizedResults(combinedRawResults);
+  return {
+    ...keep,
+    files: [...keep.files, ...merge.files],
+    previews: [...keep.previews, ...merge.previews],
+    rawResults: combinedRawResults,
+    fields: {
+      first_name: merged.fields.first_name,
+      last_name: merged.fields.last_name,
+      birth_date: merged.fields.birth_date,
+      doc_number: merged.fields.doc_number,
+      visa_number: merged.fields.visa_number,
+      visa_validity: merged.fields.visa_validity,
+      // A manually-typed "druh pobytu" on either card survives the
+      // merge — OCR never fills this one, so there's nothing from
+      // mergeRecognizedResults to prefer over it.
+      residence_type: keep.fields.residence_type || merge.fields.residence_type || "",
+    },
+    docNumberVerified: merged.docNumberVerified,
+    warnings: merged.warnings,
+    rawText: merged.rawText,
+    ocrMode: merged.ocrMode,
+  };
+}
+
 export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExpired }) {
   const [people, setPeople] = useState([]);
   const [templateId, setTemplateId] = useState(null);
@@ -137,44 +214,37 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     recognizeQueueRef.current = recognizeQueueRef.current.filter((item) => item.id !== id);
   }, []);
 
-  // Explicitly combines two already-recognized cards into one — the only
-  // supported way two files end up describing one person (a passport +
-  // visa pair that landed as separate cards), and it's a deliberate click,
-  // never automatic. Re-runs the same mergeRecognizedResults() single mode
-  // uses on the combined raw /api/recognize responses, so the merged card
-  // picks fields exactly as if both files had been uploaded together from
-  // the start.
+  // Wipes the entire batch — every card, its files/thumbnails, the
+  // recognize queue, and the shared fields — back to a clean slate.
+  // Confirms first if there's anything that would actually be lost.
+  const handleResetAll = useCallback(() => {
+    if (peopleRef.current.length > 0 && !window.confirm(
+      "Opravdu začít znovu? Všechny karty, nahrané soubory i společné údaje budou nenávratně smazány."
+    )) {
+      return;
+    }
+    peopleRef.current.forEach((p) => p.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url)));
+    recognizeQueueRef.current = [];
+    peopleCountRef.current = 0;
+    setPeople([]);
+    setSharedFields({});
+    setTemplateId(blanks.length > 0 ? blanks[0].id : null);
+    setBatchError(null);
+    setRecognizeStats({ total: 0, done: 0 });
+    setGenerateStats({ total: 0, done: 0 });
+  }, [blanks]);
+
+  // Manual fallback for when the automatic name-match merge (see
+  // runRecognizeQueue below) didn't fire — e.g. OCR read the surname
+  // differently enough on the two documents. A deliberate click, using
+  // the exact same combineCards() the automatic path uses.
   const mergeCards = useCallback((keepId, mergeId) => {
     if (keepId === mergeId) return;
     setPeople((prev) => {
       const keep = prev.find((p) => p.id === keepId);
       const merge = prev.find((p) => p.id === mergeId);
       if (!keep || !merge || keep.status !== "done" || merge.status !== "done") return prev;
-      const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
-      const merged = mergeRecognizedResults(combinedRawResults);
-      const updatedKeep = {
-        ...keep,
-        files: [...keep.files, ...merge.files],
-        previews: [...keep.previews, ...merge.previews],
-        rawResults: combinedRawResults,
-        fields: {
-          first_name: merged.fields.first_name,
-          last_name: merged.fields.last_name,
-          birth_date: merged.fields.birth_date,
-          doc_number: merged.fields.doc_number,
-          visa_number: merged.fields.visa_number,
-          visa_validity: merged.fields.visa_validity,
-          // A manually-typed "druh pobytu" on either card survives the
-          // merge — OCR never fills this one, so there's nothing from
-          // mergeRecognizedResults to prefer over it.
-          residence_type: keep.fields.residence_type || merge.fields.residence_type || "",
-        },
-        docNumberVerified: merged.docNumberVerified,
-        warnings: merged.warnings,
-        rawText: merged.rawText,
-        ocrMode: merged.ocrMode,
-      };
-      return prev.filter((p) => p.id !== mergeId).map((p) => (p.id === keepId ? updatedKeep : p));
+      return prev.filter((p) => p.id !== mergeId).map((p) => (p.id === keepId ? combineCards(keep, merge) : p));
     });
     peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
   }, []);
@@ -184,6 +254,12 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // this call just returns and the running loop picks the new items up on
   // its next iteration since it re-checks the queue's current length each
   // time rather than snapshotting it once.
+  //
+  // Because it's strictly sequential (never two files in flight at once),
+  // by the time any file finishes recognizing, every earlier-queued file
+  // has already settled into "done" or "error" — so checking the rest of
+  // the list for a name match right here is always looking at final,
+  // stable data, never a half-finished card.
   const runRecognizeQueue = useCallback(async () => {
     if (isRecognizingRef.current) return;
     isRecognizingRef.current = true;
@@ -194,7 +270,57 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       await paceRateLimit(recognizeStartTimesRef);
       try {
         const result = await runWithRetry(() => uploadFileViaXHR(`${API_BASE}/api/recognize`, item.file, authHeader));
-        updatePerson(item.id, (p) => applyRecognizedResult(p, result));
+        // TEMP DEBUG — remove once auto-merge is confirmed working on real
+        // photos. Search "BATCH-MERGE-DEBUG" to find every line to strip.
+        console.log("[BATCH-MERGE-DEBUG] raw /api/recognize result for", item.file.name, {
+          first_name: result.first_name,
+          last_name: result.last_name,
+          birth_date: result.birth_date,
+          doc_type: result.doc_type,
+          doc_number: result.doc_number,
+          doc_number_verified: result.doc_number_verified,
+          mrz_raw: result.mrz_raw,
+        });
+        let autoMerged = false;
+        setPeople((prev) => {
+          const afterRecognize = prev.map((p) => (p.id === item.id ? applyRecognizedResult(p, result) : p));
+          const justRecognized = afterRecognize.find((p) => p.id === item.id);
+          console.log("[BATCH-MERGE-DEBUG] derived fields for this card:", {
+            fileName: item.file.name,
+            first_name: justRecognized.fields.first_name,
+            last_name: justRecognized.fields.last_name,
+            birth_date: justRecognized.fields.birth_date,
+          });
+          const candidates = afterRecognize.filter((p) => p.id !== item.id && p.status === "done");
+          console.log(
+            "[BATCH-MERGE-DEBUG] comparing against",
+            candidates.length,
+            "existing done card(s):",
+            candidates.map((p) => ({
+              fileNames: p.previews.map((pv) => pv.name).join(", "),
+              first_name: p.fields.first_name,
+              last_name: p.fields.last_name,
+              birth_date: p.fields.birth_date,
+              namesMatchResult: namesMatch(p.fields, justRecognized.fields),
+            }))
+          );
+          // A passport and its own visa sticker land as separate cards
+          // (one /api/recognize call per file) — auto-merge them back
+          // into one the moment the second one finishes, by matching the
+          // name they both read. This is the primary path; the "Sloučit
+          // s další kartou" button on the card is only the fallback for
+          // when the names didn't come out close enough to match.
+          const match = afterRecognize.find(
+            (p) => p.id !== item.id && p.status === "done" && namesMatch(p.fields, justRecognized.fields)
+          );
+          console.log("[BATCH-MERGE-DEBUG] match found?", Boolean(match), match ? match.fields : null);
+          if (!match) return afterRecognize;
+          autoMerged = true;
+          return afterRecognize
+            .filter((p) => p.id !== justRecognized.id)
+            .map((p) => (p.id === match.id ? combineCards(match, justRecognized) : p));
+        });
+        if (autoMerged) peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
       } catch (e) {
         if (e.status === 401) {
           onAuthExpired();
@@ -420,15 +546,27 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
   return (
     <div className="p-7 md:p-9">
-      <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Barlow', sans-serif" }}>
-        Hromadné zpracování více osob
-      </h2>
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="text-[19px] font-semibold text-[#0B1220]" style={{ fontFamily: "'Barlow', sans-serif" }}>
+          Hromadné zpracování více osob
+        </h2>
+        {people.length > 0 && (
+          <button
+            type="button"
+            onClick={handleResetAll}
+            className="shrink-0 text-[12px] text-slate-400 hover:text-red-600 mt-1"
+          >
+            Začít znovu
+          </button>
+        )}
+      </div>
       <p className="mt-1 text-[13px] text-slate-500">
         Nahrajte fotografie více dokladů najednou — každá fotografie se
-        rozpozná jako vlastní karta. Pokud patří pas a vízum téže osobě,
-        po rozpoznání je na kartě spojte tlačítkem „Sloučit s další
-        kartou". Firmu, typ smlouvy a další společné údaje vyplníte
-        jednou pro celou dávku dole.
+        rozpozná jako vlastní karta. Pas a vízum téže osoby se po
+        rozpoznání spojí automaticky podle jména; pokud se to nepodaří,
+        spojte je na kartě ručně tlačítkem „Sloučit s další kartou".
+        Firmu, typ smlouvy a další společné údaje vyplníte jednou pro
+        celou dávku dole a použijí se pro všechny karty automaticky.
       </p>
 
       {batchError && (

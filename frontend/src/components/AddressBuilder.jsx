@@ -188,7 +188,7 @@ function AddressBuilder({ czParts, setCzPart, originCountry, setOriginCountry, o
         <div className="flex items-center justify-between mb-2">
           <div className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Adresa v zemi původu</div>
           <div className="flex gap-1">
-            {[["ua", "UA"], ["eu", "EU"]].map(([key, label]) => (
+            {[["ua", "UA"], ["eu", "EU"], ["other", "Jiná"]].map(([key, label]) => (
               <button
                 key={key}
                 type="button"

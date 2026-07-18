@@ -27,6 +27,19 @@ function StatusDot({ person }) {
     : <Check size={13} strokeWidth={3} className="shrink-0 text-emerald-600" title="Rozpoznáno" />;
 }
 
+// Tells the person at a glance what auto-merge did (or didn't) find for
+// this card — "Číslo víza" etc. living in a section that never got
+// filled in isn't obvious just from the fields themselves.
+function mergeStatusLabel(person) {
+  if (person.status !== "done") return null;
+  const hasVisa = person.rawResults.some((r) => r.doc_type === "Vízum");
+  const hasNonVisa = person.rawResults.some((r) => r.doc_type && r.doc_type !== "Vízum");
+  if (person.rawResults.length >= 2) {
+    return hasVisa && hasNonVisa ? "Pas + vízum sloučeno" : "Více dokladů sloučeno";
+  }
+  return hasVisa ? "Pouze vízum, pas nenalezen" : "Pouze pas, vízum nenalezeno";
+}
+
 function OverrideDateRow({ label, enabled, value, sharedValue, onToggle, onChange }) {
   return (
     <div>
@@ -78,9 +91,14 @@ export default function PersonCard({
   onUpdateTemplateOverride,
 }) {
   const [mergeTarget, setMergeTarget] = useState("");
+  // Starts closed every time the card itself is (re-)expanded — matches
+  // "hidden by default, only opens on an explicit click" literally rather
+  // than remembering whether it was open on a previous expand.
+  const [individualOpen, setIndividualOpen] = useState(false);
   const displayName = [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ");
   const hasOverride = person.companyOverrideEnabled || person.startDateOverrideEnabled
     || person.endDateOverrideEnabled || person.templateOverrideEnabled;
+  const mergeLabel = mergeStatusLabel(person);
 
   const handleRemoveClick = () => {
     const isFilled = person.status === "done" || person.status === "error";
@@ -134,14 +152,19 @@ export default function PersonCard({
           className="flex-1 flex items-center gap-2.5 min-w-0 text-left"
         >
           <StatusDot person={person} />
-          <span className="text-[13px] font-medium text-[#0B1220] truncate">
-            {displayName || `Osoba ${index + 1}`}
-          </span>
-          {hasOverride && (
-            <span className="shrink-0 rounded-md bg-sky-50 text-sky-700 text-[9.5px] font-medium px-1.5 py-0.5">
-              Vlastní nastavení
-            </span>
-          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-medium text-[#0B1220] truncate">
+                {displayName || `Osoba ${index + 1}`}
+              </span>
+              {hasOverride && (
+                <span className="shrink-0 rounded-md bg-sky-50 text-sky-700 text-[9.5px] font-medium px-1.5 py-0.5">
+                  Vlastní nastavení
+                </span>
+              )}
+            </div>
+            {mergeLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{mergeLabel}</div>}
+          </div>
           <ChevronDown
             size={14}
             className={`shrink-0 text-slate-400 transition-transform ${person.expanded ? "rotate-180" : ""}`}
@@ -260,10 +283,37 @@ export default function PersonCard({
             setOriginPart={onUpdateOriginPart}
           />
 
-          {/* Individuální nastavení — přepíše společné hodnoty */}
+          {/* Individuální nastavení — přepíše společné hodnoty. Hidden by
+              default (every card already inherits the shared company/
+              dates/typ smlouvy automatically) — only opens on request, so
+              reviewing a batch of ordinary cards doesn't mean scrolling
+              past four override toggles per person for nothing. */}
+          {!individualOpen ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-3 bg-slate-50/40">
+              <span className="text-[11.5px] text-slate-500">
+                {hasOverride ? "Firma/datum: použito vlastní nastavení pro tuto osobu" : "Firma/datum: použity společné hodnoty výše"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setIndividualOpen(true)}
+                className="shrink-0 text-[11px] font-medium text-[#185FA5] hover:underline"
+              >
+                Nastavit jinak pro tuto osobu
+              </button>
+            </div>
+          ) : (
           <div className="rounded-xl border border-slate-200 p-3 bg-slate-50/40 space-y-3">
-            <div className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">
-              Individuální nastavení (přepíše společné hodnoty)
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">
+                Individuální nastavení (přepíše společné hodnoty)
+              </span>
+              <button
+                type="button"
+                onClick={() => setIndividualOpen(false)}
+                className="shrink-0 text-[11px] font-medium text-slate-400 hover:text-slate-600"
+              >
+                Skrýt
+              </button>
             </div>
 
             <div>
@@ -346,6 +396,7 @@ export default function PersonCard({
               )}
             </div>
           </div>
+          )}
 
           {person.generation?.status === "generating" && (
             <div className="flex items-center gap-2 text-[12px] text-slate-500">
