@@ -40,6 +40,13 @@ def reset_limiter():
 def configured_auth(monkeypatch):
     monkeypatch.setattr(settings, "SITE_USERNAME", "hr")
     monkeypatch.setattr(settings, "SITE_PASSWORD", "test123")
+    # Unconfigured makes _log_generation() no-op — without this, the
+    # /api/fill burst tests below would use the real .env SUPABASE_URL/KEY
+    # and write a "Bez firmy" row into production on every one of their
+    # (many) successful fill calls. fake_supabase_stats overrides this
+    # back to a mocked URL for the /api/stats tests that need it.
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
     return ("hr", "test123")
 
 

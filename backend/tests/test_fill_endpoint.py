@@ -18,6 +18,11 @@ client = TestClient(app)
 def configured_auth(monkeypatch):
     monkeypatch.setattr(settings, "SITE_USERNAME", "hr")
     monkeypatch.setattr(settings, "SITE_PASSWORD", "test123")
+    # Unconfigured makes _log_generation() no-op — without this, every
+    # /api/fill call below would use the real .env SUPABASE_URL/KEY and
+    # actually write a "Bez firmy" row into production on each test run.
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
 
 
 def test_fill_generates_a_downloadable_document(configured_auth, tmp_path, monkeypatch):

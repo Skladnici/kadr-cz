@@ -165,11 +165,17 @@ def test_fill_still_succeeds_when_supabase_logging_itself_errors(monkeypatch, tm
 
 
 def test_fill_succeeds_without_logging_when_supabase_is_unconfigured(monkeypatch, tmp_path):
-    # No SUPABASE_URL/KEY set at all (the default) — _log_generation must
-    # skip the network call entirely rather than erroring on empty URLs.
+    # Explicitly blanked out, not just "left at the default" — config.py's
+    # load_dotenv() picks up backend/.env, which (in this dev environment)
+    # has real SUPABASE_URL/KEY, so an untouched settings.SUPABASE_URL is
+    # NOT empty here. Without this, _log_generation() would actually POST
+    # this test's "ACME s.r.o." fill into the real production
+    # generation_log table instead of exercising the unconfigured path.
     monkeypatch.setattr(settings, "SITE_USERNAME", "hr")
     monkeypatch.setattr(settings, "SITE_PASSWORD", "test123")
     monkeypatch.setattr(settings, "GENERATED_DIR", tmp_path)
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
 
     resp = _fill(company_name="ACME s.r.o.")
     assert resp.status_code == 200

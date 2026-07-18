@@ -29,6 +29,16 @@ def test_full_cycle_upload_recognize_fill_download(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "OCR_MODE", "mock")
     monkeypatch.setattr(settings, "GENERATED_DIR", tmp_path)
     monkeypatch.setattr(settings, "UPLOAD_DIR", tmp_path)
+    # This test isn't about stats logging — it only cares that the
+    # upload -> fill -> download handoff works. Leaving SUPABASE_URL/KEY
+    # at their real .env values would make _log_generation() actually
+    # POST this test's "ACME s.r.o." fill into the real production
+    # generation_log table on every run (this is exactly how that table
+    # accumulated test rows before). Unconfigured means _log_generation()
+    # no-ops, same as test_fill_succeeds_without_logging_when_supabase_is_unconfigured
+    # in test_stats_endpoint.py.
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
     auth = ("hr", "test123")
 
     # Step 1: log in / list available blanks (what LoginForm's probe hits).
