@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, FileText, Loader2, Upload, X } from "lucide-react";
+import { AlertTriangle, FileText, Loader2, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
 import {
@@ -23,19 +23,28 @@ const EMPTY_PERSON_FIELDS = {
 };
 const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative: "" };
 
-// One card can be backed by *several* files (e.g. a passport photo plus a
-// visa sticker for the same person) — mirroring single mode, where
-// everything staged before clicking "Rozpoznat a pokračovat" belongs to
-// one person. previewUrl is just the first image among them, used as the
-// card's thumbnail; fileNames lists all of them for the card's subtitle.
-function makePersonCard(files, previewUrl, fileNames) {
+// Every dropped/selected file becomes its own card immediately (auto-
+// recognized) — the simple, predictable default. A passport + visa for
+// the same person end up as two cards this way; "Sloučit s další kartou"
+// on the card (see PersonCard) explicitly merges two of them back into
+// one, through the exact same utils/recognizeMerge.js logic single mode
+// uses for "several files, one person" — never automatic content-based
+// guessing.
+function makePersonCard(file) {
+  const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+  const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
   return {
     id: crypto.randomUUID(),
-    files,
-    previewUrl,
-    fileName: fileNames,
+    files: [file],
+    previews: [{
+      name: file.name,
+      isPdf,
+      isHeic,
+      url: !isPdf && !isHeic && file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+    }],
     status: "pending", // pending | recognizing | done | error
     error: null,
+    rawResults: [], // raw /api/recognize responses — kept so a later merge can re-run mergeRecognizedResults on the combined set
     fields: { ...EMPTY_PERSON_FIELDS },
     docNumberVerified: false,
     warnings: [],
@@ -48,7 +57,34 @@ function makePersonCard(files, previewUrl, fileNames) {
     companyOverride: { ...EMPTY_COMPANY },
     startDateOverrideEnabled: false,
     startDateOverride: "",
+    endDateOverrideEnabled: false,
+    endDateOverride: "",
+    templateOverrideEnabled: false,
+    templateOverride: null,
+    expanded: false,
     generation: { status: "idle", docxToken: null, pdfToken: null, error: null },
+  };
+}
+
+function applyRecognizedResult(person, result) {
+  const merged = mergeRecognizedResults([result]);
+  return {
+    ...person,
+    status: "done",
+    rawResults: [result],
+    fields: {
+      first_name: merged.fields.first_name,
+      last_name: merged.fields.last_name,
+      birth_date: merged.fields.birth_date,
+      doc_number: merged.fields.doc_number,
+      visa_number: merged.fields.visa_number,
+      visa_validity: merged.fields.visa_validity,
+      residence_type: "",
+    },
+    docNumberVerified: merged.docNumberVerified,
+    warnings: merged.warnings,
+    rawText: merged.rawText,
+    ocrMode: merged.ocrMode,
   };
 }
 
@@ -57,13 +93,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const [templateId, setTemplateId] = useState(null);
   const [sharedFields, setSharedFields] = useState({});
   const [batchError, setBatchError] = useState(null);
-
-  // Staged files for the person currently being added — the batch
-  // equivalent of single mode's own pendingFiles/previewUrls at step 1.
-  // Nothing is sent to the server until "Rozpoznat a přidat osobu" is
-  // clicked, so a passport + visa pair can be selected together first.
-  const [stagedFiles, setStagedFiles] = useState([]);
-  const [stagedPreviews, setStagedPreviews] = useState([]);
+  const [lightboxUrl, setLightboxUrl] = useState(null);
 
   const [recognizeActive, setRecognizeActive] = useState(false);
   const [recognizeStats, setRecognizeStats] = useState({ total: 0, done: 0 });
@@ -73,7 +103,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const fileInputRef = useRef(null);
   const peopleRef = useRef(people);
   const peopleCountRef = useRef(0); // mirrors people.length synchronously (state updates are async) for the 25-person cap check
-  const recognizeQueueRef = useRef([]); // [{id, files}] — one entry per person, not per file
+  const recognizeQueueRef = useRef([]); // [{id, file}] — one entry per file/card
   const isRecognizingRef = useRef(false);
   const recognizeStartTimesRef = useRef([]);
   const isGeneratingRef = useRef(false);
@@ -85,12 +115,12 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     if (!templateId && blanks.length > 0) setTemplateId(blanks[0].id);
   }, [blanks, templateId]);
 
-  // Revoke every card's thumbnail blob URL if this component itself ever
+  // Revoke every card's thumbnail blob URLs if this component itself ever
   // unmounts — it's kept alive (hidden, not unmounted) while the person
   // just tabs between single/batch mode, so this mainly matters if the
   // whole page navigates away.
   useEffect(() => () => {
-    peopleRef.current.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl));
+    peopleRef.current.forEach((p) => p.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url)));
   }, []);
 
   const updatePerson = useCallback((id, updater) => {
@@ -100,145 +130,120 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const removePerson = useCallback((id) => {
     setPeople((prev) => {
       const removed = prev.find((p) => p.id === id);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      removed?.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url));
       return prev.filter((p) => p.id !== id);
     });
     peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
-    recognizeQueueRef.current = recognizeQueueRef.current.filter((job) => job.id !== id);
+    recognizeQueueRef.current = recognizeQueueRef.current.filter((item) => item.id !== id);
   }, []);
 
-  // Sequential, rate-limit-paced worker — one *person* (job) at a time,
-  // and within a job, one file at a time (so a passport+visa pair for the
-  // same person still only ever fires one /api/recognize request at
-  // once). Re-entrant-safe: if it's already running when another person
-  // gets added, this call just returns — the running loop picks the new
-  // job up on its next iteration since it re-checks the queue's current
-  // length each time rather than snapshotting it once.
+  // Explicitly combines two already-recognized cards into one — the only
+  // supported way two files end up describing one person (a passport +
+  // visa pair that landed as separate cards), and it's a deliberate click,
+  // never automatic. Re-runs the same mergeRecognizedResults() single mode
+  // uses on the combined raw /api/recognize responses, so the merged card
+  // picks fields exactly as if both files had been uploaded together from
+  // the start.
+  const mergeCards = useCallback((keepId, mergeId) => {
+    if (keepId === mergeId) return;
+    setPeople((prev) => {
+      const keep = prev.find((p) => p.id === keepId);
+      const merge = prev.find((p) => p.id === mergeId);
+      if (!keep || !merge || keep.status !== "done" || merge.status !== "done") return prev;
+      const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
+      const merged = mergeRecognizedResults(combinedRawResults);
+      const updatedKeep = {
+        ...keep,
+        files: [...keep.files, ...merge.files],
+        previews: [...keep.previews, ...merge.previews],
+        rawResults: combinedRawResults,
+        fields: {
+          first_name: merged.fields.first_name,
+          last_name: merged.fields.last_name,
+          birth_date: merged.fields.birth_date,
+          doc_number: merged.fields.doc_number,
+          visa_number: merged.fields.visa_number,
+          visa_validity: merged.fields.visa_validity,
+          // A manually-typed "druh pobytu" on either card survives the
+          // merge — OCR never fills this one, so there's nothing from
+          // mergeRecognizedResults to prefer over it.
+          residence_type: keep.fields.residence_type || merge.fields.residence_type || "",
+        },
+        docNumberVerified: merged.docNumberVerified,
+        warnings: merged.warnings,
+        rawText: merged.rawText,
+        ocrMode: merged.ocrMode,
+      };
+      return prev.filter((p) => p.id !== mergeId).map((p) => (p.id === keepId ? updatedKeep : p));
+    });
+    peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
+  }, []);
+
+  // Sequential, rate-limit-paced worker, one file/card at a time —
+  // re-entrant-safe: if it's already running when more files get added,
+  // this call just returns and the running loop picks the new items up on
+  // its next iteration since it re-checks the queue's current length each
+  // time rather than snapshotting it once.
   const runRecognizeQueue = useCallback(async () => {
     if (isRecognizingRef.current) return;
     isRecognizingRef.current = true;
     setRecognizeActive(true);
     while (recognizeQueueRef.current.length > 0) {
-      const job = recognizeQueueRef.current.shift();
-      updatePerson(job.id, (p) => ({ ...p, status: "recognizing" }));
-
-      const results = [];
-      const fileErrors = [];
-      for (const file of job.files) {
-        await paceRateLimit(recognizeStartTimesRef);
-        try {
-          const result = await runWithRetry(() => uploadFileViaXHR(`${API_BASE}/api/recognize`, file, authHeader));
-          results.push(result);
-        } catch (e) {
-          if (e.status === 401) {
-            onAuthExpired();
-          } else {
-            const reason = e.message === "timeout"
-              ? "rozpoznávání trvalo příliš dlouho"
-              : e.status >= 500 ? "chyba serveru"
-              : e.status === 400 ? "nepodporovaný nebo poškozený soubor"
-              : "rozpoznání se nezdařilo";
-            fileErrors.push(`„${file.name}" (${reason})`);
-          }
+      const item = recognizeQueueRef.current.shift();
+      updatePerson(item.id, (p) => ({ ...p, status: "recognizing" }));
+      await paceRateLimit(recognizeStartTimesRef);
+      try {
+        const result = await runWithRetry(() => uploadFileViaXHR(`${API_BASE}/api/recognize`, item.file, authHeader));
+        updatePerson(item.id, (p) => applyRecognizedResult(p, result));
+      } catch (e) {
+        if (e.status === 401) {
+          onAuthExpired();
+        } else {
+          const message = e.message === "timeout"
+            ? "Rozpoznávání trvalo příliš dlouho (přes 90 s) — zkuste tuto fotografii nahrát znovu."
+            : describeRequestError(e.status, "Rozpoznání se nezdařilo.");
+          updatePerson(item.id, (p) => ({ ...p, status: "error", error: message }));
         }
-        setRecognizeStats((s) => ({ ...s, done: s.done + 1 }));
       }
-
-      if (results.length > 0) {
-        // Same reconciliation single mode uses for "several files, one
-        // person" — a passport and a visa for the same person merge into
-        // one set of identity fields here exactly as they would there.
-        const merged = mergeRecognizedResults(results);
-        const failureWarning = fileErrors.length > 0
-          ? [`Nepodařilo se rozpoznat: ${fileErrors.join(", ")} — zkontrolujte prosím ručně, ostatní soubory této osoby byly rozpoznány.`]
-          : [];
-        updatePerson(job.id, (p) => ({
-          ...p,
-          status: "done",
-          fields: {
-            first_name: merged.fields.first_name,
-            last_name: merged.fields.last_name,
-            birth_date: merged.fields.birth_date,
-            doc_number: merged.fields.doc_number,
-            visa_number: merged.fields.visa_number,
-            visa_validity: merged.fields.visa_validity,
-            residence_type: "",
-          },
-          docNumberVerified: merged.docNumberVerified,
-          warnings: [...merged.warnings, ...failureWarning],
-          rawText: merged.rawText,
-          ocrMode: merged.ocrMode,
-        }));
-      } else {
-        updatePerson(job.id, (p) => ({
-          ...p,
-          status: "error",
-          error: `Rozpoznání se nezdařilo pro: ${fileErrors.join(", ")}.`,
-        }));
-      }
+      setRecognizeStats((s) => ({ ...s, done: s.done + 1 }));
     }
     isRecognizingRef.current = false;
     setRecognizeActive(false);
     setRecognizeStats({ total: 0, done: 0 });
   }, [authHeader, onAuthExpired, updatePerson]);
 
-  // ---------------------------------------------------------------- staging (current person's files)
-  const addStagedFiles = useCallback((fileList) => {
-    const files = Array.from(fileList || []).filter(Boolean);
-    if (files.length === 0) return;
-    const previews = files.map((f) => {
-      const isHeic = /heic|heif/i.test(f.type) || /\.hei[cf]$/i.test(f.name);
-      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name);
-      return {
-        name: f.name,
-        isPdf,
-        isHeic,
-        url: !isPdf && !isHeic && f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
-      };
-    });
-    setStagedFiles((prev) => [...prev, ...files]);
-    setStagedPreviews((prev) => [...prev, ...previews]);
-  }, []);
+  const addFiles = useCallback((fileList) => {
+    const incoming = Array.from(fileList || []).filter(Boolean);
+    if (incoming.length === 0) return;
 
-  const removeStagedFile = useCallback((index) => {
-    setStagedPreviews((prev) => {
-      const removed = prev[index];
-      if (removed?.url) URL.revokeObjectURL(removed.url);
-      return prev.filter((_, i) => i !== index);
-    });
-    setStagedFiles((prev) => prev.filter((_, i) => i !== index));
-  }, []);
-
-  const confirmAddPerson = useCallback(() => {
-    if (stagedFiles.length === 0) return;
-    if (peopleCountRef.current >= MAX_BATCH_FILES) {
+    const remainingSlots = MAX_BATCH_FILES - peopleCountRef.current;
+    if (remainingSlots <= 0) {
       setBatchError(
         `Dosažen limit ${MAX_BATCH_FILES} osob v jedné dávce — odeberte prosím některé karty, nebo dávku nejdřív vygenerujte.`
       );
       return;
     }
-    setBatchError(null);
 
-    const files = stagedFiles;
-    const previews = stagedPreviews;
-    const previewUrl = previews.find((p) => p.url)?.url || null;
-    // Only one preview is kept as the card's thumbnail — revoke the rest
-    // right away instead of leaking them.
-    previews.forEach((p) => { if (p.url && p.url !== previewUrl) URL.revokeObjectURL(p.url); });
+    let accepted = incoming;
+    if (incoming.length > remainingSlots) {
+      accepted = incoming.slice(0, remainingSlots);
+      setBatchError(
+        `Lze nahrát maximálně ${MAX_BATCH_FILES} osob najednou (včetně již přidaných) — přidáno ${accepted.length}, ${incoming.length - remainingSlots} přeskočeno.`
+      );
+    } else {
+      setBatchError(null);
+    }
 
-    const card = makePersonCard(files, previewUrl, previews.map((p) => p.name).join(", "));
-    peopleCountRef.current += 1;
-    setPeople((prev) => [...prev, card]);
-    recognizeQueueRef.current.push({ id: card.id, files });
+    const newCards = accepted.map(makePersonCard);
+    peopleCountRef.current += newCards.length;
+    setPeople((prev) => [...prev, ...newCards]);
+    recognizeQueueRef.current.push(...newCards.map((c) => ({ id: c.id, file: c.files[0] })));
     setRecognizeStats((s) => ({
-      total: (isRecognizingRef.current ? s.total : 0) + files.length,
+      total: (isRecognizingRef.current ? s.total : 0) + newCards.length,
       done: isRecognizingRef.current ? s.done : 0,
     }));
     runRecognizeQueue();
-
-    setStagedFiles([]);
-    setStagedPreviews([]);
-  }, [stagedFiles, stagedPreviews, runRecognizeQueue]);
+  }, [runRecognizeQueue]);
 
   // ---------------------------------------------------------------- shared fields
   const relevantFields = useMemo(
@@ -321,8 +326,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const buildFillPayload = useCallback((person) => {
     const company = person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields;
     const startDate = person.startDateOverrideEnabled ? person.startDateOverride : (sharedFields.start_date || "");
+    const endDate = person.endDateOverrideEnabled ? person.endDateOverride : (sharedFields.end_date || "");
+    const effectiveTemplateId = person.templateOverrideEnabled ? person.templateOverride : templateId;
     return {
-      template_id: templateId,
+      template_id: effectiveTemplateId,
       first_name: person.fields.first_name,
       last_name: person.fields.last_name,
       birth_date: person.fields.birth_date,
@@ -338,11 +345,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       company_address: company.address,
       company_representative: company.representative,
       start_date: startDate,
+      end_date: endDate,
       position: sharedFields.position || "",
       workplace: sharedFields.workplace || "",
       salary: sharedFields.salary || "",
       hours_per_week: sharedFields.hours_per_week || "",
-      end_date: sharedFields.end_date || "",
       bank_account: sharedFields.bank_account || "",
       signing_place: sharedFields.signing_place || "",
       termination_reason: sharedFields.termination_reason || "",
@@ -409,6 +416,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
+  const doneCards = useMemo(() => people.filter((p) => p.status === "done"), [people]);
 
   return (
     <div className="p-7 md:p-9">
@@ -416,11 +424,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         Hromadné zpracování více osob
       </h2>
       <p className="mt-1 text-[13px] text-slate-500">
-        Stejný postup jako u jedné osoby, jen opakovaný pro každého člověka:
-        nahrajte doklady jedné osoby (klidně pas i vízum najednou), nechte je
-        rozpoznat a přidejte jako kartu. Pak pokračujte další osobou. Firmu,
-        typ dokumentu a další společné údaje vyplníte jednou pro celou dávku
-        až na konci.
+        Nahrajte fotografie více dokladů najednou — každá fotografie se
+        rozpozná jako vlastní karta. Pokud patří pas a vízum téže osobě,
+        po rozpoznání je na kartě spojte tlačítkem „Sloučit s další
+        kartou". Firmu, typ smlouvy a další společné údaje vyplníte
+        jednou pro celou dávku dole.
       </p>
 
       {batchError && (
@@ -433,8 +441,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         </div>
       )}
 
-      {/* 1. Upload — same staging pattern as single mode's step 1: stage
-          one person's file(s), then confirm to recognize + add a card. */}
+      {/* 1. Upload — always available, every file becomes its own card */}
       <div className="mt-6">
         <input
           ref={fileInputRef}
@@ -442,60 +449,23 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           multiple
           accept=".jpg,.jpeg,.png,.heic,.pdf"
           className="hidden"
-          onChange={(e) => { addStagedFiles(e.target.files); e.target.value = ""; }}
+          onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
         />
         <div
           onClick={() => fileInputRef.current?.click()}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => { e.preventDefault(); addStagedFiles(e.dataTransfer.files); }}
+          onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
           className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-9 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
         >
           <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
             <Upload size={18} className="text-slate-400" />
           </div>
           <div className="text-center">
-            <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte doklady jedné osoby nebo klikněte</div>
-            <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · pas + vízum téže osoby nahrajte společně</div>
+            <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte fotografie více osob nebo klikněte</div>
+            <div className="text-[11.5px] text-slate-400 mt-0.5">JPG, PNG, HEIC, PDF · jedna fotografie = jedna karta · max {MAX_BATCH_FILES} v dávce</div>
           </div>
         </div>
-
-        {stagedPreviews.length > 0 && (
-          <div className="mt-[18px] flex gap-2 flex-wrap">
-            {stagedPreviews.map((p, i) => (
-              <div key={i} className="relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group">
-                {p.url ? (
-                  <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-slate-400">
-                    <FileText size={18} />
-                    <span className="text-[8px] leading-none">{p.isPdf ? "PDF" : "HEIC"}</span>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeStagedFile(i)}
-                  className="absolute top-0.5 right-0.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                  title="Odebrat"
-                >
-                  <X size={10} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-[18px] flex items-center gap-3">
-          <button
-            type="button"
-            onClick={confirmAddPerson}
-            disabled={stagedFiles.length === 0}
-            style={PRIMARY_GRADIENT}
-            className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 text-[13px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Rozpoznat a přidat osobu <ArrowRight size={14} />
-          </button>
-          <span className="text-[11px] text-slate-400">{people.length} / {MAX_BATCH_FILES} osob v dávce</span>
-        </div>
+        <div className="mt-2 text-[11px] text-slate-400">{people.length} / {MAX_BATCH_FILES} karet v dávce</div>
       </div>
 
       {/* Recognize queue progress */}
@@ -503,7 +473,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         <div className="mt-5 rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-3 flex items-center gap-3">
           <Loader2 size={15} className="animate-spin text-slate-400 shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="text-[12.5px] font-medium text-[#0B1220]">Rozpoznáno {recognizeStats.done} z {recognizeStats.total} souborů</div>
+            <div className="text-[12.5px] font-medium text-[#0B1220]">Rozpoznáno {recognizeStats.done} z {recognizeStats.total}</div>
             <div className="h-1 mt-1.5 rounded-full bg-slate-200 overflow-hidden">
               <div
                 className="h-full bg-[#185FA5] transition-[width]"
@@ -515,18 +485,25 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         </div>
       )}
 
-      {/* 2. Person cards, in the order they were added */}
+      {/* 2. Person cards, collapsed by default */}
       {people.length > 0 && (
-        <div className="mt-6 space-y-4">
+        <div className="mt-6 space-y-2.5">
           {people.map((person, i) => (
             <PersonCard
               key={person.id}
               person={person}
               index={i}
+              blanks={blanks}
+              mergeCandidates={doneCards.filter((p) => p.id !== person.id)}
               sharedCompany={sharedCompanyFields}
               sharedStartDate={sharedFields.start_date || ""}
+              sharedEndDate={sharedFields.end_date || ""}
+              sharedTemplateId={templateId}
               onDownload={handleDownload}
               onRemove={() => removePerson(person.id)}
+              onMerge={(otherId) => mergeCards(person.id, otherId)}
+              onToggleExpand={() => updatePerson(person.id, (p) => ({ ...p, expanded: !p.expanded }))}
+              onOpenLightbox={setLightboxUrl}
               onUpdateFields={(patch) => updatePerson(person.id, (p) => ({ ...p, fields: { ...p.fields, ...patch } }))}
               onUpdateCzPart={(key, value) => updatePerson(person.id, (p) => ({ ...p, czAddressParts: { ...p.czAddressParts, [key]: value } }))}
               onUpdateOriginPart={(key, value) => updatePerson(person.id, (p) => ({ ...p, originAddressParts: { ...p.originAddressParts, [key]: value } }))}
@@ -543,6 +520,18 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                   : { ...p, startDateOverrideEnabled: true, startDateOverride: sharedFields.start_date || "" }
               ))}
               onUpdateStartDateOverride={(value) => updatePerson(person.id, (p) => ({ ...p, startDateOverride: value }))}
+              onToggleEndDateOverride={() => updatePerson(person.id, (p) => (
+                p.endDateOverrideEnabled
+                  ? { ...p, endDateOverrideEnabled: false, endDateOverride: "" }
+                  : { ...p, endDateOverrideEnabled: true, endDateOverride: sharedFields.end_date || "" }
+              ))}
+              onUpdateEndDateOverride={(value) => updatePerson(person.id, (p) => ({ ...p, endDateOverride: value }))}
+              onToggleTemplateOverride={() => updatePerson(person.id, (p) => (
+                p.templateOverrideEnabled
+                  ? { ...p, templateOverrideEnabled: false, templateOverride: null }
+                  : { ...p, templateOverrideEnabled: true, templateOverride: templateId }
+              ))}
+              onUpdateTemplateOverride={(value) => updatePerson(person.id, (p) => ({ ...p, templateOverride: value }))}
             />
           ))}
         </div>
@@ -557,7 +546,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
             <h3 className="text-[13px] font-medium text-[#0B1220] mb-3">Společné údaje pro celou dávku</h3>
           </div>
           <div>
-            <label className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Typ dokumentu (pro celou dávku)</label>
+            <label className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400">Typ smlouvy (pro celou dávku)</label>
             <select
               value={templateId || ""}
               onChange={(e) => handleTemplateChange(e.target.value)}
@@ -612,6 +601,21 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               {generateActive ? `Generuji ${generateStats.done} z ${generateStats.total}…` : `Vygenerovat všech ${people.length} smluv`}
             </button>
           </div>
+        </div>
+      )}
+
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
+          onClick={(e) => { if (e.target === e.currentTarget) setLightboxUrl(null); }}
+        >
+          <img src={lightboxUrl} alt="Náhled dokumentu" className="max-h-full max-w-full rounded-xl shadow-2xl object-contain" />
+          <button
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-5 right-5 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          >
+            <X size={18} />
+          </button>
         </div>
       )}
     </div>
