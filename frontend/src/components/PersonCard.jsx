@@ -68,6 +68,7 @@ export default function PersonCard({
   index,
   blanks,
   mergeCandidates,
+  possibleMatch,
   sharedCompany,
   sharedStartDate,
   sharedEndDate,
@@ -162,6 +163,11 @@ export default function PersonCard({
                   Vlastní nastavení
                 </span>
               )}
+              {possibleMatch && (
+                <span className="shrink-0 rounded-md bg-amber-50 text-amber-700 text-[9.5px] font-medium px-1.5 py-0.5">
+                  Možná duplicita
+                </span>
+              )}
             </div>
             {mergeLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{mergeLabel}</div>}
           </div>
@@ -222,6 +228,32 @@ export default function PersonCard({
               ))}
             </div>
           </div>
+
+          {/* Auto-merge (see BatchDocFiller's namesMatch) didn't fire here
+              because the names themselves didn't agree closely enough —
+              but birth date or a cross-referenced document number still
+              suggests these two cards may be the same person. Surfaced
+              as a one-click suggestion rather than merged automatically:
+              there's no way to un-merge, so a rare coincidental match
+              between two different people must stay a human decision. */}
+          {possibleMatch && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5">
+              <AlertTriangle size={13} className="text-amber-500 shrink-0" />
+              <span className="flex-1 text-[11.5px] text-amber-700">
+                Možná stejná osoba jako „
+                {[possibleMatch.fields.first_name, possibleMatch.fields.last_name].filter(Boolean).join(" ")
+                  || possibleMatch.previews[0]?.name}
+                " — jména se přesně neshodují, ale datum narození nebo číslo dokladu ano. Zkontrolujte a případně sloučte.
+              </span>
+              <button
+                type="button"
+                onClick={() => onMerge(possibleMatch.id)}
+                className="shrink-0 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-amber-700 hover:bg-amber-100"
+              >
+                Sloučit
+              </button>
+            </div>
+          )}
 
           {/* Merge with another card (passport + visa of the same person) */}
           {mergeCandidates.length > 0 && (

@@ -133,6 +133,47 @@ function namesMatch(a, b) {
   return Boolean(birthA) && birthA === birthB;
 }
 
+// namesMatch (above) requires the surname to match before it'll even
+// look at birth date — real enough most of the time, but a visa MRZ
+// read can come out so blurred that the surname itself is pure noise
+// (see real case: "NEKHAICHYK" on the passport vs "KIRYNA" read off a
+// blurred visa MRZ line — no surname agreement at all, yet the same
+// line's numeric birth-date field read out fine: numeric MRZ fields
+// have far less room for OCR error than a run of letters does). This
+// covers that gap using two numeric/checked signals instead of names:
+//   1. Matching birth date on both cards.
+//   2. A passport number one visa's MRZ references (see backend's
+//      visa_referenced_doc_number, itself best-effort) matching the
+//      other card's own doc_number.
+// Deliberately NOT auto-merged like namesMatch's result is — a
+// coincidental birth-date match between two different real people in
+// the same batch is rare but not impossible, and merging two different
+// people's documents onto one legal contract with no way to un-merge
+// is a much worse failure than asking for one extra click. This only
+// powers a suggestion (see PersonCard's "Možná stejná osoba") that the
+// person reviewing must confirm themselves.
+function referencedDocNumber(person) {
+  const hit = person.rawResults.find((r) => r.visa_referenced_doc_number);
+  return normalizeName(hit?.visa_referenced_doc_number || "");
+}
+
+function findPossibleMatch(candidates, person) {
+  const birth = (person.fields.birth_date || "").trim();
+  const ownDoc = normalizeName(person.fields.doc_number || "");
+  const ownReferenced = referencedDocNumber(person);
+  return (
+    candidates.find((c) => {
+      const cBirth = (c.fields.birth_date || "").trim();
+      if (birth && cBirth && birth === cBirth) return true;
+      const cDoc = normalizeName(c.fields.doc_number || "");
+      const cReferenced = referencedDocNumber(c);
+      if (ownDoc && cReferenced && ownDoc === cReferenced) return true;
+      if (cDoc && ownReferenced && cDoc === ownReferenced) return true;
+      return false;
+    }) || null
+  );
+}
+
 // Shared by both the automatic (name-match) merge in the recognize queue
 // and the manual "Sloučit s další kartou" fallback button — re-runs the
 // same mergeRecognizedResults() single mode uses on the two cards'
@@ -602,6 +643,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               index={i}
               blanks={blanks}
               mergeCandidates={doneCards.filter((p) => p.id !== person.id)}
+              possibleMatch={
+                person.status === "done"
+                  ? findPossibleMatch(doneCards.filter((p) => p.id !== person.id), person)
+                  : null
+              }
               sharedCompany={sharedCompanyFields}
               sharedStartDate={sharedFields.start_date || ""}
               sharedEndDate={sharedFields.end_date || ""}

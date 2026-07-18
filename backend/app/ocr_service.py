@@ -249,13 +249,17 @@ PASSPORT_NUMBER_PATTERN = r"\b([A-Z]{1,2}\d{6,8})\b"
 
 
 def _find_visa_info(text: str) -> dict:
-    """Extracts visa number and expiry date from a Czech/Schengen visa
-    sticker. Two independent sources, used together for reliability:
+    """Extracts visa number, birth date, and expiry date from a Czech/
+    Schengen visa sticker. Two independent sources, used together for
+    reliability:
       1. The plain visa number printed near 'VIZUM/VISA' (6-10 digits).
       2. The visa's own MRZ-style line at the bottom, which also encodes
          the holder's birth date and the visa's expiry date — reading
-         the expiry from here is far more reliable than guessing from
-         printed (and often OCR-mangled) calendar dates on the sticker.
+         these from here is far more reliable than guessing from printed
+         (and often OCR-mangled) calendar dates on the sticker, or than
+         the name fields on the very same line, since ICAO 9303 MRZ
+         numeric fields have a checked, fixed-position format that gives
+         OCR much less room to go wrong than free-form letters do.
     """
     result = {}
 
@@ -283,10 +287,30 @@ def _find_visa_info(text: str) -> dict:
             prefix = m_series.group(1) if m_series else ""
             result["visa_number"] = f"{prefix}{m_num.group(1)}"
 
-    m2 = re.search(r"(\d{8,10})\d?[A-Z]{3}(\d{6})\d[MF](\d{6})\d", text)
+    # Group 4 here is new: whatever alphanumeric data follows the expiry
+    # check digit (ICAO 9303's "optional data" field). On real Czech/
+    # Schengen visa stickers this often carries the passport number the
+    # visa was issued against — a useful cross-check for auto-merge (see
+    # BatchDocFiller.jsx's findPossibleMatch) even when the name fields
+    # elsewhere on the line are too OCR-garbled to match on directly.
+    m2 = re.search(r"(\d{8,10})\d?[A-Z]{3}(\d{6})\d[MF](\d{6})\d([A-Z0-9<]{0,20})", text)
     if m2:
         if "visa_number" not in result:
             result["visa_number"] = m2.group(1)
+
+        # Group 2 is the holder's birth date (YYMMDD) — was being matched
+        # but never read out. Numeric MRZ fields like this are far more
+        # reliable than the visa's own name fields, so this is preferred
+        # over anything positional/label-based found elsewhere on a visa.
+        birth_raw = m2.group(2)
+        try:
+            yy, mm, dd = int(birth_raw[0:2]), int(birth_raw[2:4]), int(birth_raw[4:6])
+            year = _interpret_two_digit_year(yy, role="birth")
+            date(year, mm, dd)  # validate
+            result["birth_date"] = f"{dd:02d}.{mm:02d}.{year}"
+        except (ValueError, IndexError):
+            pass
+
         expiry_raw = m2.group(3)  # YYMMDD
         try:
             yy, mm, dd = int(expiry_raw[0:2]), int(expiry_raw[2:4]), int(expiry_raw[4:6])
@@ -295,6 +319,18 @@ def _find_visa_info(text: str) -> dict:
             result["visa_validity"] = f"{dd:02d}.{mm:02d}.{year}"
         except (ValueError, IndexError):
             pass
+
+        # Best-effort: pull a passport-number-shaped token (letters mixed
+        # with digits, ICAO passport numbers are never all-digit or
+        # all-letter) out of the optional-data tail, for the auto-merge
+        # cross-check mentioned above. Absent or unrecognizable is fine —
+        # this is a bonus corroboration signal, never a required field.
+        tail = (m2.group(4) or "").replace("<", "")
+        ref_doc_match = re.search(
+            r"\b(?=[A-Z0-9]{5,10}\b)(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{5,10}\b", tail
+        )
+        if ref_doc_match:
+            result["visa_referenced_doc_number"] = ref_doc_match.group(0)
 
     return result
 
@@ -492,6 +528,14 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
 
     visa_info = _find_visa_info(raw_text)
 
+    # A visa's own MRZ line encodes the holder's birth date numerically
+    # (see _find_visa_info) — far more reliable than the labeled/
+    # positional guessing above, which visas mostly don't carry anyway.
+    # Only used as a fallback: a passport/ID card's own birth_date (if
+    # this upload turns out to already have one) always wins.
+    if is_visa and not birth_date and visa_info.get("birth_date"):
+        birth_date = visa_info["birth_date"]
+
     is_expired = False
     warnings = []
     if mrz_doc_number and not doc_number_verified:
@@ -537,6 +581,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "address": address,
         "visa_number": visa_info.get("visa_number"),
         "visa_validity": visa_info.get("visa_validity"),
+        "visa_referenced_doc_number": visa_info.get("visa_referenced_doc_number"),
         "mrz_raw": mrz,
         "ocr_quality_score": quality,
         "ocr_confidence": confidence,
@@ -960,6 +1005,23 @@ def _tesseract_ocr(image_bytes: bytes) -> str:
     return ""
 
 
+def _looks_like_garbage_name(name: Optional[str]) -> bool:
+    """Flags an OCR name read that's almost certainly noise rather than a
+    real name — e.g. "Kk Kk Kkk" from a badly-blurred visa MRZ line, where
+    nearly every character collapsed to the same one or two letters. Real
+    names (even short, even heavily transliterated ones) don't look like
+    this, so a low character-diversity name is a strong noise signal —
+    used only to decide whether a single extra OCR.space call is worth
+    trying, so a false positive here just costs one harmless retry, never
+    a wrong result."""
+    if not name:
+        return False
+    compact = re.sub(r"\s+", "", name).upper()
+    if len(compact) < 5:
+        return False
+    return len(set(compact)) <= 2
+
+
 async def recognize_document(file_path: Path, original_filename: str) -> dict:
     """
     Main entry point used by the API layer.
@@ -1016,6 +1078,32 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
         fields["first_name"] = first
         fields["last_name"] = last
         fields["ocr_raw_text"] = raw_text
+
+        # OCR.space's result can vary between calls to the same image (it
+        # tries several engine/language combos internally and returns
+        # whichever succeeds first — see _ocr_space_ocr). If the name it
+        # settled on looks like pure noise, one extra full attempt is
+        # cheap insurance against just having drawn the worse of two
+        # readings, and often nets the caller a usable name instead of
+        # visible garbage. Only tried once, and only replaces the result
+        # if the retry's name actually looks better — never risks making
+        # things worse.
+        if _looks_like_garbage_name(first) or _looks_like_garbage_name(last):
+            logger.info("name looks garbled (%r / %r) - retrying OCR.space once", first, last)
+            try:
+                retry_text = await _ocr_space_ocr(image_bytes, original_filename)
+            except Exception as e:
+                logger.warning("OCR.space retry failed: %s: %s", type(e).__name__, e)
+                retry_text = ""
+            if retry_text.strip():
+                retry_first, retry_last = _parse_name_from_text(retry_text)
+                if (retry_first or retry_last) and not _looks_like_garbage_name(retry_first) and not _looks_like_garbage_name(retry_last):
+                    fields = _extract_fields_from_text(retry_text, quality, mode="ocrspace")
+                    fields["first_name"] = retry_first
+                    fields["last_name"] = retry_last
+                    fields["ocr_raw_text"] = retry_text
+                    logger.info("retry produced a cleaner name (%r / %r) - using it", retry_first, retry_last)
+
         logger.info("TOTAL: %.1fs", time.time() - t0)
         return fields
 
