@@ -270,40 +270,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       await paceRateLimit(recognizeStartTimesRef);
       try {
         const result = await runWithRetry(() => uploadFileViaXHR(`${API_BASE}/api/recognize`, item.file, authHeader));
-        // TEMP DEBUG — remove once auto-merge is confirmed working on real
-        // photos. Search "BATCH-MERGE-DEBUG" to find every line to strip.
-        console.log("[BATCH-MERGE-DEBUG] raw /api/recognize result for", item.file.name, {
-          first_name: result.first_name,
-          last_name: result.last_name,
-          birth_date: result.birth_date,
-          doc_type: result.doc_type,
-          doc_number: result.doc_number,
-          doc_number_verified: result.doc_number_verified,
-          mrz_raw: result.mrz_raw,
-        });
         let autoMerged = false;
         setPeople((prev) => {
           const afterRecognize = prev.map((p) => (p.id === item.id ? applyRecognizedResult(p, result) : p));
           const justRecognized = afterRecognize.find((p) => p.id === item.id);
-          console.log("[BATCH-MERGE-DEBUG] derived fields for this card:", {
-            fileName: item.file.name,
-            first_name: justRecognized.fields.first_name,
-            last_name: justRecognized.fields.last_name,
-            birth_date: justRecognized.fields.birth_date,
-          });
-          const candidates = afterRecognize.filter((p) => p.id !== item.id && p.status === "done");
-          console.log(
-            "[BATCH-MERGE-DEBUG] comparing against",
-            candidates.length,
-            "existing done card(s):",
-            candidates.map((p) => ({
-              fileNames: p.previews.map((pv) => pv.name).join(", "),
-              first_name: p.fields.first_name,
-              last_name: p.fields.last_name,
-              birth_date: p.fields.birth_date,
-              namesMatchResult: namesMatch(p.fields, justRecognized.fields),
-            }))
-          );
           // A passport and its own visa sticker land as separate cards
           // (one /api/recognize call per file) — auto-merge them back
           // into one the moment the second one finishes, by matching the
@@ -313,7 +283,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           const match = afterRecognize.find(
             (p) => p.id !== item.id && p.status === "done" && namesMatch(p.fields, justRecognized.fields)
           );
-          console.log("[BATCH-MERGE-DEBUG] match found?", Boolean(match), match ? match.fields : null);
           if (!match) return afterRecognize;
           autoMerged = true;
           return afterRecognize
