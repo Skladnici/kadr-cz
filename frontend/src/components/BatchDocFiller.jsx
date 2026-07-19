@@ -47,6 +47,54 @@ function buildContractFilename(person, ext) {
   return `Smlouva_${namePart}.${ext}`;
 }
 
+// Shared by both bulk-download buttons (Word .docx and PDF) — packaging
+// every generated file into ONE zip instead of N separate downloads/tab
+// opens is what makes either reliable in a real (non-automated) browser:
+// real-world testing confirmed Chrome throttles both a rapid sequence of
+// automatic downloads and a rapid sequence of window.open() calls after
+// the first one, requiring the person to notice and approve a
+// permission by hand — a single zip is one browser action, so that
+// throttling never gets a chance to trigger either way.
+async function zipAndDownload(apiFetch, targets, tokenKey, ext, zipNamePrefix, setBatchError) {
+  const zip = new JSZip();
+  const usedNames = new Set();
+  let addedCount = 0;
+  for (const p of targets) {
+    try {
+      const res = await apiFetchWithTimeout(apiFetch, `/api/download/${p.generation[tokenKey]}`, {}, 30000);
+      if (!res.ok) {
+        if (res.status !== 401) setBatchError(describeRequestError(res.status, "Stažení se nezdařilo."));
+        continue;
+      }
+      const blob = await res.blob();
+      // Two people can share a display name (or both lack one) — dedupe
+      // so one never silently overwrites another inside the zip.
+      const base = buildContractFilename(p, ext).replace(new RegExp(`\\.${ext}$`), "");
+      let name = `${base}.${ext}`;
+      let suffix = 2;
+      while (usedNames.has(name)) {
+        name = `${base}_${suffix}.${ext}`;
+        suffix += 1;
+      }
+      usedNames.add(name);
+      zip.file(name, blob);
+      addedCount += 1;
+    } catch {
+      setBatchError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
+    }
+  }
+  if (addedCount === 0) return;
+  const zipBlob = await zip.generateAsync({ type: "blob" });
+  const zipUrl = URL.createObjectURL(zipBlob);
+  const a = document.createElement("a");
+  a.href = zipUrl;
+  a.download = `${zipNamePrefix}_${addedCount}_osob.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
+}
+
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
 // the same person end up as two cards this way; they're re-combined
@@ -523,123 +571,26 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   );
 
   // ---------------------------------------------------------------- download
-  // Bulk download/open for the whole batch, once everything's generated —
-  // Packaged into a single .zip rather than N separate <a download>
-  // clicks — real-world testing showed Chrome only lets the FIRST of a
-  // rapid sequence of automatic downloads through, silently blocking the
-  // rest behind a "this site is downloading multiple files" permission
-  // the person has to notice and approve by hand (a documented Chrome
-  // behavior, not something JS can force past). A single zip is one
-  // download, so that gate never gets a chance to trigger. Every .docx
-  // is still fetched one at a time (this is now the ONLY download path
-  // in batch mode — no more per-card buttons; see PersonCard) and only
-  // assembled into the archive at the end.
+  // This is now the ONLY download path in batch mode — no more per-card
+  // buttons (see PersonCard).
   const handleDownloadAllDocx = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
-    const zip = new JSZip();
-    const usedNames = new Set();
-    let addedCount = 0;
-    for (const p of targets) {
-      try {
-        const res = await apiFetchWithTimeout(apiFetch, `/api/download/${p.generation.docxToken}`, {}, 30000);
-        if (!res.ok) {
-          if (res.status !== 401) setBatchError(describeRequestError(res.status, "Stažení se nezdařilo."));
-          continue;
-        }
-        const blob = await res.blob();
-        // Two people can share a display name (or both lack one) —
-        // dedupe so one never silently overwrites another inside the zip.
-        const base = buildContractFilename(p, "docx").replace(/\.docx$/, "");
-        let name = `${base}.docx`;
-        let suffix = 2;
-        while (usedNames.has(name)) {
-          name = `${base}_${suffix}.docx`;
-          suffix += 1;
-        }
-        usedNames.add(name);
-        zip.file(name, blob);
-        addedCount += 1;
-      } catch {
-        setBatchError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
-      }
-    }
-    if (addedCount === 0) return;
-    const zipBlob = await zip.generateAsync({ type: "blob" });
-    const zipUrl = URL.createObjectURL(zipBlob);
-    const a = document.createElement("a");
-    a.href = zipUrl;
-    a.download = `Smlouvy_${addedCount}_osob.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
+    await zipAndDownload(apiFetch, targets, "docxToken", "docx", "Smlouvy", setBatchError);
   }, [apiFetch]);
 
-  // PDFs open in new tabs rather than downloading (so they land straight
-  // in the browser's print-preview-capable PDF viewer, matching what the
-  // button already promises). A naive loop of "await fetch, then
-  // window.open()" only got the FIRST tab through in real testing — every
-  // browser's popup allowance from a click is a one-shot budget, spent by
-  // the first async window.open() and gone by the second, regardless of
-  // how short the delay was. The fix used elsewhere for exactly this
-  // ("multiple tabs, data arrives after an await") is to open every tab
-  // SYNCHRONOUSLY up front, still inside this same click handler's
-  // uninterrupted call stack — before any fetch/await has a chance to
-  // spend that budget — and only navigate each one to its real content
-  // once the data is ready. window.open() must be called with NO
-  // "noopener"/"noreferrer" here (unlike downloadGeneratedFile's
-  // single-tab case) — per the WHATWG spec, "noreferrer" alone already
-  // implies "noopener" too, and either one makes window.open() return
-  // null even when the tab opens fine, making it impossible to hold a
-  // handle to navigate later (confirmed directly: a side-by-side test of
-  // "no options" vs "noreferrer" vs "noopener,noreferrer" showed only the
-  // no-options call returns a real handle, even though all three
-  // genuinely open a tab). Referrer leakage isn't a real concern here
-  // anyway — the tab only ever gets navigated to our own blob: URL, never
-  // a third-party address.
-  const handleOpenAllPdf = useCallback(async () => {
+  // Real-world testing confirmed the actual cause via [BULK-PDF-DEBUG]
+  // logs: real Chrome's popup blocker allowed only the first of the
+  // synchronously-opened tabs through and silently blocked the rest
+  // (window.open() returning null for #2/#3) — a hard browser policy on
+  // "how many popups can one click spawn," not something fixable by
+  // timing tricks. Same fix as bulk Word, for the same underlying reason
+  // (one browser action instead of several it can throttle): zip every
+  // generated PDF into a single archive instead of opening N tabs. This
+  // gives up "view immediately in the PDF viewer" for "guaranteed to
+  // actually get all of them" — the one thing that has to be reliable.
+  const handleDownloadAllPdf = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
-    // TEMP DEBUG — remove once confirmed working on a real multi-PDF
-    // batch (not just the simulated-token test this was verified against
-    // before). Search "BULK-PDF-DEBUG" to find every line to strip.
-    console.log("[BULK-PDF-DEBUG] targets:", targets.map((p) => ({ id: p.id, name: `${p.fields.first_name} ${p.fields.last_name}`, pdfToken: p.generation.pdfToken })));
-    const placeholders = targets.map((p, i) => {
-      const w = window.open("about:blank", "_blank");
-      console.log(`[BULK-PDF-DEBUG] window.open() #${i} (${p.generation.pdfToken}) returned:`, w ? "a window handle" : w, "closed?", w ? w.closed : null);
-      return w;
-    });
-    const blockedCount = placeholders.filter((w) => !w).length;
-    console.log("[BULK-PDF-DEBUG] blockedCount:", blockedCount, "/", targets.length);
-    if (blockedCount > 0) {
-      setBatchError(
-        `Prohlížeč zablokoval ${blockedCount} z ${targets.length} vyskakovacích oken — povolte prosím vyskakovací okna pro tento web (ikona v adresním řádku) a zkuste to znovu.`
-      );
-    }
-    for (let i = 0; i < targets.length; i++) {
-      const win = placeholders[i];
-      if (!win) {
-        console.log(`[BULK-PDF-DEBUG] #${i} skipped, no handle`);
-        continue; // already blocked outright — nothing to navigate
-      }
-      try {
-        const url = `/api/download/${targets[i].generation.pdfToken}`;
-        console.log(`[BULK-PDF-DEBUG] #${i} fetching`, url, "win.closed before fetch?", win.closed);
-        const res = await apiFetchWithTimeout(apiFetch, url, {}, 30000);
-        console.log(`[BULK-PDF-DEBUG] #${i} response:`, res.status, res.ok, "win.closed after fetch?", win.closed);
-        if (!res.ok) {
-          win.close();
-          continue;
-        }
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        console.log(`[BULK-PDF-DEBUG] #${i} navigating win to`, blobUrl, "win.closed?", win.closed);
-        win.location.href = blobUrl;
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
-      } catch (e) {
-        console.log(`[BULK-PDF-DEBUG] #${i} caught:`, e?.name, e?.message);
-        win.close();
-      }
-    }
+    await zipAndDownload(apiFetch, targets, "pdfToken", "pdf", "PDF", setBatchError);
   }, [apiFetch]);
 
   // ---------------------------------------------------------------- generate all
@@ -736,6 +687,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
             // meant a fully successful batch produced zero visible
             // feedback unless every card was clicked open by hand, which
             // read as "nothing happened" even when it had.
+            console.log("[EXPAND-DEBUG] generate success — forcing expanded=true for", id);
             updatePerson(id, (p) => ({
               ...p,
               expanded: true,
@@ -748,6 +700,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               const message = e.message === "timeout"
                 ? "Generování trvalo příliš dlouho (přes 60 s) — zkuste to prosím znovu."
                 : describeRequestError(e.status, "Generování se nezdařilo.");
+              console.log("[EXPAND-DEBUG] generate error — forcing expanded=true for", id, message);
               updatePerson(id, (p) => ({
                 ...p,
                 expanded: true,
@@ -757,6 +710,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           }
         }
       } catch (e) {
+        console.log("[EXPAND-DEBUG] unexpected exception — forcing expanded=true for", id, e);
         updatePerson(id, (p) => ({
           ...p,
           expanded: true,
@@ -876,7 +830,16 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               onRemove={() => removePerson(person.id)}
               onMerge={(otherId) => mergeCards(person.id, otherId)}
               onSplit={() => splitPerson(person.id)}
-              onToggleExpand={() => updatePerson(person.id, (p) => ({ ...p, expanded: !p.expanded }))}
+              onToggleExpand={() => {
+                // TEMP DEBUG — remove once the "card reopens itself"
+                // report is confirmed fixed on a real batch. Search
+                // "EXPAND-DEBUG" to find every line to strip.
+                console.log("[EXPAND-DEBUG] toggle clicked for", person.id, `(${person.fields.first_name} ${person.fields.last_name})`, "current expanded =", person.expanded, "-> will become", !person.expanded);
+                updatePerson(person.id, (p) => {
+                  console.log("[EXPAND-DEBUG] updater running for", p.id, "expanded", p.expanded, "->", !p.expanded);
+                  return { ...p, expanded: !p.expanded };
+                });
+              }}
               onOpenLightbox={setLightboxUrl}
               onUpdateFields={(patch) => updatePerson(person.id, (p) => ({ ...p, fields: { ...p.fields, ...patch } }))}
               onUpdateCzPart={(key, value) => updatePerson(person.id, (p) => ({ ...p, czAddressParts: { ...p.czAddressParts, [key]: value } }))}
@@ -994,10 +957,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               {generatedPdfCount > 0 && (
                 <button
                   type="button"
-                  onClick={handleOpenAllPdf}
+                  onClick={handleDownloadAllPdf}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 py-2 text-[12.5px] font-medium text-slate-700 hover:bg-slate-50"
                 >
-                  <Printer size={13} /> Otevřít / Tisk všechny ({generatedPdfCount}) (PDF)
+                  <Printer size={13} /> Stáhnout všechny ({generatedPdfCount}) jako ZIP (PDF)
                 </button>
               )}
             </div>
