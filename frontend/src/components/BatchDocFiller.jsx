@@ -23,6 +23,29 @@ const EMPTY_PERSON_FIELDS = {
 };
 const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative: "" };
 
+// The server's own generated filename (e.g.
+// "dpp_template_NOVAK_JAN_<uuid>.docx") is deliberately opaque — the
+// UUID in it is the actual bearer secret protecting /api/download,
+// which has no auth of its own (see blank_service.py's fill_blank).
+// What the person actually sees saved to their Downloads folder should
+// be a clean, human name instead — this only changes the local <a
+// download> filename, never the URL/token actually fetched, so it
+// carries no security implication.
+function sanitizeFilenamePart(s) {
+  return (s || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "") // strip diacritics: "Novák" -> "Novak"
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function buildContractFilename(person, ext) {
+  const first = sanitizeFilenamePart(person.fields.first_name);
+  const last = sanitizeFilenamePart(person.fields.last_name);
+  const namePart = [first, last].filter(Boolean).join("_") || "dokument";
+  return `Smlouva_${namePart}.${ext}`;
+}
+
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
 // the same person end up as two cards this way; they're re-combined
@@ -499,34 +522,68 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   );
 
   // ---------------------------------------------------------------- download
-  const handleDownload = useCallback(
-    (token, opts = {}) => downloadGeneratedFile(apiFetch, token, opts, setBatchError),
-    [apiFetch]
-  );
-
   // Bulk download/open for the whole batch, once everything's generated —
-  // one-by-one under the hood (each token is single-use server-side, same
-  // as the per-card buttons), but from the person's perspective it's one
-  // click instead of opening every card individually, which is the whole
-  // point of batch mode. No zip step: .docx downloads via the <a download>
-  // attribute already save silently with no dialog, and PDFs use the same
-  // "open in a new tab" the single per-card button already does — so this
-  // reuses downloadGeneratedFile as-is rather than inventing a packaging
-  // step. A short pause between each keeps a rapid sequence of downloads/
-  // new-tab opens from tripping a browser's popup/download-flood guard.
+  // one-by-one under the hood (each token is still single-use server-
+  // side), but from the person's perspective it's one click instead of
+  // opening every card individually — this is now the ONLY download path
+  // in batch mode (no more per-card buttons; see PersonCard). No zip
+  // step for Word: the <a download> attribute already saves each .docx
+  // silently with no dialog, so looping that is simplest.
   const handleDownloadAllDocx = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
     for (const p of targets) {
-      await downloadGeneratedFile(apiFetch, p.generation.docxToken, { filename: p.generation.docxToken }, setBatchError);
+      await downloadGeneratedFile(apiFetch, p.generation.docxToken, { filename: buildContractFilename(p, "docx") }, setBatchError);
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }, [apiFetch]);
 
+  // PDFs open in new tabs rather than downloading (so they land straight
+  // in the browser's print-preview-capable PDF viewer, matching what the
+  // button already promises). A naive loop of "await fetch, then
+  // window.open()" only got the FIRST tab through in real testing — every
+  // browser's popup allowance from a click is a one-shot budget, spent by
+  // the first async window.open() and gone by the second, regardless of
+  // how short the delay was. The fix used elsewhere for exactly this
+  // ("multiple tabs, data arrives after an await") is to open every tab
+  // SYNCHRONOUSLY up front, still inside this same click handler's
+  // uninterrupted call stack — before any fetch/await has a chance to
+  // spend that budget — and only navigate each one to its real content
+  // once the data is ready. window.open() must be called with NO
+  // "noopener"/"noreferrer" here (unlike downloadGeneratedFile's
+  // single-tab case) — per the WHATWG spec, "noreferrer" alone already
+  // implies "noopener" too, and either one makes window.open() return
+  // null even when the tab opens fine, making it impossible to hold a
+  // handle to navigate later (confirmed directly: a side-by-side test of
+  // "no options" vs "noreferrer" vs "noopener,noreferrer" showed only the
+  // no-options call returns a real handle, even though all three
+  // genuinely open a tab). Referrer leakage isn't a real concern here
+  // anyway — the tab only ever gets navigated to our own blob: URL, never
+  // a third-party address.
   const handleOpenAllPdf = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
-    for (const p of targets) {
-      await downloadGeneratedFile(apiFetch, p.generation.pdfToken, { openInNewTab: true }, setBatchError);
-      await new Promise((resolve) => setTimeout(resolve, 400));
+    const placeholders = targets.map(() => window.open("about:blank", "_blank"));
+    const blockedCount = placeholders.filter((w) => !w).length;
+    if (blockedCount > 0) {
+      setBatchError(
+        `Prohlížeč zablokoval ${blockedCount} z ${targets.length} vyskakovacích oken — povolte prosím vyskakovací okna pro tento web (ikona v adresním řádku) a zkuste to znovu.`
+      );
+    }
+    for (let i = 0; i < targets.length; i++) {
+      const win = placeholders[i];
+      if (!win) continue; // already blocked outright — nothing to navigate
+      try {
+        const res = await apiFetchWithTimeout(apiFetch, `/api/download/${targets[i].generation.pdfToken}`, {}, 30000);
+        if (!res.ok) {
+          win.close();
+          continue;
+        }
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        win.location.href = blobUrl;
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+      } catch {
+        win.close();
+      }
     }
   }, [apiFetch]);
 
@@ -761,7 +818,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               sharedStartDate={sharedFields.start_date || ""}
               sharedEndDate={sharedFields.end_date || ""}
               sharedTemplateId={templateId}
-              onDownload={handleDownload}
               onRemove={() => removePerson(person.id)}
               onMerge={(otherId) => mergeCards(person.id, otherId)}
               onSplit={() => splitPerson(person.id)}

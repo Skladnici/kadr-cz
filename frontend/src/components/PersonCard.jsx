@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, Download, FileText, Link2, Loader2, Printer, Scissors, X,
+  AlertTriangle, Check, ChevronDown, FileText, Link2, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 
@@ -73,7 +73,6 @@ export default function PersonCard({
   sharedStartDate,
   sharedEndDate,
   sharedTemplateId,
-  onDownload,
   onRemove,
   onMerge,
   onSplit,
@@ -453,24 +452,13 @@ export default function PersonCard({
               <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {person.generation.error}
             </div>
           )}
+          {/* No per-card download here on purpose — downloading one
+              contract at a time defeated the point of batch mode.
+              Download/print for everyone lives once, at the bottom of
+              the batch, as "Stáhnout všechny"/"Otevřít / Tisk všechny". */}
           {person.generation?.status === "done" && (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => onDownload(person.generation.docxToken, { filename: person.generation.docxToken })}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
-              >
-                <Download size={13} /> Stáhnout Word
-              </button>
-              {person.generation.pdfToken && (
-                <button
-                  type="button"
-                  onClick={() => onDownload(person.generation.pdfToken, { openInNewTab: true })}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  <Printer size={13} /> Otevřít / Tisk (PDF)
-                </button>
-              )}
+            <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
+              <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
             </div>
           )}
         </div>
