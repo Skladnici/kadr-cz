@@ -135,6 +135,37 @@ def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan
     assert birth_date == "12.02.1977"
 
 
+def test_find_visa_info_real_armenian_visa_david_hambaryan():
+    # Full (untruncated) real visa MRZ line for the same person as the
+    # passport case above. An earlier, truncated excerpt of this same
+    # scan ("...M2...", cut off mid-expiry-field) looked like it might
+    # not satisfy the fixed-width expiry field the regex requires — the
+    # real, complete text does, and correctly agrees with the passport's
+    # own birth_date (12.02.1977).
+    visa_text = "SCHENGEN\nVIZUM / VISA\n9018601197ARM7702129M2610162T1<<0420"
+    info = _find_visa_info(visa_text)
+    assert info["birth_date"] == "12.02.1977"
+
+
+def test_extract_fields_passport_and_visa_agree_on_birth_date_david_hambaryan():
+    # End-to-end confirmation that both cards in this real batch pair
+    # satisfy canAutoMerge's requirement of an exact, non-empty
+    # birth_date match on both sides.
+    passport_text = (
+        "REPUBLIC OF ARMENIA\n"
+        "PASSPORT\n"
+        "SURNAME HAMBARYAN\n"
+        "GIVEN NAMES DAVID\n"
+        "P<ARMHAMBARYAN<<DAVID<<<<<<<<<<<<<<<<<<<<<<<\n"
+        "AX06570519ARM7702129M3503144"
+    )
+    visa_text = "SCHENGEN\nVIZUM / VISA\n9018601197ARM7702129M2610162T1<<0420"
+    passport_fields = _extract_fields_from_text(passport_text, quality=88, mode="mock")
+    visa_fields = _extract_fields_from_text(visa_text, quality=88, mode="mock")
+    assert passport_fields["birth_date"] == "12.02.1977"
+    assert visa_fields["birth_date"] == "12.02.1977"
+
+
 def test_parse_mrz_still_captures_line_with_no_surviving_double_angle_bracket():
     # Real-world case: OCR misread every '<' on the name line (both the
     # "<<" separator and the trailing filler) into unrelated glyphs, so no
