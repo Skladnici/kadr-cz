@@ -442,6 +442,27 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     setPeopleAndSync((prev) => prev.map((p) => (p.id === id ? updater(p) : p)));
   }, [setPeopleAndSync]);
 
+  // Stable (id, key, value) updaters, as opposed to inline arrow functions
+  // built fresh per card on every render — AddressBuilder's own PSČ
+  // geocoding effect depends on its setCzPart/setOriginPart/setOriginCountry
+  // props for its debounce (see AddressBuilder.jsx), exactly like
+  // SimpleDocFiller's useCallback-wrapped setCzPart/setOriginPart do for
+  // single mode. An unstable reference there was restarting that effect —
+  // aborting the in-flight Nominatim request and resetting the 1s debounce —
+  // on every unrelated batch re-render, which is why PSČ lookups in batch
+  // mode kept searching without ever finishing. PersonCard binds `id` for
+  // its own card via useCallback so the reference AddressBuilder sees stays
+  // stable across renders.
+  const updateCzPart = useCallback((id, key, value) => {
+    updatePerson(id, (p) => ({ ...p, czAddressParts: { ...p.czAddressParts, [key]: value } }));
+  }, [updatePerson]);
+  const updateOriginPart = useCallback((id, key, value) => {
+    updatePerson(id, (p) => ({ ...p, originAddressParts: { ...p.originAddressParts, [key]: value } }));
+  }, [updatePerson]);
+  const setOriginCountryForPerson = useCallback((id, country) => {
+    updatePerson(id, (p) => ({ ...p, originCountry: country, originAddressParts: {} }));
+  }, [updatePerson]);
+
   const removePerson = useCallback((id) => {
     setPeopleAndSync((prev) => {
       const removed = prev.find((p) => p.id === id);
@@ -963,9 +984,9 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               }}
               onOpenLightbox={setLightboxUrl}
               onUpdateFields={(patch) => updatePerson(person.id, (p) => ({ ...p, fields: { ...p.fields, ...patch } }))}
-              onUpdateCzPart={(key, value) => updatePerson(person.id, (p) => ({ ...p, czAddressParts: { ...p.czAddressParts, [key]: value } }))}
-              onUpdateOriginPart={(key, value) => updatePerson(person.id, (p) => ({ ...p, originAddressParts: { ...p.originAddressParts, [key]: value } }))}
-              onSetOriginCountry={(country) => updatePerson(person.id, (p) => ({ ...p, originCountry: country, originAddressParts: {} }))}
+              onUpdateCzPart={updateCzPart}
+              onUpdateOriginPart={updateOriginPart}
+              onSetOriginCountry={setOriginCountryForPerson}
               onToggleCompanyOverride={() => updatePerson(person.id, (p) => (
                 p.companyOverrideEnabled
                   ? { ...p, companyOverrideEnabled: false, companyOverride: { ...EMPTY_COMPANY } }

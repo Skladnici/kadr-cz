@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   AlertTriangle, Check, ChevronDown, FileText, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
+import MinorWarningIcon from "./MinorWarningIcon";
+import { calculateAge } from "../utils/age";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -95,6 +97,33 @@ export default function PersonCard({
   const hasOverride = person.companyOverrideEnabled || person.startDateOverrideEnabled
     || person.endDateOverrideEnabled || person.templateOverrideEnabled;
   const missingDocLabel = missingDocumentLabel(person);
+  // Same advisory-only minor-age check as single mode (see
+  // SimpleDocFiller's identical computation) — reused as-is rather than
+  // a separate batch implementation, so both modes flag exactly the
+  // same birth dates the same way. Never blocks generation.
+  const personAge = useMemo(() => calculateAge(person.fields.birth_date), [person.fields.birth_date]);
+  const isPersonMinor = personAge !== null && personAge < 18;
+
+  // Binds this card's id once via useCallback so AddressBuilder sees a
+  // stable setCzPart/setOriginPart/setOriginCountry reference across
+  // renders, same as SimpleDocFiller's own useCallback-wrapped setters —
+  // AddressBuilder's PSČ geocoding effect depends on that reference staying
+  // stable to let its 1s debounce actually complete instead of restarting
+  // (and aborting any in-flight Nominatim request) on every unrelated
+  // batch re-render. onUpdateCzPart/onUpdateOriginPart/onSetOriginCountry
+  // themselves are stable (id, key, value) updaters from BatchDocFiller.
+  const setCzPart = useCallback(
+    (key, value) => onUpdateCzPart(person.id, key, value),
+    [onUpdateCzPart, person.id]
+  );
+  const setOriginPart = useCallback(
+    (key, value) => onUpdateOriginPart(person.id, key, value),
+    [onUpdateOriginPart, person.id]
+  );
+  const setOriginCountry = useCallback(
+    (country) => onSetOriginCountry(person.id, country),
+    [onSetOriginCountry, person.id]
+  );
 
   const handleRemoveClick = () => {
     const isFilled = person.status === "done" || person.status === "error";
@@ -110,6 +139,10 @@ export default function PersonCard({
     const value = person.fields[key] || "";
     const showEmptyWarning = EXPECTED_FROM_OCR.has(key) && person.status === "done" && !value.trim();
     const showVerified = verified && value;
+    // Same field, same styling as SimpleDocFiller's own birth_date
+    // handling — an empty-field warning takes priority when both would
+    // otherwise apply (an empty date can't have a computed age anyway).
+    const showMinorBorder = key === "birth_date" && isPersonMinor && !showEmptyWarning;
     return (
       <label key={key} className="block">
         <span className="text-[10.5px] md:text-[11.5px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -124,7 +157,7 @@ export default function PersonCard({
           <input
             value={value}
             onChange={(e) => onUpdateFields({ [key]: e.target.value })}
-            className={`${inputClass} ${showEmptyWarning ? "pr-8 border-amber-300 bg-amber-50/40" : showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
+            className={`${inputClass} ${showEmptyWarning || showMinorBorder ? "pr-8 " : ""}${showEmptyWarning || showMinorBorder ? "border-amber-300 bg-amber-50/40" : showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
           />
           {showEmptyWarning && (
             <AlertTriangle
@@ -133,6 +166,7 @@ export default function PersonCard({
               title="OCR se u tohoto pole nepodařilo nic rozpoznat — zkontrolujte a vyplňte ručně."
             />
           )}
+          {showMinorBorder && <MinorWarningIcon />}
         </div>
       </label>
     );
@@ -271,11 +305,11 @@ export default function PersonCard({
           {/* Adresa v ČR + Adresa v zemi původu */}
           <AddressBuilder
             czParts={person.czAddressParts}
-            setCzPart={onUpdateCzPart}
+            setCzPart={setCzPart}
             originCountry={person.originCountry}
-            setOriginCountry={onSetOriginCountry}
+            setOriginCountry={setOriginCountry}
             originParts={person.originAddressParts}
-            setOriginPart={onUpdateOriginPart}
+            setOriginPart={setOriginPart}
           />
 
           {/* Individuální nastavení — přepíše společné hodnoty. Hidden by
