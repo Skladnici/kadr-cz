@@ -40,11 +40,29 @@ function sanitizeFilenamePart(s) {
     .replace(/^_+|_+$/g, "");
 }
 
+// Mirrors backend/app/main.py's own _DOCUMENT_TYPE_LABELS (used there
+// for stats logging) — kept as a separate copy rather than fetched from
+// the server, since it's tiny, static, and this is purely a client-side
+// filename cosmetic with no need to round-trip a request for it.
+const DOCUMENT_TYPE_LABELS = {
+  dpp_template: "DPP",
+  dpc_template: "DPC",
+  hpp_template: "HPP",
+  ukonceni_pracovniho_pomeru: "Ukonceni_pomeru",
+  vyplatni_paska: "Vyplatni_paska",
+};
+
 function buildContractFilename(person, ext) {
   const first = sanitizeFilenamePart(person.fields.first_name);
   const last = sanitizeFilenamePart(person.fields.last_name);
   const namePart = [first, last].filter(Boolean).join("_") || "dokument";
-  return `Smlouva_${namePart}.${ext}`;
+  // person.generation.templateId is the actual contract type used for
+  // THIS generation (captured at fill time — see handleGenerateAll) —
+  // not necessarily whatever the shared "Typ smlouvy" happens to be by
+  // download time, which could already be set up for the next batch.
+  const templateId = person.generation?.templateId;
+  const docType = templateId ? sanitizeFilenamePart(DOCUMENT_TYPE_LABELS[templateId] || templateId) : "";
+  return [`Smlouva`, docType, namePart].filter(Boolean).join("_") + `.${ext}`;
 }
 
 // /api/download isn't rate-limited (no @limiter.limit in main.py, unlike
@@ -141,11 +159,11 @@ async function zipAndDownload(apiFetch, targets, tokenKey, ext, zipNamePrefix, s
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
 // the same person end up as two cards this way; they're re-combined
-// into one either automatically (see canAutoMerge, below) when birth
-// date agrees, or via "Sloučit s další kartou" on the card (see
-// PersonCard) otherwise — either way through the exact same
-// utils/recognizeMerge.js logic single mode uses for "several files,
-// one person".
+// into one automatically (see canAutoMerge, below) when birth date
+// agrees, through the exact same utils/recognizeMerge.js logic single
+// mode uses for "several files, one person". No manual merge control
+// exists — a wrong automatic merge is undone with "Rozdělit" instead
+// (see splitPerson), never redone by hand.
 function makePersonCard(file) {
   const isHeic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
   const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
@@ -215,91 +233,27 @@ function applyRecognizedResult(person, result) {
 // (single/low tens of people) — and trusting it enough to merge with
 // no click is only reasonable because a wrong auto-merge can always be
 // undone afterwards, see "Rozdělit" (splitPerson) below.
-function normalizeDocNumber(s) {
-  return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
-// Plain Levenshtein distance with an early exit once the running best
-// case for a row already exceeds maxDist — document numbers are short
-// (≈6-10 chars) so this costs nothing.
-function levenshteinAtMost(a, b, maxDist) {
-  if (Math.abs(a.length - b.length) > maxDist) return false;
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const curr = [i];
-    let rowMin = curr[0];
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
-      rowMin = Math.min(rowMin, curr[j]);
-    }
-    if (rowMin > maxDist) return false;
-    prev = curr;
-  }
-  return prev[b.length] <= maxDist;
-}
-
-// Too-short strings are excluded — a 2-character edit distance against
-// a 3-4 character fragment would accept almost anything, defeating the
-// point of a "cross-check" at all.
-function docNumbersMatch(a, b) {
-  const na = normalizeDocNumber(a);
-  const nb = normalizeDocNumber(b);
-  if (na.length < 5 || nb.length < 5) return false;
-  return levenshteinAtMost(na, nb, 2);
-}
-
-function referencedDocNumber(person) {
-  return person.rawResults.find((r) => r.visa_referenced_doc_number)?.visa_referenced_doc_number || "";
-}
-
-function birthDateMatches(a, b) {
+// The auto-merge trigger: birth date alone. Doc-number cross-checking
+// (against the visa's MRZ-referenced document number) was tried and
+// removed — real-photo testing across three passport+visa pairs showed
+// the backend consistently pulling the visa's own type/category code
+// (e.g. "TD..." — nothing resembling a passport number) rather than an
+// actual reference, so it never contributed anything real in practice.
+function canAutoMerge(a, b) {
   const birthA = (a.fields.birth_date || "").trim();
   const birthB = (b.fields.birth_date || "").trim();
   return Boolean(birthA) && birthA === birthB;
 }
 
-// NOT currently a reliable signal in practice: real-photo testing across
-// three passport+visa pairs showed the backend's visa_referenced_doc_
-// number consistently pulling the visa's own type/category code (e.g.
-// "TD..." — nothing resembling a passport number) instead of an actual
-// passport-number reference, regardless of scan quality. Left in place
-// only as a fallback suggestion signal (see findPossibleMatch below) —
-// it no longer gates the auto-merge decision itself. If the backend
-// extraction is ever fixed to read the right MRZ field, this starts
-// contributing real corroboration for free.
-function docNumberCrossMatches(a, b) {
-  return (
-    docNumbersMatch(a.fields.doc_number, referencedDocNumber(b)) ||
-    docNumbersMatch(b.fields.doc_number, referencedDocNumber(a))
-  );
-}
-
-// The auto-merge trigger: birth date alone.
-function canAutoMerge(a, b) {
-  return birthDateMatches(a, b);
-}
-
-// Surfaced as a one-click "Možná stejná osoba" suggestion rather than
-// auto-merged — birth-date matches are handled automatically above
-// (so by the time cards coexist as separate "done" cards, birth date
-// either didn't match or was missing on one side); this only catches
-// the doc-number cross-check on its own, for whenever that extraction
-// gets fixed and starts being trustworthy.
-function findPossibleMatch(candidates, person) {
-  return candidates.find((c) => docNumberCrossMatches(person, c)) || null;
-}
-
-// Shared by the automatic (canAutoMerge) merge in the recognize queue
-// and the manual "Sloučit s další kartou" button — re-runs the
-// same mergeRecognizedResults() single mode uses on the two cards'
-// combined raw /api/recognize responses, so a merged card picks fields
-// exactly as if both files had been uploaded together from the start.
+// The only merge path — automatic (see canAutoMerge/runRecognizeQueue
+// below), there's no manual equivalent. Re-runs the same
+// mergeRecognizedResults() single mode uses on the two cards' combined
+// raw /api/recognize responses, so a merged card picks fields exactly
+// as if both files had been uploaded together from the start.
 // Deliberately doesn't surface WHY a merge happened (birth date match,
-// doc-number match, ...) anywhere in the UI — that's an implementation
-// detail the person filling out paperwork doesn't need, and single
-// mode never showed a merge "reason" either, so this keeps both
-// consistent.
+// ...) anywhere in the UI — that's an implementation detail the person
+// filling out paperwork doesn't need, and single mode never showed a
+// merge "reason" either, so this keeps both consistent.
 function combineCards(keep, merge) {
   const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
   const merged = mergeRecognizedResults(combinedRawResults, { compactNameWarning: true });
@@ -518,23 +472,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     setGenerateStats({ total: 0, done: 0 });
   }, [blanks, setPeopleAndSync]);
 
-  // Manual fallback for when the automatic birth-date merge (see
-  // canAutoMerge/runRecognizeQueue below) didn't fire — e.g. birth date
-  // itself didn't come out matching but the person reviewing can see
-  // from the photos that it's the same person anyway. A deliberate
-  // click, using the exact same combineCards() the automatic path uses.
-  const mergeCards = useCallback((keepId, mergeId) => {
-    if (keepId === mergeId) return;
-    setPeopleAndSync((prev) => {
-      const keep = prev.find((p) => p.id === keepId);
-      const merge = prev.find((p) => p.id === mergeId);
-      if (!keep || !merge || keep.status !== "done" || merge.status !== "done") return prev;
-      return prev.filter((p) => p.id !== mergeId).map((p) => (p.id === keepId ? combineCards(keep, merge) : p));
-    });
-    peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
-  }, [setPeopleAndSync]);
-
-  // Undoes a merge (automatic or manual) — peels the most recently
+  // Undoes an automatic merge — peels the most recently
   // merged-in file back into its own separate card, re-deriving both
   // cards' fields from their own (now-smaller) rawResults set via the
   // same mergeRecognizedResults() used everywhere else. No re-upload or
@@ -840,6 +778,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         await paceRateLimit(fillStartTimesRef);
         const person = peopleRef.current.find((p) => p.id === id);
         if (person) {
+          // Same effective-template logic as buildFillPayload's own —
+          // captured here too so the generated file's contract type is
+          // known at download time (see buildContractFilename) without
+          // having to re-derive it later from whatever the shared
+          // templateId happens to be by then (which could have changed
+          // for the NEXT generation pass by the time this one is
+          // downloaded).
+          const effectiveTemplateId = person.templateOverrideEnabled ? person.templateOverride : templateId;
           // Card still exists — actually generate it. (If it was removed
           // mid-run, there's nothing to submit; the stats update below
           // still fires either way so the progress bar never gets stuck
@@ -866,19 +812,18 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               }
               return res.json();
             });
-            // Auto-expand the card the moment its own result lands —
-            // verified via real testing that generation, token capture,
-            // and the download buttons all already work correctly once
-            // a card is expanded; every card staying collapsed by
-            // default (the same default used right after recognizing)
-            // meant a fully successful batch produced zero visible
-            // feedback unless every card was clicked open by hand, which
-            // read as "nothing happened" even when it had.
-            console.log("[EXPAND-DEBUG] generate success — forcing expanded=true for", id);
+            // Does NOT touch `expanded` — a card stays exactly as
+            // collapsed/expanded as the person already left it. Batch
+            // mode used to force it open here so the (then per-card)
+            // download buttons would be visible without an extra click,
+            // but that reasoning no longer applies now that download is
+            // only ever the batch-level buttons below, never a per-card
+            // one — the person can open a card to check its details
+            // whenever they want to, but nothing should decide that for
+            // them.
             updatePerson(id, (p) => ({
               ...p,
-              expanded: true,
-              generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null },
+              generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null, templateId: effectiveTemplateId },
             }));
           } catch (e) {
             if (e.status === 401) {
@@ -887,20 +832,16 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               const message = e.message === "timeout"
                 ? "Generování trvalo příliš dlouho (přes 60 s) — zkuste to prosím znovu."
                 : describeRequestError(e.status, "Generování se nezdařilo.");
-              console.log("[EXPAND-DEBUG] generate error — forcing expanded=true for", id, message);
               updatePerson(id, (p) => ({
                 ...p,
-                expanded: true,
                 generation: { status: "error", docxToken: null, pdfToken: null, error: message },
               }));
             }
           }
         }
       } catch (e) {
-        console.log("[EXPAND-DEBUG] unexpected exception — forcing expanded=true for", id, e);
         updatePerson(id, (p) => ({
           ...p,
-          expanded: true,
           generation: { status: "error", docxToken: null, pdfToken: null, error: "Neočekávaná chyba při generování — zkuste to prosím znovu." },
         }));
       }
@@ -912,7 +853,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
-  const doneCards = useMemo(() => people.filter((p) => p.status === "done"), [people]);
   const generatedDocxCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.docxToken).length, [people]);
   const generatedPdfCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.pdfToken).length, [people]);
 
@@ -935,10 +875,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       <p className="mt-1 text-[13px] text-slate-500">
         Nahrajte fotografie více dokladů najednou — každá fotografie se
         rozpozná jako vlastní karta. Pas a vízum téže osoby se po
-        rozpoznání spojí automaticky podle jména; pokud se to nepodaří,
-        spojte je na kartě ručně tlačítkem „Sloučit s další kartou".
-        Firmu, typ smlouvy a další společné údaje vyplníte jednou pro
-        celou dávku dole a použijí se pro všechny karty automaticky.
+        rozpoznání spojí automaticky (podle data narození). Pokud se
+        omylem spojí dvě různé osoby do jedné karty, rozdělte je zpět
+        tlačítkem „Rozdělit" na kartě. Firmu, typ smlouvy a další
+        společné údaje vyplníte jednou pro celou dávku dole a použijí se
+        pro všechny karty automaticky.
       </p>
 
       {batchError && (
@@ -1004,18 +945,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               person={person}
               index={i}
               blanks={blanks}
-              mergeCandidates={doneCards.filter((p) => p.id !== person.id)}
-              possibleMatch={
-                person.status === "done"
-                  ? findPossibleMatch(doneCards.filter((p) => p.id !== person.id), person)
-                  : null
-              }
               sharedCompany={sharedCompanyFields}
               sharedStartDate={sharedFields.start_date || ""}
               sharedEndDate={sharedFields.end_date || ""}
               sharedTemplateId={templateId}
               onRemove={() => removePerson(person.id)}
-              onMerge={(otherId) => mergeCards(person.id, otherId)}
               onSplit={() => splitPerson(person.id)}
               onToggleExpand={() => {
                 // TEMP DEBUG — remove once the "card reopens itself"

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, FileText, Link2, Loader2, Scissors, X,
+  AlertTriangle, Check, ChevronDown, FileText, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 
@@ -27,16 +27,15 @@ function StatusDot({ person }) {
     : <Check size={13} strokeWidth={3} className="shrink-0 text-emerald-600" title="Rozpoznáno" />;
 }
 
-// Tells the person at a glance what auto-merge did (or didn't) find for
-// this card — "Číslo víza" etc. living in a section that never got
-// filled in isn't obvious just from the fields themselves.
-function mergeStatusLabel(person) {
-  if (person.status !== "done") return null;
+// Warns when only one of passport/visa was found for this card —
+// "Číslo víza" etc. living in a section that never got filled in isn't
+// obvious just from the fields themselves. Says nothing once both are
+// found and merged — merging is now fully automatic (see canAutoMerge
+// in BatchDocFiller), so announcing that it happened is just noise the
+// person filling out paperwork doesn't need.
+function missingDocumentLabel(person) {
+  if (person.status !== "done" || person.rawResults.length >= 2) return null;
   const hasVisa = person.rawResults.some((r) => r.doc_type === "Vízum");
-  const hasNonVisa = person.rawResults.some((r) => r.doc_type && r.doc_type !== "Vízum");
-  if (person.rawResults.length >= 2) {
-    return hasVisa && hasNonVisa ? "Pas + vízum sloučeno" : "Více dokladů sloučeno";
-  }
   return hasVisa ? "Pouze vízum, pas nenalezen" : "Pouze pas, vízum nenalezeno";
 }
 
@@ -67,14 +66,11 @@ export default function PersonCard({
   person,
   index,
   blanks,
-  mergeCandidates,
-  possibleMatch,
   sharedCompany,
   sharedStartDate,
   sharedEndDate,
   sharedTemplateId,
   onRemove,
-  onMerge,
   onSplit,
   onToggleExpand,
   onOpenLightbox,
@@ -91,7 +87,6 @@ export default function PersonCard({
   onToggleTemplateOverride,
   onUpdateTemplateOverride,
 }) {
-  const [mergeTarget, setMergeTarget] = useState("");
   // Starts closed every time the card itself is (re-)expanded — matches
   // "hidden by default, only opens on an explicit click" literally rather
   // than remembering whether it was open on a previous expand.
@@ -99,7 +94,7 @@ export default function PersonCard({
   const displayName = [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ");
   const hasOverride = person.companyOverrideEnabled || person.startDateOverrideEnabled
     || person.endDateOverrideEnabled || person.templateOverrideEnabled;
-  const mergeLabel = mergeStatusLabel(person);
+  const missingDocLabel = missingDocumentLabel(person);
 
   const handleRemoveClick = () => {
     const isFilled = person.status === "done" || person.status === "error";
@@ -163,13 +158,8 @@ export default function PersonCard({
                   Vlastní nastavení
                 </span>
               )}
-              {possibleMatch && (
-                <span className="shrink-0 rounded-md bg-amber-50 text-amber-700 text-[9.5px] font-medium px-1.5 py-0.5">
-                  Možná duplicita
-                </span>
-              )}
             </div>
-            {mergeLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{mergeLabel}</div>}
+            {missingDocLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{missingDocLabel}</div>}
           </div>
           <ChevronDown
             size={14}
@@ -254,58 +244,6 @@ export default function PersonCard({
               ))}
             </div>
           </div>
-
-          {/* Auto-merge (see BatchDocFiller's canAutoMerge) already
-              handles a matching birth date with no click — this only
-              shows up when birth date DIDN'T match (or one side is
-              missing it) but the document-number cross-check still hit,
-              so it's surfaced as a suggestion rather than merged
-              automatically. */}
-          {possibleMatch && (
-            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5">
-              <AlertTriangle size={13} className="text-amber-500 shrink-0" />
-              <span className="flex-1 text-[11.5px] text-amber-700">
-                Možná stejná osoba jako „
-                {[possibleMatch.fields.first_name, possibleMatch.fields.last_name].filter(Boolean).join(" ")
-                  || possibleMatch.previews[0]?.name}
-                " — číslo dokladu odpovídá, ale datum narození ne. Zkontrolujte a případně sloučte.
-              </span>
-              <button
-                type="button"
-                onClick={() => onMerge(possibleMatch.id)}
-                className="shrink-0 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-amber-700 hover:bg-amber-100"
-              >
-                Sloučit
-              </button>
-            </div>
-          )}
-
-          {/* Merge with another card (passport + visa of the same person) */}
-          {mergeCandidates.length > 0 && (
-            <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 p-2.5">
-              <Link2 size={13} className="text-slate-400 shrink-0" />
-              <select
-                value={mergeTarget}
-                onChange={(e) => setMergeTarget(e.target.value)}
-                className="flex-1 min-w-0 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-              >
-                <option value="">Sloučit s další kartou (pas + vízum téže osoby)…</option>
-                {mergeCandidates.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {[c.fields.first_name, c.fields.last_name].filter(Boolean).join(" ") || c.previews[0]?.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!mergeTarget}
-                onClick={() => { onMerge(mergeTarget); setMergeTarget(""); }}
-                className="shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-              >
-                Sloučit
-              </button>
-            </div>
-          )}
 
           {/* Údaje z pasu */}
           <div>
