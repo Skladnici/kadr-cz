@@ -263,7 +263,23 @@ def _find_visa_info(text: str) -> dict:
     """
     result = {}
 
+    # TEMP DEBUG — diagnosing a real case (David Hambaryan) where
+    # visa_number reportedly showed the person's name glued into it.
+    # Chat copy-paste of the raw OCR text kept losing the exact newline
+    # placement, which changes how the regexes below behave in ways that
+    # matter (e.g. whether the strict \b-bounded gate just below even
+    # matches) — repr() here preserves line breaks visibly instead of
+    # silently losing them, and the loose substring check (no \b) fires
+    # even when that stricter gate fails to match, so this still logs
+    # for exactly the case under investigation. Remove once diagnosed —
+    # search "VISA-NUMBER-DEBUG" for every line to strip.
+    looks_visa_ish = bool(re.search(r"visa|vizum", text, re.IGNORECASE))
+    if looks_visa_ish:
+        logger.info("[VISA-NUMBER-DEBUG] raw text seen by _find_visa_info: %r", text)
+
     if not re.search(r"\bV[IÍ]ZUM\b|\bVISA\b", text, re.IGNORECASE):
+        if looks_visa_ish:
+            logger.info("[VISA-NUMBER-DEBUG] strict \\b-bounded gate did not match (loose check did) — returning {} without extracting anything")
         return result  # doesn't look like a visa document at all
 
     # Most reliable source for the series: the visa's own MRZ line always
@@ -349,6 +365,9 @@ def _find_visa_info(text: str) -> dict:
         )
         if ref_doc_match:
             result["visa_referenced_doc_number"] = ref_doc_match.group(0)
+
+    if looks_visa_ish:
+        logger.info("[VISA-NUMBER-DEBUG] final _find_visa_info result: %r", result)
 
     return result
 
