@@ -417,3 +417,34 @@ def test_find_visa_info_extracts_series_and_number():
 
 def test_find_visa_info_ignores_non_visa_text():
     assert _find_visa_info("obyčejný text bez víza") == {}
+
+
+def test_find_visa_info_does_not_glue_vizum_header_word_onto_visa_number():
+    # Real case (David Hambaryan): mrz_series used to search the whole
+    # text for "^V[A-Z<][A-Z]{3}" without confirming the match was on an
+    # actual MRZ-shaped line -- so it matched the plain header word
+    # "VIZUM" itself ("V" + "I" + "ZUM"), producing a bogus visa_number
+    # like "ZUM9018601197" that has nothing to do with the real issuing
+    # country. No real MRZ series line is present here at all, so the
+    # printed number should come through completely clean.
+    text = "SCHENGEN\nVIZUM / VISA\n9018601197ARM7702129M2610162T1<<0420"
+    visa = _find_visa_info(text)
+    assert visa["visa_number"] == "9018601197"
+
+
+def test_find_visa_info_still_uses_real_mrz_series_line_as_fallback():
+    # No-regression check for the fallback this fix touched: when the
+    # printed number ISN'T directly adjacent to "VIZUM / VISA <CODE>"
+    # (forcing the mrz_series/m_num fallback path), a genuine MRZ-shaped
+    # series line elsewhere in the text must still supply the country
+    # prefix, exactly as before.
+    text = (
+        "SCHENGEN\n"
+        "VIZUM / VISA\n"
+        "1234567\n"
+        "1. PELEKH DMYTRO\n"
+        "VDCZEPELEKH<<DMYTRO<<<<<<<<<<<<<<<<<<<<<<<<\n"
+        "1234567<8UKR9003125M270915<<<<<<<<<<<<<<02"
+    )
+    visa = _find_visa_info(text)
+    assert visa["visa_number"] == "CZE1234567"

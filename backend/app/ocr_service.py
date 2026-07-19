@@ -271,7 +271,25 @@ def _find_visa_info(text: str) -> dict:
     # code (e.g. "VDCZEMOKHNIA<<VASYL..." → CZE) — far more robust than
     # scanning printed text, which OCR often garbles differently ("CZE"
     # misread as "CLE" etc).
-    mrz_series = re.search(r"^V[A-Z<]([A-Z]{3})", text, re.MULTILINE)
+    # Real case: matching this pattern against the raw text as a whole
+    # (rather than a line already confirmed to be MRZ-shaped) let it match
+    # the plain header word "VIZUM" itself — "V" + "I" (satisfies
+    # [A-Z<]) + "ZUM" (satisfies the 3-letter group) — producing a bogus
+    # "ZUM"-prefixed visa_number (e.g. "ZUM9018601197") that has nothing
+    # to do with the country code. Restricting the search to lines that
+    # already pass _looks_like_mrz_line (the same MRZ-shape check used
+    # everywhere else in this file) excludes short header words like
+    # that, since a genuine MRZ line is 20-45 chars of mostly MRZ-charset
+    # content, never a bare 5-letter word.
+    mrz_series = None
+    for line in text.splitlines():
+        candidate = line.strip()
+        if not _looks_like_mrz_line(candidate, min_valid_ratio=0.6):
+            continue
+        m_line = re.match(r"V[A-Z<]([A-Z]{3})", candidate)
+        if m_line:
+            mrz_series = m_line
+            break
 
     m = re.search(r"V[IÍ]ZUM\s*/\s*VISA\s+([A-Z]{3})\s+(\d{6,10})", text, re.IGNORECASE | re.DOTALL)
     if m:
