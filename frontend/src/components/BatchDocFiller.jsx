@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import JSZip from "jszip";
 import { AlertTriangle, Download, FileText, Loader2, Printer, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
@@ -523,18 +524,55 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
   // ---------------------------------------------------------------- download
   // Bulk download/open for the whole batch, once everything's generated —
-  // one-by-one under the hood (each token is still single-use server-
-  // side), but from the person's perspective it's one click instead of
-  // opening every card individually — this is now the ONLY download path
-  // in batch mode (no more per-card buttons; see PersonCard). No zip
-  // step for Word: the <a download> attribute already saves each .docx
-  // silently with no dialog, so looping that is simplest.
+  // Packaged into a single .zip rather than N separate <a download>
+  // clicks — real-world testing showed Chrome only lets the FIRST of a
+  // rapid sequence of automatic downloads through, silently blocking the
+  // rest behind a "this site is downloading multiple files" permission
+  // the person has to notice and approve by hand (a documented Chrome
+  // behavior, not something JS can force past). A single zip is one
+  // download, so that gate never gets a chance to trigger. Every .docx
+  // is still fetched one at a time (this is now the ONLY download path
+  // in batch mode — no more per-card buttons; see PersonCard) and only
+  // assembled into the archive at the end.
   const handleDownloadAllDocx = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
+    const zip = new JSZip();
+    const usedNames = new Set();
+    let addedCount = 0;
     for (const p of targets) {
-      await downloadGeneratedFile(apiFetch, p.generation.docxToken, { filename: buildContractFilename(p, "docx") }, setBatchError);
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      try {
+        const res = await apiFetchWithTimeout(apiFetch, `/api/download/${p.generation.docxToken}`, {}, 30000);
+        if (!res.ok) {
+          if (res.status !== 401) setBatchError(describeRequestError(res.status, "Stažení se nezdařilo."));
+          continue;
+        }
+        const blob = await res.blob();
+        // Two people can share a display name (or both lack one) —
+        // dedupe so one never silently overwrites another inside the zip.
+        const base = buildContractFilename(p, "docx").replace(/\.docx$/, "");
+        let name = `${base}.docx`;
+        let suffix = 2;
+        while (usedNames.has(name)) {
+          name = `${base}_${suffix}.docx`;
+          suffix += 1;
+        }
+        usedNames.add(name);
+        zip.file(name, blob);
+        addedCount += 1;
+      } catch {
+        setBatchError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
+      }
     }
+    if (addedCount === 0) return;
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const zipUrl = URL.createObjectURL(zipBlob);
+    const a = document.createElement("a");
+    a.href = zipUrl;
+    a.download = `Smlouvy_${addedCount}_osob.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
   }, [apiFetch]);
 
   // PDFs open in new tabs rather than downloading (so they land straight
@@ -561,8 +599,17 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // a third-party address.
   const handleOpenAllPdf = useCallback(async () => {
     const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
-    const placeholders = targets.map(() => window.open("about:blank", "_blank"));
+    // TEMP DEBUG — remove once confirmed working on a real multi-PDF
+    // batch (not just the simulated-token test this was verified against
+    // before). Search "BULK-PDF-DEBUG" to find every line to strip.
+    console.log("[BULK-PDF-DEBUG] targets:", targets.map((p) => ({ id: p.id, name: `${p.fields.first_name} ${p.fields.last_name}`, pdfToken: p.generation.pdfToken })));
+    const placeholders = targets.map((p, i) => {
+      const w = window.open("about:blank", "_blank");
+      console.log(`[BULK-PDF-DEBUG] window.open() #${i} (${p.generation.pdfToken}) returned:`, w ? "a window handle" : w, "closed?", w ? w.closed : null);
+      return w;
+    });
     const blockedCount = placeholders.filter((w) => !w).length;
+    console.log("[BULK-PDF-DEBUG] blockedCount:", blockedCount, "/", targets.length);
     if (blockedCount > 0) {
       setBatchError(
         `Prohlížeč zablokoval ${blockedCount} z ${targets.length} vyskakovacích oken — povolte prosím vyskakovací okna pro tento web (ikona v adresním řádku) a zkuste to znovu.`
@@ -570,18 +617,26 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     }
     for (let i = 0; i < targets.length; i++) {
       const win = placeholders[i];
-      if (!win) continue; // already blocked outright — nothing to navigate
+      if (!win) {
+        console.log(`[BULK-PDF-DEBUG] #${i} skipped, no handle`);
+        continue; // already blocked outright — nothing to navigate
+      }
       try {
-        const res = await apiFetchWithTimeout(apiFetch, `/api/download/${targets[i].generation.pdfToken}`, {}, 30000);
+        const url = `/api/download/${targets[i].generation.pdfToken}`;
+        console.log(`[BULK-PDF-DEBUG] #${i} fetching`, url, "win.closed before fetch?", win.closed);
+        const res = await apiFetchWithTimeout(apiFetch, url, {}, 30000);
+        console.log(`[BULK-PDF-DEBUG] #${i} response:`, res.status, res.ok, "win.closed after fetch?", win.closed);
         if (!res.ok) {
           win.close();
           continue;
         }
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
+        console.log(`[BULK-PDF-DEBUG] #${i} navigating win to`, blobUrl, "win.closed?", win.closed);
         win.location.href = blobUrl;
         setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
-      } catch {
+      } catch (e) {
+        console.log(`[BULK-PDF-DEBUG] #${i} caught:`, e?.name, e?.message);
         win.close();
       }
     }
@@ -921,11 +976,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
             </button>
           </div>
 
-          {/* Bulk download — once at least one contract is generated, the
-              whole point of batch mode (speed) is undercut by having to
-              open every card just to download its file, so this offers
-              the same per-card downloads (see handleDownload above) in
-              one click across the batch instead. */}
+          {/* Bulk download — once at least one contract is generated,
+              this is the ONLY way to get it in batch mode (see
+              PersonCard — no more per-card buttons), one click across
+              the whole batch instead of opening every card. */}
           {(generatedDocxCount > 0 || generatedPdfCount > 0) && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {generatedDocxCount > 0 && (
@@ -934,7 +988,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                   onClick={handleDownloadAllDocx}
                   className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110"
                 >
-                  <Download size={13} /> Stáhnout všechny ({generatedDocxCount}) (Word)
+                  <Download size={13} /> Stáhnout všechny ({generatedDocxCount}) jako ZIP (Word)
                 </button>
               )}
               {generatedPdfCount > 0 && (

@@ -225,7 +225,21 @@ export default function PersonCard({
                 <button
                   key={i}
                   type="button"
-                  onClick={() => p.url && onOpenLightbox(p.url)}
+                  onClick={() => {
+                    // TEMP DEBUG — remove once the multi-photo lightbox
+                    // bug is confirmed fixed on a real auto-merged card.
+                    // Search "LIGHTBOX-DEBUG" to find every line to strip.
+                    console.log("[LIGHTBOX-DEBUG] thumbnail clicked:", {
+                      index: i,
+                      totalPreviews: person.previews.length,
+                      name: p.name,
+                      url: p.url,
+                      isPdf: p.isPdf,
+                      isHeic: p.isHeic,
+                      allPreviewUrls: person.previews.map((pv) => pv.url),
+                    });
+                    if (p.url) onOpenLightbox(p.url);
+                  }}
                   className={`relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
                   title={p.url ? "Klikněte pro zvětšení" : p.name}
                 >
