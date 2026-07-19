@@ -530,8 +530,20 @@ export default function SimpleDocFiller() {
       }}
     >
       <div className="w-full max-w-xl md:max-w-2xl">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-9">
+        {/* Header — the logo/title doubles as a "go back to the start"
+            control, like clicking a site's logo does almost everywhere
+            else. A real window.location.reload() rather than resetting
+            React state by hand: it's the one action guaranteed to leave
+            every part of the app (single mode, batch mode, whichever
+            step either was on) back at its actual initial state, with
+            no risk of a future new piece of state being missed by a
+            hand-rolled reset. */}
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          title="Obnovit stránku a vrátit se na začátek"
+          className="flex items-center gap-3 mb-9 cursor-pointer bg-transparent border-0 p-0 text-left"
+        >
           <div
             className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
             style={PRIMARY_GRADIENT}
@@ -547,7 +559,7 @@ export default function SimpleDocFiller() {
             </div>
             <div className="text-[11.5px] text-slate-500 mt-1">Rychlé vyplnění dokumentů</div>
           </div>
-        </div>
+        </button>
 
         {/* Mode toggle — batch mode is an additional option alongside the
             original single-person flow, not a replacement for it (see
