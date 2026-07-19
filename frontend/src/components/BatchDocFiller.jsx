@@ -555,53 +555,75 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     const ids = peopleRef.current.map((p) => p.id);
     setGenerateStats({ total: ids.length, done: 0 });
     for (const id of ids) {
-      updatePerson(id, (p) => ({ ...p, generation: { status: "generating", docxToken: null, pdfToken: null, error: null } }));
-      await paceRateLimit(fillStartTimesRef);
-      const person = peopleRef.current.find((p) => p.id === id);
-      if (person) {
-        // Card still exists — actually generate it. (If it was removed
-        // mid-run, there's nothing to submit; the stats update below
-        // still fires either way so the progress bar never gets stuck
-        // short of its own total.)
-        try {
-          const data = await runWithRetry(async () => {
-            // A bare fetch() has no timeout of its own — see
-            // apiFetchWithTimeout's docstring. Without this, one stuck
-            // /api/fill call (LibreOffice PDF conversion taking too long
-            // on a free-tier instance, or a hung fetch from an
-            // interfering browser extension) froze this entire
-            // sequential loop behind an endless "Generuji X z Y"
-            // spinner with zero explanation — that's the real bug this
-            // guards against, not just a nice-to-have.
-            const res = await apiFetchWithTimeout(apiFetch, "/api/fill", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(buildFillPayload(person)),
-            }, 60000);
-            if (!res.ok) {
-              const err = new Error("server error");
-              err.status = res.status;
-              throw err;
-            }
-            return res.json();
-          });
-          updatePerson(id, (p) => ({
-            ...p,
-            generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null },
-          }));
-        } catch (e) {
-          if (e.status === 401) {
-            onAuthExpired();
-          } else {
-            const message = e.message === "timeout"
-              ? "Generování trvalo příliš dlouho (přes 60 s) — zkuste to prosím znovu."
-              : describeRequestError(e.status, "Generování se nezdařilo.");
+      // The whole per-iteration body is wrapped in try/catch (not just
+      // the fetch itself) so that an exception from anywhere in here —
+      // not only the network call — can never silently end the loop
+      // early; it always turns into a visible per-card error instead.
+      try {
+        updatePerson(id, (p) => ({ ...p, generation: { status: "generating", docxToken: null, pdfToken: null, error: null } }));
+        await paceRateLimit(fillStartTimesRef);
+        const person = peopleRef.current.find((p) => p.id === id);
+        if (person) {
+          // Card still exists — actually generate it. (If it was removed
+          // mid-run, there's nothing to submit; the stats update below
+          // still fires either way so the progress bar never gets stuck
+          // short of its own total.)
+          try {
+            const data = await runWithRetry(async () => {
+              // A bare fetch() has no timeout of its own — see
+              // apiFetchWithTimeout's docstring. Without this, one stuck
+              // /api/fill call (LibreOffice PDF conversion taking too long
+              // on a free-tier instance, or a hung fetch from an
+              // interfering browser extension) froze this entire
+              // sequential loop behind an endless "Generuji X z Y"
+              // spinner with zero explanation — that's the real bug this
+              // guards against, not just a nice-to-have.
+              const res = await apiFetchWithTimeout(apiFetch, "/api/fill", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(buildFillPayload(person)),
+              }, 60000);
+              if (!res.ok) {
+                const err = new Error("server error");
+                err.status = res.status;
+                throw err;
+              }
+              return res.json();
+            });
+            // Auto-expand the card the moment its own result lands —
+            // verified via real testing that generation, token capture,
+            // and the download buttons all already work correctly once
+            // a card is expanded; every card staying collapsed by
+            // default (the same default used right after recognizing)
+            // meant a fully successful batch produced zero visible
+            // feedback unless every card was clicked open by hand, which
+            // read as "nothing happened" even when it had.
             updatePerson(id, (p) => ({
               ...p,
-              generation: { status: "error", docxToken: null, pdfToken: null, error: message },
+              expanded: true,
+              generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null },
             }));
+          } catch (e) {
+            if (e.status === 401) {
+              onAuthExpired();
+            } else {
+              const message = e.message === "timeout"
+                ? "Generování trvalo příliš dlouho (přes 60 s) — zkuste to prosím znovu."
+                : describeRequestError(e.status, "Generování se nezdařilo.");
+              updatePerson(id, (p) => ({
+                ...p,
+                expanded: true,
+                generation: { status: "error", docxToken: null, pdfToken: null, error: message },
+              }));
+            }
           }
         }
+      } catch (e) {
+        updatePerson(id, (p) => ({
+          ...p,
+          expanded: true,
+          generation: { status: "error", docxToken: null, pdfToken: null, error: "Neočekávaná chyba při generování — zkuste to prosím znovu." },
+        }));
       }
       setGenerateStats((s) => ({ ...s, done: s.done + 1 }));
     }
