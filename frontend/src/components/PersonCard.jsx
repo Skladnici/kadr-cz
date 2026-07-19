@@ -460,7 +460,7 @@ export default function PersonCard({
                 onClick={() => onDownload(person.generation.docxToken, { filename: person.generation.docxToken })}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
               >
-                <Download size={13} /> Word
+                <Download size={13} /> Stáhnout Word
               </button>
               {person.generation.pdfToken && (
                 <button
@@ -468,7 +468,7 @@ export default function PersonCard({
                   onClick={() => onDownload(person.generation.pdfToken, { openInNewTab: true })}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
                 >
-                  <Printer size={13} /> PDF
+                  <Printer size={13} /> Otevřít / Tisk (PDF)
                 </button>
               )}
             </div>

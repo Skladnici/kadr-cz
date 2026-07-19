@@ -72,3 +72,70 @@ export function uploadFileViaXHR(url, file, authHeader, timeoutMs = 90000) {
     xhr.send(formData);
   });
 }
+
+// Wraps an apiFetch(...)-style call with a hard timeout via
+// AbortController. A bare fetch() (what apiFetch wraps) can hang
+// indefinitely with nothing to blame it on — see uploadFileViaXHR's own
+// docstring above for one well-observed cause (browser extensions that
+// monkey-patch window.fetch globally) — and /api/fill in particular
+// also does real server-side work (LibreOffice PDF conversion) that can
+// occasionally run long on a free-tier instance. Without this, one
+// stuck request inside batch mode's sequential "Vygenerovat všechny"
+// loop froze the whole run behind an endless spinner with no
+// explanation, since nothing ever rejected to let the loop move on.
+export async function apiFetchWithTimeout(apiFetch, path, options = {}, timeoutMs = 60000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await apiFetch(path, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("timeout");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Download tokens are single-use — the file is deleted server-side right
+// after being served (see backend/app/main.py's /api/download), so a
+// second click on the same link (browser back+retry, opening twice,
+// re-clicking a stale card) now 404s. A plain <a href> can't distinguish
+// that from a normal download, so this fetches the file itself and
+// reports an honest message instead of a raw browser download-failed
+// error. Shared by SimpleDocFiller (single mode) and BatchDocFiller (one
+// call per generated card) so both stay identical instead of drifting
+// into two slightly different copies over time.
+export async function downloadGeneratedFile(apiFetch, token, { filename, openInNewTab } = {}, onError) {
+  try {
+    const res = await apiFetchWithTimeout(apiFetch, `/api/download/${token}`, {}, 30000);
+    if (!res.ok) {
+      if (res.status !== 401) {
+        onError?.(
+          res.status === 404
+            ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
+            : describeRequestError(res.status, "Stažení se nezdařilo.")
+        );
+      }
+      return;
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    if (openInNewTab) {
+      window.open(blobUrl, "_blank", "noopener,noreferrer");
+    } else {
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename || token;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+  } catch (e) {
+    onError?.(
+      e.message === "timeout"
+        ? "Stahování trvalo příliš dlouho — zkuste to prosím znovu."
+        : "Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu."
+    );
+  }
+}

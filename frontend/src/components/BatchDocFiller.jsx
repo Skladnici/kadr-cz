@@ -7,7 +7,7 @@ import {
 } from "../constants/fields";
 import { composeCzAddress, composeOriginAddress } from "../utils/address";
 import { mergeRecognizedResults } from "../utils/recognizeMerge";
-import { API_BASE, describeRequestError, uploadFileViaXHR } from "../utils/api";
+import { API_BASE, describeRequestError, uploadFileViaXHR, apiFetchWithTimeout, downloadGeneratedFile } from "../utils/api";
 import { paceRateLimit, runWithRetry, estimateSecondsRemaining } from "../utils/rateLimitQueue";
 
 // Same accent used by SimpleDocFiller/LoginForm's own primary buttons —
@@ -499,36 +499,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   );
 
   // ---------------------------------------------------------------- download
-  const handleDownload = useCallback(async (token, { filename, openInNewTab } = {}) => {
-    try {
-      const res = await apiFetch(`/api/download/${token}`);
-      if (!res.ok) {
-        if (res.status !== 401) {
-          setBatchError(
-            res.status === 404
-              ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
-              : describeRequestError(res.status, "Stažení se nezdařilo.")
-          );
-        }
-        return;
-      }
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      if (openInNewTab) {
-        window.open(blobUrl, "_blank", "noopener,noreferrer");
-      } else {
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = filename || token;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
-    } catch {
-      setBatchError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
-    }
-  }, [apiFetch]);
+  const handleDownload = useCallback(
+    (token, opts = {}) => downloadGeneratedFile(apiFetch, token, opts, setBatchError),
+    [apiFetch]
+  );
 
   // ---------------------------------------------------------------- generate all
   const buildFillPayload = useCallback((person) => {
@@ -591,11 +565,19 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         // short of its own total.)
         try {
           const data = await runWithRetry(async () => {
-            const res = await apiFetch("/api/fill", {
+            // A bare fetch() has no timeout of its own — see
+            // apiFetchWithTimeout's docstring. Without this, one stuck
+            // /api/fill call (LibreOffice PDF conversion taking too long
+            // on a free-tier instance, or a hung fetch from an
+            // interfering browser extension) froze this entire
+            // sequential loop behind an endless "Generuji X z Y"
+            // spinner with zero explanation — that's the real bug this
+            // guards against, not just a nice-to-have.
+            const res = await apiFetchWithTimeout(apiFetch, "/api/fill", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(buildFillPayload(person)),
-            });
+            }, 60000);
             if (!res.ok) {
               const err = new Error("server error");
               err.status = res.status;
@@ -608,10 +590,15 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
             generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null },
           }));
         } catch (e) {
-          if (e.status !== 401) {
+          if (e.status === 401) {
+            onAuthExpired();
+          } else {
+            const message = e.message === "timeout"
+              ? "Generování trvalo příliš dlouho (přes 60 s) — zkuste to prosím znovu."
+              : describeRequestError(e.status, "Generování se nezdařilo.");
             updatePerson(id, (p) => ({
               ...p,
-              generation: { status: "error", docxToken: null, pdfToken: null, error: describeRequestError(e.status, "Generování se nezdařilo.") },
+              generation: { status: "error", docxToken: null, pdfToken: null, error: message },
             }));
           }
         }
@@ -620,7 +607,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     }
     isGeneratingRef.current = false;
     setGenerateActive(false);
-  }, [templateId, people.length, apiFetch, buildFillPayload, updatePerson]);
+  }, [templateId, people.length, apiFetch, buildFillPayload, updatePerson, onAuthExpired]);
 
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;

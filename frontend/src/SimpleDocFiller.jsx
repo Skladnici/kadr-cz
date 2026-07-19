@@ -15,7 +15,7 @@ import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { mergeRecognizedResults } from "./utils/recognizeMerge";
 import { isValidIco, isValidDic } from "./utils/validation";
 import { calculateAge } from "./utils/age";
-import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR } from "./utils/api";
+import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR, downloadGeneratedFile } from "./utils/api";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
 // hang indefinitely for certain files (observed with photos forwarded
@@ -364,36 +364,9 @@ export default function SimpleDocFiller() {
   // etc.) now 404s. A plain <a href> can't distinguish that from a normal
   // download, so we fetch the file ourselves and show an honest message
   // instead of a raw browser download-failed error.
-  const handleDownload = async (token, { filename, openInNewTab } = {}) => {
+  const handleDownload = async (token, opts = {}) => {
     setDownloadError(null);
-    try {
-      const res = await apiFetch(`/api/download/${token}`);
-      if (!res.ok) {
-        if (res.status !== 401) {
-          setDownloadError(
-            res.status === 404
-              ? "Tento odkaz ke stažení už byl použit (soubor se maže hned po prvním stažení). Vygenerujte dokument znovu."
-              : describeRequestError(res.status, "Stažení se nezdařilo.")
-          );
-        }
-        return;
-      }
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      if (openInNewTab) {
-        window.open(blobUrl, "_blank", "noopener,noreferrer");
-      } else {
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = filename || token;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
-    } catch {
-      setDownloadError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
-    }
+    await downloadGeneratedFile(apiFetch, token, opts, setDownloadError);
   };
 
   // Stable identities so AddressBuilder (wrapped in React.memo) doesn't
