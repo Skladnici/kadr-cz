@@ -98,13 +98,41 @@ def test_extract_passport_number_from_mrz_self_verifies():
         "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<\n"
         "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
     )
-    doc_number, verified = _extract_passport_number_from_mrz(mrz_text)
+    doc_number, verified, birth_date = _extract_passport_number_from_mrz(mrz_text)
     assert doc_number == "L898902C3"
     assert verified is True
+    # ICAO's own standard MRZ example: birth date 12 Aug 1974, positioned
+    # right after the nationality code in the same MRZ field this
+    # function already reads doc_number from.
+    assert birth_date == "12.08.1974"
 
 
 def test_extract_passport_number_from_mrz_none_without_mrz():
-    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False)
+    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False, None)
+
+
+def test_extract_passport_number_from_mrz_real_armenian_passport_ernest_tadevosyan():
+    # Real case that motivated this fallback: a real Armenian passport's
+    # printed "DATE OF BIRTH 01 FEB 1974" wasn't reliably caught by the
+    # labeled-date search, and (being Armenian, not Cyrillic-script) never
+    # matches the Ukrainian/CIS bilingual-date heuristic either — leaving
+    # the passport card with no birth_date and breaking batch auto-merge
+    # against its (correctly-read) visa. The MRZ line is unaffected by
+    # any of that: ICAO 9303 TD3 field positions are the same regardless
+    # of issuing country or printed-text script.
+    mrz_line2 = "AX05955872ARM7402016M3501151<<<<04"
+    _, _, birth_date = _extract_passport_number_from_mrz(mrz_line2)
+    assert birth_date == "01.02.1974"
+
+
+def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan():
+    # Second real case, deliberately with no trailing personal-number
+    # section (just the fixed doc/nationality/birth/sex/expiry block) —
+    # confirms the regex doesn't depend on that optional tail being
+    # present.
+    mrz_line2 = "AX06570519ARM7702129M3503144"
+    _, _, birth_date = _extract_passport_number_from_mrz(mrz_line2)
+    assert birth_date == "12.02.1977"
 
 
 def test_parse_mrz_still_captures_line_with_no_surviving_double_angle_bracket():
@@ -303,6 +331,41 @@ def test_extract_fields_from_labeled_czech_id():
     assert fields["birth_date"] == "12.03.1994"
     assert fields["doc_number"] == "999123456"
     assert fields["is_expired"] is False
+
+
+def test_extract_fields_uses_generic_mrz_birth_date_fallback_for_passport():
+    # Real case: an Armenian passport (Ernest Tadevosyan) whose printed
+    # "DATE OF BIRTH 01 FEB 1974" wasn't caught by the labeled-date search
+    # on this scan -- and, being Armenian rather than Cyrillic-script,
+    # never matches the Ukrainian/CIS bilingual-date heuristic either --
+    # left the passport card with no birth_date, so batch auto-merge
+    # against its (correctly-read) visa never triggered. The MRZ line
+    # underneath is unaffected: ICAO 9303 TD3 field positions are fixed
+    # by the standard, the same for every issuing country.
+    text = (
+        "REPUBLIC OF ARMENIA\n"
+        "PASSPORT\n"
+        "SURNAME TADEVOSYAN\n"
+        "GIVEN NAMES ERNEST\n"
+        "P<ARMTADEVOSYAN<<ERNEST<<<<<<<<<<<<<<<<<<<<<\n"
+        "AX05955872ARM7402016M3501151<<<<04"
+    )
+    fields = _extract_fields_from_text(text, quality=88, mode="mock")
+    assert fields["birth_date"] == "01.02.1974"
+
+
+def test_extract_fields_prefers_labeled_birth_date_over_mrz():
+    # No regression check: when a labeled date IS found, it must still
+    # win over the MRZ fallback, exactly as it already wins over the
+    # Ukrainian/CIS bilingual-date guess above it.
+    text = (
+        "PASSPORT\n"
+        "Date of birth: 01.01.2000\n"
+        "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<\n"
+        "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+    )
+    fields = _extract_fields_from_text(text, quality=88, mode="mock")
+    assert fields["birth_date"] == "01.01.2000"
 
 
 def test_extract_fields_warns_on_low_quality():

@@ -415,18 +415,40 @@ def _normalize_mrz_text(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool]:
-    """Reads the document number straight from the MRZ's own field +
-    check digit, rather than guessing from printed (often smudged or
-    glare-affected) text elsewhere on the page — this is the same field
-    real e-passport gates rely on, and it self-verifies via checksum."""
-    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}\d{6}\d[MF<]\d{6}\d", _normalize_mrz_text(text))
+def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, Optional[str]]:
+    """Reads the document number, and the holder's birth date, straight
+    from the MRZ's own field + check digit, rather than guessing from
+    printed (often smudged, glare-affected, or non-Latin-script) text
+    elsewhere on the page — this is the same field real e-passport gates
+    rely on, and the doc number self-verifies via checksum.
+
+    The birth-date digits sit in the very same regex match (ICAO 9303
+    TD3 line 2: doc number, check digit, nationality, birth date YYMMDD,
+    ...) — they were being matched but never read out, the identical gap
+    that _find_visa_info's birth_date fix (see its own docstring) already
+    closed for visas. TD3 field positions are fixed by the ICAO standard
+    regardless of the issuing country or the script printed elsewhere on
+    the page, so this needs no per-country handling: confirmed against a
+    real Armenian passport ("...ARM7402016M3501151<<<<04") whose printed
+    "DATE OF BIRTH" a passport-side label search couldn't reliably catch,
+    while this MRZ field read correctly."""
+    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}(\d{6})\d[MF<]\d{6}\d", _normalize_mrz_text(text))
     if not m:
-        return None, False
-    raw, check = m.group(1), m.group(2)
+        return None, False, None
+    raw, check, birth_raw = m.group(1), m.group(2), m.group(3)
     corrected, verified = _verify_and_correct(raw, check)
     doc_number = corrected.replace("<", "").strip()
-    return (doc_number or None), verified
+
+    birth_date = None
+    try:
+        yy, mm, dd = int(birth_raw[0:2]), int(birth_raw[2:4]), int(birth_raw[4:6])
+        year = _interpret_two_digit_year(yy, role="birth")
+        date(year, mm, dd)  # validate
+        birth_date = f"{dd:02d}.{mm:02d}.{year}"
+    except (ValueError, IndexError):
+        pass
+
+    return (doc_number or None), verified, birth_date
 
 
 def _find_doc_number(text: str) -> Optional[str]:
@@ -512,9 +534,18 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # Prefer the MRZ-derived document number — it self-verifies via a
     # checksum, unlike text found elsewhere on the page. Only fall back
     # to the generic label/pattern search if there's no MRZ to read.
-    mrz_doc_number, doc_number_verified = _extract_passport_number_from_mrz(raw_text)
+    mrz_doc_number, doc_number_verified, mrz_birth_date = _extract_passport_number_from_mrz(raw_text)
     doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
+
+    # Country/script-agnostic fallback: only kicks in once the labeled
+    # and Ukrainian/CIS-bilingual-date heuristics above have both come up
+    # empty — a real Armenian passport whose printed "Date of birth"
+    # label wasn't picked up (and which obviously never matches the
+    # Cyrillic-script bilingual pattern) still has this same MRZ field,
+    # decoded here exactly as ICAO 9303 defines it for every country.
+    if not birth_date and mrz_birth_date:
+        birth_date = mrz_birth_date
 
     # If nothing about this text looks like an actual ID document (no
     # MRZ, no recognized doc type, no doc number) and it's short — the
