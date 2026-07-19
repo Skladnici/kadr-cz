@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, FileText, Loader2, Upload, X } from "lucide-react";
+import { AlertTriangle, Download, FileText, Loader2, Printer, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
 import {
@@ -504,6 +504,32 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     [apiFetch]
   );
 
+  // Bulk download/open for the whole batch, once everything's generated —
+  // one-by-one under the hood (each token is single-use server-side, same
+  // as the per-card buttons), but from the person's perspective it's one
+  // click instead of opening every card individually, which is the whole
+  // point of batch mode. No zip step: .docx downloads via the <a download>
+  // attribute already save silently with no dialog, and PDFs use the same
+  // "open in a new tab" the single per-card button already does — so this
+  // reuses downloadGeneratedFile as-is rather than inventing a packaging
+  // step. A short pause between each keeps a rapid sequence of downloads/
+  // new-tab opens from tripping a browser's popup/download-flood guard.
+  const handleDownloadAllDocx = useCallback(async () => {
+    const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
+    for (const p of targets) {
+      await downloadGeneratedFile(apiFetch, p.generation.docxToken, { filename: p.generation.docxToken }, setBatchError);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }, [apiFetch]);
+
+  const handleOpenAllPdf = useCallback(async () => {
+    const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
+    for (const p of targets) {
+      await downloadGeneratedFile(apiFetch, p.generation.pdfToken, { openInNewTab: true }, setBatchError);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  }, [apiFetch]);
+
   // ---------------------------------------------------------------- generate all
   const buildFillPayload = useCallback((person) => {
     const company = person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields;
@@ -634,6 +660,8 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
   const doneCards = useMemo(() => people.filter((p) => p.status === "done"), [people]);
+  const generatedDocxCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.docxToken).length, [people]);
+  const generatedPdfCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.pdfToken).length, [people]);
 
   return (
     <div className="p-7 md:p-9">
@@ -836,6 +864,34 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               {generateActive ? `Generuji ${generateStats.done} z ${generateStats.total}…` : `Vygenerovat všech ${people.length} smluv`}
             </button>
           </div>
+
+          {/* Bulk download — once at least one contract is generated, the
+              whole point of batch mode (speed) is undercut by having to
+              open every card just to download its file, so this offers
+              the same per-card downloads (see handleDownload above) in
+              one click across the batch instead. */}
+          {(generatedDocxCount > 0 || generatedPdfCount > 0) && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {generatedDocxCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleDownloadAllDocx}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110"
+                >
+                  <Download size={13} /> Stáhnout všechny ({generatedDocxCount}) (Word)
+                </button>
+              )}
+              {generatedPdfCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleOpenAllPdf}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 py-2 text-[12.5px] font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <Printer size={13} /> Otevřít / Tisk všechny ({generatedPdfCount}) (PDF)
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
 
