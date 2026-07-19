@@ -35,6 +35,21 @@ from generation_log
 group by coalesce(company_name, 'Bez firmy')
 order by document_count desc;
 
+-- Same aggregation as generation_stats above, but broken down by
+-- document_type too — powers StatsWidget.jsx's click-to-expand detail
+-- under each company row (e.g. "DPP: 1 · HPP: 3 · Ukončení poměru: 1").
+-- Kept as its own view rather than widening generation_stats itself, so
+-- the original company-only totals endpoint/tests keep their existing
+-- shape untouched.
+create or replace view generation_stats_by_type as
+select
+    coalesce(company_name, 'Bez firmy') as company_name,
+    document_type,
+    count(*) as document_count
+from generation_log
+group by coalesce(company_name, 'Bez firmy'), document_type
+order by company_name, document_count desc;
+
 -- Same reasoning/assumption as create_companies_table.sql: the backend
 -- is the only intended caller (holds SUPABASE_KEY as a server-side
 -- secret, gates every request behind its own site-wide login before
@@ -50,6 +65,7 @@ order by document_count desc;
 -- even though the table/view genuinely exists and RLS is disabled.
 grant select, insert on generation_log to anon, authenticated, service_role;
 grant select on generation_stats to anon, authenticated, service_role;
+grant select on generation_stats_by_type to anon, authenticated, service_role;
 
 -- Run after any of the above changes schema-cache-visible state
 -- (CREATE/GRANT) — Supabase's Dashboard SQL editor usually fires this

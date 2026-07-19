@@ -59,6 +59,20 @@ class FakeGenerationLog:
         rows.sort(key=lambda r: -r["document_count"])
         return 200, rows
 
+    def stats_by_type(self):
+        counts = {}
+        for row in self.rows:
+            name = row.get("company_name") or "Bez firmy"
+            doc_type = row["document_type"]
+            key = (name, doc_type)
+            counts[key] = counts.get(key, 0) + 1
+        rows = [
+            {"company_name": name, "document_type": doc_type, "document_count": n}
+            for (name, doc_type), n in counts.items()
+        ]
+        rows.sort(key=lambda r: (r["company_name"], -r["document_count"]))
+        return 200, rows
+
 
 @pytest.fixture
 def fake_supabase(monkeypatch, tmp_path):
@@ -79,6 +93,9 @@ def fake_supabase(monkeypatch, tmp_path):
         if url.endswith("/generation_log"):
             assert method == "POST"
             status, body = log.insert(json)
+        elif url.endswith("/generation_stats_by_type"):
+            assert method == "GET"
+            status, body = log.stats_by_type()
         elif url.endswith("/generation_stats"):
             assert method == "GET"
             status, body = log.stats()
@@ -179,6 +196,48 @@ def test_fill_succeeds_without_logging_when_supabase_is_unconfigured(monkeypatch
 
     resp = _fill(company_name="ACME s.r.o.")
     assert resp.status_code == 200
+
+
+def test_stats_by_type_start_empty(fake_supabase):
+    resp = client.get("/api/stats/by-type", auth=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_stats_by_type_breaks_down_per_company_and_document_type(fake_supabase):
+    assert _fill(company_name="ACME s.r.o.", template_id="dpp_template").status_code == 200
+    for _ in range(3):
+        assert _fill(company_name="ACME s.r.o.", template_id="hpp_template").status_code == 200
+    assert _fill(company_name="ACME s.r.o.", template_id="ukonceni_pracovniho_pomeru").status_code == 200
+    assert _fill(company_name="Beta Trading", template_id="dpp_template").status_code == 200
+
+    stats = client.get("/api/stats/by-type", auth=AUTH).json()
+    by_company = {}
+    for row in stats:
+        by_company.setdefault(row["company_name"], {})[row["document_type"]] = row["document_count"]
+
+    assert by_company == {
+        "ACME s.r.o.": {"DPP": 1, "HPP": 3, "Ukončení poměru": 1},
+        "Beta Trading": {"DPP": 1},
+    }
+
+
+def test_stats_by_type_folds_missing_company_into_bez_firmy(fake_supabase):
+    assert _fill(company_name=None, template_id="dpp_template").status_code == 200
+    assert _fill(company_name="", template_id="dpp_template").status_code == 200
+
+    stats = client.get("/api/stats/by-type", auth=AUTH).json()
+    assert stats == [{"company_name": "Bez firmy", "document_type": "DPP", "document_count": 2}]
+
+
+def test_stats_by_type_route_503s_when_supabase_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(settings, "SITE_USERNAME", "hr")
+    monkeypatch.setattr(settings, "SITE_PASSWORD", "test123")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
+
+    resp = client.get("/api/stats/by-type", auth=AUTH)
+    assert resp.status_code == 503
 
 
 def test_stats_route_503s_when_supabase_is_unconfigured(monkeypatch):

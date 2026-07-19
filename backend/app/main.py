@@ -527,3 +527,23 @@ async def get_stats(request: Request):
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
     return resp.json()
+
+
+@app.get("/api/stats/by-type", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("60/minute")
+async def get_stats_by_type(request: Request):
+    """Per-company document counts broken down by document_type as well —
+    powers StatsWidget.jsx's click-to-expand detail under each company row
+    (e.g. "DPP: 1 · HPP: 3"). Reads the generation_stats_by_type view (see
+    create_generation_log_table.sql) for the same reason get_stats() reads
+    a view instead of aggregating in Python: PostgREST's REST API has no
+    query-string syntax for GROUP BY."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/generation_stats_by_type",
+            headers=_supabase_headers(),
+            params={"select": "*"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp.json()
