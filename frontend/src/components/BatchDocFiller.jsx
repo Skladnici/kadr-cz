@@ -47,6 +47,28 @@ function buildContractFilename(person, ext) {
   return `Smlouva_${namePart}.${ext}`;
 }
 
+// /api/download isn't rate-limited (no @limiter.limit in main.py, unlike
+// /api/recognize and /api/fill), so runWithRetry's narrow "only retry on
+// a 429" wouldn't actually retry anything here — this is a separate,
+// general-purpose retry instead: worth one or two more tries on a
+// network hiccup/timeout or a transient server error, but not on a 401
+// (auth expired — retrying won't help) or a 404 (the token's file was
+// already served and deleted server-side — retrying can only ever fail
+// the same way).
+async function fetchDownloadWithRetry(apiFetch, token, maxAttempts = 3) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await apiFetchWithTimeout(apiFetch, `/api/download/${token}`, {}, 30000);
+      if (res.ok || res.status === 401 || res.status === 404 || attempt === maxAttempts) {
+        return res;
+      }
+    } catch (e) {
+      if (attempt === maxAttempts) throw e;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
 // Shared by both bulk-download buttons (Word .docx and PDF) — packaging
 // every generated file into ONE zip instead of N separate downloads/tab
 // opens is what makes either reliable in a real (non-automated) browser:
@@ -55,13 +77,34 @@ function buildContractFilename(person, ext) {
 // the first one, requiring the person to notice and approve a
 // permission by hand — a single zip is one browser action, so that
 // throttling never gets a chance to trigger either way.
+//
+// The reported "zip intermittently missing one file out of three" bug
+// turned out to live entirely in the CALLERS, not here — every fetch in
+// this function was already succeeding (confirmed via logging); the
+// `targets` array handed in was just occasionally one card short,
+// because handleDownloadAllDocx/handleDownloadAllPdf (and separately
+// handleGenerateAll's own snapshot) were reading peopleRef.current,
+// which can lag behind the actual latest state (see the comment above
+// handleDownloadAllDocx for why). Fixed by having all three read the
+// `people` state variable directly instead. fetchDownloadWithRetry is
+// kept regardless, as a real (if smaller) improvement — /api/download
+// has no rate limit but a plain single fetch had no resilience at all
+// against an ordinary transient network hiccup.
+//
+// /api/download tokens are single-use (the file is deleted server-side
+// once served), which is why this must never run twice concurrently for
+// the same batch — two overlapping calls would race each other for the
+// same tokens, and whichever request loses arrives to find its file
+// already gone. See handleDownloadAllDocx/handleDownloadAllPdf's
+// isBulkDownloadingRef guard for how double-clicks are prevented from
+// causing that race.
 async function zipAndDownload(apiFetch, targets, tokenKey, ext, zipNamePrefix, setBatchError) {
   const zip = new JSZip();
   const usedNames = new Set();
   let addedCount = 0;
   for (const p of targets) {
     try {
-      const res = await apiFetchWithTimeout(apiFetch, `/api/download/${p.generation[tokenKey]}`, {}, 30000);
+      const res = await fetchDownloadWithRetry(apiFetch, p.generation[tokenKey]);
       if (!res.ok) {
         if (res.status !== 401) setBatchError(describeRequestError(res.status, "Stažení se nezdařilo."));
         continue;
@@ -118,7 +161,6 @@ function makePersonCard(file) {
     status: "pending", // pending | recognizing | done | error
     error: null,
     rawResults: [], // raw /api/recognize responses — kept so a later merge (or split) can re-run mergeRecognizedResults on the resulting set
-    mergeNote: null, // why an automatic merge happened, e.g. "Sloučeno: datum narození" — set by canAutoMerge's auto-merge, null otherwise
     fields: { ...EMPTY_PERSON_FIELDS },
     docNumberVerified: false,
     warnings: [],
@@ -222,9 +264,8 @@ function birthDateMatches(a, b) {
 // number consistently pulling the visa's own type/category code (e.g.
 // "TD..." — nothing resembling a passport number) instead of an actual
 // passport-number reference, regardless of scan quality. Left in place
-// only as a bonus confirmation label on an already birth-date-matched
-// merge (see mergeNote below) and as a fallback suggestion signal — but
-// no longer gates the auto-merge decision itself. If the backend
+// only as a fallback suggestion signal (see findPossibleMatch below) —
+// it no longer gates the auto-merge decision itself. If the backend
 // extraction is ever fixed to read the right MRZ field, this starts
 // contributing real corroboration for free.
 function docNumberCrossMatches(a, b) {
@@ -254,10 +295,12 @@ function findPossibleMatch(candidates, person) {
 // same mergeRecognizedResults() single mode uses on the two cards'
 // combined raw /api/recognize responses, so a merged card picks fields
 // exactly as if both files had been uploaded together from the start.
-// mergeNote, when passed, records WHY an automatic merge happened, so
-// the card can show it (see PersonCard) — manual merges leave whatever
-// note the "keep" card already had (usually none).
-function combineCards(keep, merge, mergeNote) {
+// Deliberately doesn't surface WHY a merge happened (birth date match,
+// doc-number match, ...) anywhere in the UI — that's an implementation
+// detail the person filling out paperwork doesn't need, and single
+// mode never showed a merge "reason" either, so this keeps both
+// consistent.
+function combineCards(keep, merge) {
   const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
   const merged = mergeRecognizedResults(combinedRawResults, { compactNameWarning: true });
   return {
@@ -281,7 +324,6 @@ function combineCards(keep, merge, mergeNote) {
     warnings: merged.warnings,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
-    mergeNote: mergeNote !== undefined ? mergeNote : keep.mergeNote,
   };
 }
 
@@ -303,11 +345,19 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const [sharedFields, setSharedFields] = useState({});
   const [batchError, setBatchError] = useState(null);
   const [lightboxUrl, setLightboxUrl] = useState(null);
+  // --- Lightbox zoom/pan (mouse wheel to zoom 100%-400%, drag to pan) —
+  // ported as-is from SimpleDocFiller.jsx's single-mode lightbox so both
+  // modes behave identically, rather than a separate implementation. ---
+  const lightboxImgRef = useRef(null);
+  const [lightboxTransform, setLightboxTransform] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const lightboxDragRef = useRef(null); // { startX, startY, startPan } while a drag is in progress, else null
+  const [isPanningLightbox, setIsPanningLightbox] = useState(false);
 
   const [recognizeActive, setRecognizeActive] = useState(false);
   const [recognizeStats, setRecognizeStats] = useState({ total: 0, done: 0 });
   const [generateActive, setGenerateActive] = useState(false);
   const [generateStats, setGenerateStats] = useState({ total: 0, done: 0 });
+  const [bulkDownloadKind, setBulkDownloadKind] = useState(null); // null | "docx" | "pdf" — which bulk zip (if any) is currently being built
 
   const fileInputRef = useRef(null);
   const peopleRef = useRef(people);
@@ -317,6 +367,15 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const recognizeStartTimesRef = useRef([]);
   const isGeneratingRef = useRef(false);
   const fillStartTimesRef = useRef([]);
+  // Guards handleDownloadAllDocx/handleDownloadAllPdf against running
+  // twice concurrently (an accidental double-click) — /api/download
+  // tokens are single-use server-side, so two overlapping zip-building
+  // passes would race each other for the same tokens and whichever
+  // request lost would find its file already gone, silently shrinking
+  // the resulting zip by one. A ref (not just the bulkDownloadKind state
+  // above) because the check has to be synchronous at click time, before
+  // React has necessarily re-rendered with the new state yet.
+  const isBulkDownloadingRef = useRef(false);
 
   useEffect(() => { peopleRef.current = people; }, [people]);
 
@@ -332,12 +391,105 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     peopleRef.current.forEach((p) => p.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url)));
   }, []);
 
-  const updatePerson = useCallback((id, updater) => {
-    setPeople((prev) => prev.map((p) => (p.id === id ? updater(p) : p)));
+  // Fresh photo, fresh zoom — otherwise the next opened preview would
+  // inherit whatever zoom/pan the previous one was left at.
+  useEffect(() => {
+    setLightboxTransform({ zoom: 1, pan: { x: 0, y: 0 } });
+  }, [lightboxUrl]);
+
+  // Keeps panning from dragging the image entirely out of view — the
+  // further zoomed in, the more room there is to pan, none at all at 100%.
+  const clampLightboxPan = useCallback((pan, zoom) => {
+    const el = lightboxImgRef.current;
+    if (!el) return pan;
+    const maxX = (el.offsetWidth * (zoom - 1)) / 2;
+    const maxY = (el.offsetHeight * (zoom - 1)) / 2;
+    return {
+      x: Math.min(maxX, Math.max(-maxX, pan.x)),
+      y: Math.min(maxY, Math.max(-maxY, pan.y)),
+    };
   }, []);
 
-  const removePerson = useCallback((id) => {
+  // Wheel is attached as a native (non-passive) listener rather than
+  // React's onWheel — React delegates wheel listeners as passive by
+  // default, which would silently prevent e.preventDefault() from
+  // stopping the page itself from scrolling behind the lightbox.
+  useEffect(() => {
+    const el = lightboxImgRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      setLightboxTransform((t) => {
+        const nextZoom = Math.min(4, Math.max(1, t.zoom - e.deltaY * 0.0015));
+        return { zoom: nextZoom, pan: clampLightboxPan(t.pan, nextZoom) };
+      });
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [lightboxUrl, clampLightboxPan]);
+
+  const handleLightboxMouseDown = useCallback((e) => {
+    if (lightboxTransform.zoom <= 1) return; // nothing to pan at 100%
+    e.preventDefault();
+    lightboxDragRef.current = { startX: e.clientX, startY: e.clientY, startPan: lightboxTransform.pan };
+    setIsPanningLightbox(true);
+  }, [lightboxTransform.zoom, lightboxTransform.pan]);
+
+  // Move/up listen on window (not just the image) so a drag that carries
+  // the cursor off the image, or releases outside it, still behaves.
+  useEffect(() => {
+    const handleMove = (e) => {
+      const drag = lightboxDragRef.current;
+      if (!drag) return;
+      setLightboxTransform((t) => ({
+        ...t,
+        pan: clampLightboxPan(
+          { x: drag.startPan.x + (e.clientX - drag.startX), y: drag.startPan.y + (e.clientY - drag.startY) },
+          t.zoom
+        ),
+      }));
+    };
+    const handleUp = () => {
+      lightboxDragRef.current = null;
+      setIsPanningLightbox(false);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [clampLightboxPan]);
+
+  // Every person-list update goes through this instead of calling
+  // setPeople directly, so peopleRef.current is authoritative the
+  // instant the update runs — not just after the next render commits.
+  // The plain `useEffect(() => { peopleRef.current = people }, [people])`
+  // above is too late for code that fires right after a state update
+  // resolves but before React has re-rendered: real testing found the
+  // bulk-download buttons (whose click handler reads peopleRef.current)
+  // intermittently missing whichever card's generation had *just*
+  // finished — handleGenerateAll's loop calls setGenerateActive(false)
+  // (re-enabling the button) in the same tick as the last card's
+  // updatePerson call, and a fast click could land before the
+  // useEffect-driven ref sync had a chance to run, so the ref still
+  // reflected the second-to-last state. Every fetch in that scenario
+  // actually succeeded (confirmed via logging) — the card just wasn't in
+  // the target list to begin with.
+  const setPeopleAndSync = useCallback((updaterOrValue) => {
     setPeople((prev) => {
+      const next = typeof updaterOrValue === "function" ? updaterOrValue(prev) : updaterOrValue;
+      peopleRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const updatePerson = useCallback((id, updater) => {
+    setPeopleAndSync((prev) => prev.map((p) => (p.id === id ? updater(p) : p)));
+  }, [setPeopleAndSync]);
+
+  const removePerson = useCallback((id) => {
+    setPeopleAndSync((prev) => {
       const removed = prev.find((p) => p.id === id);
       removed?.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url));
       return prev.filter((p) => p.id !== id);
@@ -358,13 +510,13 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     peopleRef.current.forEach((p) => p.previews.forEach((pv) => pv.url && URL.revokeObjectURL(pv.url)));
     recognizeQueueRef.current = [];
     peopleCountRef.current = 0;
-    setPeople([]);
+    setPeopleAndSync([]);
     setSharedFields({});
     setTemplateId(blanks.length > 0 ? blanks[0].id : null);
     setBatchError(null);
     setRecognizeStats({ total: 0, done: 0 });
     setGenerateStats({ total: 0, done: 0 });
-  }, [blanks]);
+  }, [blanks, setPeopleAndSync]);
 
   // Manual fallback for when the automatic birth-date merge (see
   // canAutoMerge/runRecognizeQueue below) didn't fire — e.g. birth date
@@ -373,14 +525,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // click, using the exact same combineCards() the automatic path uses.
   const mergeCards = useCallback((keepId, mergeId) => {
     if (keepId === mergeId) return;
-    setPeople((prev) => {
+    setPeopleAndSync((prev) => {
       const keep = prev.find((p) => p.id === keepId);
       const merge = prev.find((p) => p.id === mergeId);
       if (!keep || !merge || keep.status !== "done" || merge.status !== "done") return prev;
       return prev.filter((p) => p.id !== mergeId).map((p) => (p.id === keepId ? combineCards(keep, merge) : p));
     });
     peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
-  }, []);
+  }, [setPeopleAndSync]);
 
   // Undoes a merge (automatic or manual) — peels the most recently
   // merged-in file back into its own separate card, re-deriving both
@@ -391,7 +543,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // birth-date auto-merge (canAutoMerge) safe to run with no
   // confirmation click: a wrong automatic merge is never unrecoverable.
   const splitPerson = useCallback((id) => {
-    setPeople((prev) => {
+    setPeopleAndSync((prev) => {
       const person = prev.find((p) => p.id === id);
       if (!person || person.rawResults.length < 2) return prev;
       const lastIndex = person.rawResults.length - 1;
@@ -422,13 +574,12 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         warnings: remainingMerged.warnings,
         rawText: remainingMerged.rawText,
         ocrMode: remainingMerged.ocrMode,
-        mergeNote: null,
       };
 
       return [...prev.filter((p) => p.id !== id), remainingCard, peeledCard];
     });
     peopleCountRef.current += 1;
-  }, []);
+  }, [setPeopleAndSync]);
 
   // Sequential, rate-limit-paced worker, one file/card at a time —
   // re-entrant-safe: if it's already running when more files get added,
@@ -452,7 +603,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       try {
         const result = await runWithRetry(() => uploadFileViaXHR(`${API_BASE}/api/recognize`, item.file, authHeader));
         let autoMerged = false;
-        setPeople((prev) => {
+        setPeopleAndSync((prev) => {
           const afterRecognize = prev.map((p) => (p.id === item.id ? applyRecognizedResult(p, result) : p));
           const justRecognized = afterRecognize.find((p) => p.id === item.id);
           // A passport and its own visa sticker land as separate cards
@@ -467,12 +618,9 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           );
           if (!match) return afterRecognize;
           autoMerged = true;
-          const mergeNote = docNumberCrossMatches(match, justRecognized)
-            ? "Sloučeno: datum narození, číslo dokladu potvrzeno"
-            : "Sloučeno: datum narození";
           return afterRecognize
             .filter((p) => p.id !== justRecognized.id)
-            .map((p) => (p.id === match.id ? combineCards(match, justRecognized, mergeNote) : p));
+            .map((p) => (p.id === match.id ? combineCards(match, justRecognized) : p));
         });
         if (autoMerged) peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
       } catch (e) {
@@ -490,7 +638,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     isRecognizingRef.current = false;
     setRecognizeActive(false);
     setRecognizeStats({ total: 0, done: 0 });
-  }, [authHeader, onAuthExpired, updatePerson]);
+  }, [authHeader, onAuthExpired, updatePerson, setPeopleAndSync]);
 
   const addFiles = useCallback((fileList) => {
     const incoming = Array.from(fileList || []).filter(Boolean);
@@ -516,14 +664,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
     const newCards = accepted.map(makePersonCard);
     peopleCountRef.current += newCards.length;
-    setPeople((prev) => [...prev, ...newCards]);
+    setPeopleAndSync((prev) => [...prev, ...newCards]);
     recognizeQueueRef.current.push(...newCards.map((c) => ({ id: c.id, file: c.files[0] })));
     setRecognizeStats((s) => ({
       total: (isRecognizingRef.current ? s.total : 0) + newCards.length,
       done: isRecognizingRef.current ? s.done : 0,
     }));
     runRecognizeQueue();
-  }, [runRecognizeQueue]);
+  }, [runRecognizeQueue, setPeopleAndSync]);
 
   // ---------------------------------------------------------------- shared fields
   const relevantFields = useMemo(
@@ -573,10 +721,34 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // ---------------------------------------------------------------- download
   // This is now the ONLY download path in batch mode — no more per-card
   // buttons (see PersonCard).
+  // Reads `people` (the state variable, captured fresh via the
+  // dependency array below) rather than peopleRef.current — real
+  // testing found the ref-based read intermittently missing whichever
+  // card's generation had *just* finished, even after making every
+  // setPeople call assign the ref synchronously inside its own updater.
+  // That "fix" didn't actually close the gap: a functional updater
+  // passed to setState only runs when React gets around to processing
+  // the queued update, which is not guaranteed to happen before the
+  // surrounding synchronous code (handleGenerateAll's own
+  // setGenerateActive(false), re-enabling this very button) continues —
+  // so the ref could still be one card behind. The state variable itself
+  // doesn't have that gap: React only lets a component's rendered
+  // output (including this button and whatever closure its onClick
+  // captured) reach the screen — and therefore reach a click — once a
+  // commit has actually applied, at which point `people` in that
+  // closure is guaranteed consistent with what's on screen.
   const handleDownloadAllDocx = useCallback(async () => {
-    const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
-    await zipAndDownload(apiFetch, targets, "docxToken", "docx", "Smlouvy", setBatchError);
-  }, [apiFetch]);
+    if (isBulkDownloadingRef.current) return;
+    isBulkDownloadingRef.current = true;
+    setBulkDownloadKind("docx");
+    try {
+      const targets = people.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
+      await zipAndDownload(apiFetch, targets, "docxToken", "docx", "Smlouvy", setBatchError);
+    } finally {
+      isBulkDownloadingRef.current = false;
+      setBulkDownloadKind(null);
+    }
+  }, [apiFetch, people]);
 
   // Real-world testing confirmed the actual cause via [BULK-PDF-DEBUG]
   // logs: real Chrome's popup blocker allowed only the first of the
@@ -589,9 +761,17 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // gives up "view immediately in the PDF viewer" for "guaranteed to
   // actually get all of them" — the one thing that has to be reliable.
   const handleDownloadAllPdf = useCallback(async () => {
-    const targets = peopleRef.current.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
-    await zipAndDownload(apiFetch, targets, "pdfToken", "pdf", "PDF", setBatchError);
-  }, [apiFetch]);
+    if (isBulkDownloadingRef.current) return;
+    isBulkDownloadingRef.current = true;
+    setBulkDownloadKind("pdf");
+    try {
+      const targets = people.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
+      await zipAndDownload(apiFetch, targets, "pdfToken", "pdf", "PDF", setBatchError);
+    } finally {
+      isBulkDownloadingRef.current = false;
+      setBulkDownloadKind(null);
+    }
+  }, [apiFetch, people]);
 
   // ---------------------------------------------------------------- generate all
   const buildFillPayload = useCallback((person) => {
@@ -640,8 +820,15 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     setGenerateActive(true);
     // Snapshot ids up front — a card added mid-run shouldn't be silently
     // swept into a generation pass already in progress; it'll just wait
-    // for the next "Vygenerovat" click.
-    const ids = peopleRef.current.map((p) => p.id);
+    // for the next "Vygenerovat" click. Reads `people` (state, captured
+    // fresh via this callback's dependency array) rather than
+    // peopleRef.current — real testing found the ref-based read
+    // intermittently stale immediately after a split/merge action
+    // (e.g. clicking "Vygenerovat" right after "Rozdělit"), for the same
+    // reason documented on handleDownloadAllDocx above: a functional
+    // setState updater isn't guaranteed to run before this code
+    // continues, no matter where the ref gets assigned inside it.
+    const ids = people.map((p) => p.id);
     setGenerateStats({ total: ids.length, done: 0 });
     for (const id of ids) {
       // The whole per-iteration body is wrapped in try/catch (not just
@@ -721,7 +908,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     }
     isGeneratingRef.current = false;
     setGenerateActive(false);
-  }, [templateId, people.length, apiFetch, buildFillPayload, updatePerson, onAuthExpired]);
+  }, [templateId, people, apiFetch, buildFillPayload, updatePerson, onAuthExpired]);
 
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
@@ -949,18 +1136,22 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                 <button
                   type="button"
                   onClick={handleDownloadAllDocx}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110"
+                  disabled={bulkDownloadKind !== null}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <Download size={13} /> Stáhnout všechny ({generatedDocxCount}) jako ZIP (Word)
+                  {bulkDownloadKind === "docx" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                  {bulkDownloadKind === "docx" ? "Balím do ZIP…" : `Stáhnout všechny (${generatedDocxCount}) jako ZIP (Word)`}
                 </button>
               )}
               {generatedPdfCount > 0 && (
                 <button
                   type="button"
                   onClick={handleDownloadAllPdf}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 py-2 text-[12.5px] font-medium text-slate-700 hover:bg-slate-50"
+                  disabled={bulkDownloadKind !== null}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 py-2 text-[12.5px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <Printer size={13} /> Stáhnout všechny ({generatedPdfCount}) jako ZIP (PDF)
+                  {bulkDownloadKind === "pdf" ? <Loader2 size={13} className="animate-spin" /> : <Printer size={13} />}
+                  {bulkDownloadKind === "pdf" ? "Balím do ZIP…" : `Stáhnout všechny (${generatedPdfCount}) jako ZIP (PDF)`}
                 </button>
               )}
             </div>
@@ -970,10 +1161,31 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
       {lightboxUrl && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
-          onClick={(e) => { if (e.target === e.currentTarget) setLightboxUrl(null); }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 overflow-hidden"
+          onClick={(e) => {
+            // Only the backdrop itself closes it — a click that bubbled
+            // up from the image (e.g. the end of a drag, or a plain
+            // click now that the image is interactive) shouldn't.
+            if (e.target === e.currentTarget) setLightboxUrl(null);
+          }}
         >
-          <img src={lightboxUrl} alt="Náhled dokumentu" className="max-h-full max-w-full rounded-xl shadow-2xl object-contain" />
+          <img
+            ref={lightboxImgRef}
+            src={lightboxUrl}
+            alt="Náhled dokumentu"
+            draggable={false}
+            onMouseDown={handleLightboxMouseDown}
+            style={{
+              transform: `translate(${lightboxTransform.pan.x}px, ${lightboxTransform.pan.y}px) scale(${lightboxTransform.zoom})`,
+              cursor: lightboxTransform.zoom > 1 ? (isPanningLightbox ? "grabbing" : "grab") : "zoom-in",
+            }}
+            className="max-h-full max-w-full rounded-xl shadow-2xl object-contain select-none"
+          />
+          {lightboxTransform.zoom > 1 && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-[12px] text-white pointer-events-none">
+              {Math.round(lightboxTransform.zoom * 100)}%
+            </div>
+          )}
           <button
             onClick={() => setLightboxUrl(null)}
             className="absolute top-5 right-5 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"

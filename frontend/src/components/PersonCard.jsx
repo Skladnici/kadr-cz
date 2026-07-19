@@ -170,7 +170,6 @@ export default function PersonCard({
               )}
             </div>
             {mergeLabel && <div className="text-[10.5px] text-slate-400 mt-0.5">{mergeLabel}</div>}
-            {person.mergeNote && <div className="text-[10.5px] text-amber-600 mt-0.5">{person.mergeNote}</div>}
           </div>
           <ChevronDown
             size={14}
