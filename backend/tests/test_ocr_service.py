@@ -448,3 +448,40 @@ def test_find_visa_info_still_uses_real_mrz_series_line_as_fallback():
     )
     visa = _find_visa_info(text)
     assert visa["visa_number"] == "CZE1234567"
+
+
+def test_find_visa_info_real_ocr_text_david_hambaryan():
+    # The exact raw OCR text for this case (captured server-side via
+    # temporary debug logging, after an earlier hand-copied version into
+    # chat had lost its line breaks and couldn't reproduce anything).
+    # Confirmed the pre-fix code produced "ZUM901860119" on this exact
+    # text (matching the originally reported bug almost exactly); this
+    # asserts the post-fix clean result. The printed visa number
+    # (901860119, 9 digits) is legitimately one digit shorter than the
+    # MRZ-encoded one (9018601197, 10 digits) -- a real printed-vs-MRZ
+    # discrepancy on the document itself, not a parsing bug.
+    text = (
+        "DOE OBSERVATIONS\n"
+        "VIZUM/VISA\n"
+        "CESKO/TCHEQUIE/CZECHIA CZE\n"
+        "901860119\n"
+        "102843\n"
+        "20-04-26\n"
+        "16-10-26\n"
+        "D\n"
+        "LAX0657051\n"
+        "JEREVAN\n"
+        "601\n"
+        ":10-04-26\n"
+        "HAMBARYAN DAVIT\n"
+        "YERE202602160032\n"
+        "D/VR/27\n"
+        "12-02-17\n"
+        "41-2U VISA\n"
+        "VDCZEHAMBARYAN<<DAVIT<S<S<<\n"
+        "<<<<\n"
+        "9018601197ARM7702129M2610162T1<<0420"
+    )
+    visa = _find_visa_info(text)
+    assert visa["visa_number"] == "CZE901860119"
+    assert visa["birth_date"] == "12.02.1977"
