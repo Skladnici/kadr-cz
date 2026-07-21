@@ -16,6 +16,7 @@ import { mergeRecognizedResults } from "./utils/recognizeMerge";
 import { isValidIco, isValidDic } from "./utils/validation";
 import { calculateAge } from "./utils/age";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR, downloadGeneratedFile } from "./utils/api";
+import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "./utils/zipDownload";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
 // hang indefinitely for certain files (observed with photos forwarded
@@ -59,6 +60,7 @@ export default function SimpleDocFiller() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [downloadError, setDownloadError] = useState(null);
+  const [zipDownloading, setZipDownloading] = useState(false);
   // Bumped after each successful generation to tell StatsWidget to
   // re-fetch /api/stats — a plain counter prop rather than some shared
   // event bus, since this is the only place that ever needs to trigger
@@ -367,6 +369,32 @@ export default function SimpleDocFiller() {
   const handleDownload = async (token, opts = {}) => {
     setDownloadError(null);
     await downloadGeneratedFile(apiFetch, token, opts, setDownloadError);
+  };
+
+  // DPP/DPČ/HPP's contract + onboarding packet (GDPR/health declaration/
+  // tax office form) as one zip, same folder-per-person shape batch mode
+  // already zips its own downloads into (see utils/zipDownload.js) — one
+  // browser download action instead of up to four, and an identical
+  // structure whether it came from single or batch mode.
+  const handleDownloadZip = async () => {
+    if (!result) return;
+    setDownloadError(null);
+    setZipDownloading(true);
+    try {
+      const entry = {
+        folderName: nameFolderPart(fields),
+        tokens: {
+          docxToken: result.docx_token,
+          pdfToken: result.pdf_token,
+          gdprDocxToken: result.gdpr_docx_token,
+          zdravotniDocxToken: result.zdravotni_docx_token,
+          poplatnikPdfToken: result.poplatnik_pdf_token,
+        },
+      };
+      await zipFolderedDownload(apiFetch, [entry], BUNDLE_FILE_SPECS, () => `Dokumenty_${nameFolderPart(fields)}.zip`, setDownloadError);
+    } finally {
+      setZipDownloading(false);
+    }
   };
 
   // Stable identities so AddressBuilder (wrapped in React.memo) doesn't
@@ -1015,71 +1043,64 @@ export default function SimpleDocFiller() {
                   </div>
                 )}
 
-                <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => handleDownload(result.docx_token, { filename: result.docx_token })}
-                    style={PRIMARY_GRADIENT}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110"
-                  >
-                    <Download size={15} /> Stáhnout Word
-                  </button>
-                  {result.pdf_token && (
+                {/* A bundle template (DPP/DPČ/HPP) generates the contract
+                    plus GDPR/health declaration/tax office form — see
+                    backend's /api/fill, which only includes those three
+                    tokens for those template ids in the first place.
+                    Bundled documents come down as one zip (same folder-
+                    per-person shape batch mode's own bulk download uses
+                    — see utils/zipDownload.js), rather than one button
+                    per file: real-world testing on batch mode found
+                    Chrome throttles a rapid sequence of separate
+                    downloads after the first one, and the same applies
+                    here now that a bundle means up to five files at
+                    once. A non-bundle blank (ukončení, výplatní páska,
+                    ...) still gets the plain single-file buttons below —
+                    there's nothing to gain from zipping one file. */}
+                {(result.gdpr_docx_token || result.zdravotni_docx_token || result.poplatnik_pdf_token) ? (
+                  <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <button
                       type="button"
-                      onClick={() => handleDownload(result.pdf_token, { openInNewTab: true })}
+                      onClick={handleDownloadZip}
+                      disabled={zipDownloading}
+                      style={PRIMARY_GRADIENT}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {zipDownloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                      {zipDownloading ? "Balím do ZIP…" : "Stáhnout jako ZIP"}
+                    </button>
+                    <button
+                      onClick={reset}
                       className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                     >
-                      <Printer size={15} /> Otevřít / Tisk (PDF)
+                      <RotateCcw size={15} /> Nový dokument
                     </button>
-                  )}
-                  <button
-                    onClick={reset}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                  >
-                    <RotateCcw size={15} /> Nový dokument
-                  </button>
-                </div>
-
-                {/* DPP/DPČ/HPP's standard onboarding packet — see
-                    backend's /api/fill, which only includes these three
-                    tokens for those template ids in the first place, so
-                    this section simply doesn't render for other blanks
-                    (ukončení, výplatní páska, ...) or if a given bundle
-                    document happened to fail to generate (best-effort,
-                    see _fill_bundle_docx/fill_poplatnik_pdf). */}
-                {(result.gdpr_docx_token || result.zdravotni_docx_token || result.poplatnik_pdf_token) && (
-                  <div className="mt-6 border-t border-slate-100 pt-6">
-                    <p className="text-[12px] text-slate-500 mb-3">Společně s hlavní smlouvou se vygenerovaly i tyto dokumenty:</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      {result.gdpr_docx_token && (
-                        <button
-                          type="button"
-                          onClick={() => handleDownload(result.gdpr_docx_token, { filename: result.gdpr_docx_token })}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                        >
-                          <Download size={14} /> Souhlas GDPR
-                        </button>
-                      )}
-                      {result.zdravotni_docx_token && (
-                        <button
-                          type="button"
-                          onClick={() => handleDownload(result.zdravotni_docx_token, { filename: result.zdravotni_docx_token })}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                        >
-                          <Download size={14} /> Prohlášení o zdravotní způsobilosti
-                        </button>
-                      )}
-                      {result.poplatnik_pdf_token && (
-                        <button
-                          type="button"
-                          onClick={() => handleDownload(result.poplatnik_pdf_token, { openInNewTab: true })}
-                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                        >
-                          <Printer size={14} /> Prohlášení poplatníka (PDF)
-                        </button>
-                      )}
-                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(result.docx_token, { filename: result.docx_token })}
+                      style={PRIMARY_GRADIENT}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110"
+                    >
+                      <Download size={15} /> Stáhnout Word
+                    </button>
+                    {result.pdf_token && (
+                      <button
+                        type="button"
+                        onClick={() => handleDownload(result.pdf_token, { openInNewTab: true })}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                      >
+                        <Printer size={15} /> Otevřít / Tisk (PDF)
+                      </button>
+                    )}
+                    <button
+                      onClick={reset}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 md:px-6 md:py-4 text-[13px] md:text-[14.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                    >
+                      <RotateCcw size={15} /> Nový dokument
+                    </button>
                   </div>
                 )}
               </div>

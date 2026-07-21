@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import JSZip from "jszip";
 import { AlertTriangle, Download, FileText, Loader2, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
@@ -10,6 +9,7 @@ import { composeCzAddress, composeOriginAddress } from "../utils/address";
 import { mergeRecognizedResults } from "../utils/recognizeMerge";
 import { API_BASE, describeRequestError, uploadFileViaXHR, apiFetchWithTimeout, downloadGeneratedFile } from "../utils/api";
 import { paceRateLimit, runWithRetry, estimateSecondsRemaining } from "../utils/rateLimitQueue";
+import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "../utils/zipDownload";
 
 // Same accent used by SimpleDocFiller/LoginForm's own primary buttons —
 // redefined locally rather than imported, matching how LoginForm.jsx
@@ -23,163 +23,6 @@ const EMPTY_PERSON_FIELDS = {
   visa_number: "", visa_validity: "", residence_type: "",
 };
 const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative: "" };
-
-// The server's own generated filename (e.g.
-// "dpp_template_NOVAK_JAN_<uuid>.docx") is deliberately opaque — the
-// UUID in it is the actual bearer secret protecting /api/download,
-// which has no auth of its own (see blank_service.py's fill_blank).
-// What the person actually sees saved to their Downloads folder should
-// be a clean, human name instead — this only changes the local <a
-// download> filename, never the URL/token actually fetched, so it
-// carries no security implication.
-function sanitizeFilenamePart(s) {
-  return (s || "")
-    .normalize("NFD").replace(/[̀-ͯ]/g, "") // strip diacritics: "Novák" -> "Novak"
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-// Mirrors backend/app/main.py's own _DOCUMENT_TYPE_LABELS (used there
-// for stats logging) — kept as a separate copy rather than fetched from
-// the server, since it's tiny, static, and this is purely a client-side
-// filename cosmetic with no need to round-trip a request for it.
-const DOCUMENT_TYPE_LABELS = {
-  dpp_template: "DPP",
-  dpc_template: "DPC",
-  hpp_template: "HPP",
-  ukonceni_pracovniho_pomeru: "Ukonceni_pomeru",
-  vyplatni_paska: "Vyplatni_paska",
-};
-
-function personNamePart(person) {
-  const first = sanitizeFilenamePart(person.fields.first_name);
-  const last = sanitizeFilenamePart(person.fields.last_name);
-  return [first, last].filter(Boolean).join("_") || "dokument";
-}
-
-function buildContractFilename(person, ext) {
-  // person.generation.templateId is the actual contract type used for
-  // THIS generation (captured at fill time — see handleGenerateAll) —
-  // not necessarily whatever the shared "Typ smlouvy" happens to be by
-  // download time, which could already be set up for the next batch.
-  const templateId = person.generation?.templateId;
-  const docType = templateId ? sanitizeFilenamePart(DOCUMENT_TYPE_LABELS[templateId] || templateId) : "";
-  return [`Smlouva`, docType, personNamePart(person)].filter(Boolean).join("_") + `.${ext}`;
-}
-
-// /api/download isn't rate-limited (no @limiter.limit in main.py, unlike
-// /api/recognize and /api/fill), so runWithRetry's narrow "only retry on
-// a 429" wouldn't actually retry anything here — this is a separate,
-// general-purpose retry instead: worth one or two more tries on a
-// network hiccup/timeout or a transient server error, but not on a 401
-// (auth expired — retrying won't help) or a 404 (the token's file was
-// already served and deleted server-side — retrying can only ever fail
-// the same way).
-async function fetchDownloadWithRetry(apiFetch, token, maxAttempts = 3) {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await apiFetchWithTimeout(apiFetch, `/api/download/${token}`, {}, 30000);
-      if (res.ok || res.status === 401 || res.status === 404 || attempt === maxAttempts) {
-        return res;
-      }
-    } catch (e) {
-      if (attempt === maxAttempts) throw e;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
-// Shared by every bulk-download button — packaging every generated file
-// into ONE zip instead of N separate downloads/tab opens is what makes
-// either reliable in a real (non-automated) browser: real-world testing
-// confirmed Chrome throttles both a rapid sequence of automatic
-// downloads and a rapid sequence of window.open() calls after the first
-// one, requiring the person to notice and approve a permission by hand
-// — a single zip is one browser action, so that throttling never gets a
-// chance to trigger either way.
-//
-// One folder per person (e.g. "Jan_Novak/") rather than a flat pile —
-// requested once the 4-document onboarding packet made a flat zip
-// confusing to sort through by hand for more than one or two people.
-// `fileSpecs` is the list of {tokenKey, filename} pairs to look for on
-// each person's `generation` — which tokens exist depends on the
-// template type (see backend's _BUNDLE_TEMPLATE_IDS): a person with only
-// a docxToken still gets their own folder, just with one file in it.
-//
-// The reported "zip intermittently missing one file out of three" bug
-// (from before the folder-per-person rework) turned out to live
-// entirely in the CALLERS, not here — every fetch in this function was
-// already succeeding (confirmed via logging); the `targets` array handed
-// in was just occasionally one card short, because
-// handleDownloadAllBundle (and separately handleGenerateAll's own
-// snapshot) were reading peopleRef.current, which can lag behind the
-// actual latest state (see the comment above handleDownloadAllBundle
-// for why). Fixed by having both read the `people` state variable
-// directly instead. fetchDownloadWithRetry is
-// kept regardless, as a real (if smaller) improvement — /api/download
-// has no rate limit but a plain single fetch had no resilience at all
-// against an ordinary transient network hiccup.
-//
-// /api/download tokens are single-use (the file is deleted server-side
-// once served), which is why this must never run twice concurrently for
-// the same batch — two overlapping calls would race each other for the
-// same tokens, and whichever request loses arrives to find its file
-// already gone. See handleDownloadAllBundle's isBulkDownloadingRef
-// guard for how double-clicks are prevented from causing that race.
-async function zipPersonFoldersAndDownload(apiFetch, targets, fileSpecs, zipNamePrefix, setBatchError) {
-  const zip = new JSZip();
-  const usedFolderNames = new Set();
-  let addedPeopleCount = 0;
-  let anyDownloadFailed = false;
-  for (const p of targets) {
-    // Two people can share a display name (or both lack one) — dedupe so
-    // one never silently overwrites another's folder in the zip.
-    let folderName = personNamePart(p);
-    let suffix = 2;
-    while (usedFolderNames.has(folderName)) {
-      folderName = `${personNamePart(p)}_${suffix}`;
-      suffix += 1;
-    }
-
-    let addedAnyFileForThisPerson = false;
-    for (const { tokenKey, filename } of fileSpecs) {
-      const token = p.generation?.[tokenKey];
-      if (!token) continue; // this person's card has no such document (bundle doc failed, or not a bundle template at all)
-      try {
-        const res = await fetchDownloadWithRetry(apiFetch, token);
-        if (!res.ok) {
-          if (res.status !== 401) {
-            anyDownloadFailed = true;
-          }
-          continue;
-        }
-        const blob = await res.blob();
-        zip.file(`${folderName}/${filename}`, blob);
-        addedAnyFileForThisPerson = true;
-      } catch {
-        anyDownloadFailed = true;
-      }
-    }
-    if (addedAnyFileForThisPerson) {
-      usedFolderNames.add(folderName);
-      addedPeopleCount += 1;
-    }
-  }
-  if (anyDownloadFailed) {
-    setBatchError("Některé soubory se nepodařilo stáhnout — zkontrolujte připojení a zkuste to znovu.");
-  }
-  if (addedPeopleCount === 0) return;
-  const zipBlob = await zip.generateAsync({ type: "blob" });
-  const zipUrl = URL.createObjectURL(zipBlob);
-  const a = document.createElement("a");
-  a.href = zipUrl;
-  a.download = `${zipNamePrefix}_${addedPeopleCount}_osob.zip`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(zipUrl), 30000);
-}
 
 // Every dropped/selected file becomes its own card immediately (auto-
 // recognized) — the simple, predictable default. A passport + visa for
@@ -735,22 +578,17 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // multi-download and multi-window.open() sequences after the first
   // one — the same "[BULK-PDF-DEBUG]" finding the old separate PDF zip
   // was built around) is why this stays one zip, one browser action,
-  // rather than one download per document.
-  const BUNDLE_FILE_SPECS = [
-    { tokenKey: "docxToken", filename: "smlouva.docx" },
-    { tokenKey: "pdfToken", filename: "smlouva.pdf" },
-    { tokenKey: "gdprDocxToken", filename: "souhlas_gdpr.docx" },
-    { tokenKey: "zdravotniDocxToken", filename: "prohlaseni_zdravotni.docx" },
-    { tokenKey: "poplatnikPdfToken", filename: "prohlaseni_poplatnika.pdf" },
-  ];
-
+  // rather than one download per document. BUNDLE_FILE_SPECS and the zip-
+  // building logic itself live in utils/zipDownload.js, shared with
+  // SimpleDocFiller's single-mode download button.
   const handleDownloadAllBundle = useCallback(async () => {
     if (isBulkDownloadingRef.current) return;
     isBulkDownloadingRef.current = true;
     setBulkDownloadBuilding(true);
     try {
       const targets = people.filter((p) => p.generation?.status === "done");
-      await zipPersonFoldersAndDownload(apiFetch, targets, BUNDLE_FILE_SPECS, "Dokumenty", setBatchError);
+      const entries = targets.map((p) => ({ folderName: nameFolderPart(p.fields), tokens: p.generation }));
+      await zipFolderedDownload(apiFetch, entries, BUNDLE_FILE_SPECS, (n) => `Dokumenty_${n}_osob.zip`, setBatchError);
     } finally {
       isBulkDownloadingRef.current = false;
       setBulkDownloadBuilding(false);
@@ -835,14 +673,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         await paceRateLimit(fillStartTimesRef);
         const person = peopleRef.current.find((p) => p.id === id);
         if (person) {
-          // Same effective-template logic as buildFillPayload's own —
-          // captured here too so the generated file's contract type is
-          // known at download time (see buildContractFilename) without
-          // having to re-derive it later from whatever the shared
-          // templateId happens to be by then (which could have changed
-          // for the NEXT generation pass by the time this one is
-          // downloaded).
-          const effectiveTemplateId = person.templateOverrideEnabled ? person.templateOverride : templateId;
           // Card still exists — actually generate it. (If it was removed
           // mid-run, there's nothing to submit; the stats update below
           // still fires either way so the progress bar never gets stuck
@@ -893,7 +723,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                 gdprDocxToken: data.gdpr_docx_token ?? null,
                 zdravotniDocxToken: data.zdravotni_docx_token ?? null,
                 poplatnikPdfToken: data.poplatnik_pdf_token ?? null,
-                error: null, templateId: effectiveTemplateId,
+                error: null,
               },
             }));
           } catch (e) {
