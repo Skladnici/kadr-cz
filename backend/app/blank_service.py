@@ -19,6 +19,7 @@ the user's own real-world templates.
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+import logging
 import re
 import time
 import uuid
@@ -27,6 +28,8 @@ from docx import Document as DocxDocument
 from docxtpl import DocxTemplate
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Files normally get deleted right after being downloaded (see
 # main.py's /api/download), but a file the user never comes back for
@@ -242,13 +245,20 @@ def _fill_bundle_docx(name: str, fields: dict) -> Optional[Path]:
     with the same fields as the main contract. Returns None (rather than
     raising) if the template file is missing, so a bundle doc issue
     never turns a successful contract generation into a failed request —
-    same reasoning as convert_to_pdf()'s best-effort PDF conversion."""
+    same reasoning as convert_to_pdf()'s best-effort PDF conversion.
+    Both failure paths are logged (at warning/exception level) rather
+    than silently swallowed — a real production report of "only the
+    main contract downloaded, no bundle docs" turned out to have left no
+    trace anywhere to diagnose from, since this used to return None with
+    no logging at all."""
     template_path = BUNDLE_TEMPLATES_DIR / f"{name}.docx"
     if not template_path.exists():
+        logger.warning("bundle template not found on disk: %s", template_path)
         return None
     try:
         return _render_and_save(template_path, fields, name)
     except Exception:
+        logger.exception("failed to render bundle document %r", name)
         return None
 
 

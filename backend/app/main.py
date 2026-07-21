@@ -366,9 +366,15 @@ async def fill(request: Request, payload: FillRequest):
     }
 
     if payload.template_id in _BUNDLE_TEMPLATE_IDS:
-        gdpr_path = _fill_bundle_docx("gdpr_template", fields)
-        zdravotni_path = _fill_bundle_docx("zdravotni_template", fields)
-        poplatnik_path = fill_poplatnik_pdf(fields)
+        # Offloaded the same way as convert_to_pdf() above — three more
+        # synchronous document renders otherwise run back-to-back on this
+        # request's own thread, which (unlike the single-document path
+        # this endpoint used to only ever take) is now enough combined
+        # work to meaningfully hold up the event loop for other requests
+        # in between.
+        gdpr_path = await asyncio.to_thread(_fill_bundle_docx, "gdpr_template", fields)
+        zdravotni_path = await asyncio.to_thread(_fill_bundle_docx, "zdravotni_template", fields)
+        poplatnik_path = await asyncio.to_thread(fill_poplatnik_pdf, fields)
         result["gdpr_docx_token"] = gdpr_path.name if gdpr_path else None
         result["zdravotni_docx_token"] = zdravotni_path.name if zdravotni_path else None
         result["poplatnik_pdf_token"] = poplatnik_path.name if poplatnik_path else None

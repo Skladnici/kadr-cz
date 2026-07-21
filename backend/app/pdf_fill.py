@@ -22,12 +22,15 @@ slightly.
 """
 from pathlib import Path
 from typing import Optional
+import logging
 import uuid
 
 import fitz
 
 from app.config import settings
 from app.blank_service import _s, _fmt_date, _safe_filename_part
+
+logger = logging.getLogger(__name__)
 
 POPLATNIK_SOURCE = Path(__file__).resolve().parent / "templates" / "bundle" / "poplatnik.pdf"
 
@@ -100,8 +103,10 @@ def fill_poplatnik_pdf(fields: dict) -> Optional[Path]:
     """Returns the path to a filled copy of the tax declaration PDF, or
     None if the source form is missing (best-effort, same as
     convert_to_pdf() — a bundle-doc problem must never fail the whole
-    /api/fill request)."""
+    /api/fill request). Both failure paths are logged rather than
+    silently swallowed — see _fill_bundle_docx's docstring for why."""
     if not POPLATNIK_SOURCE.exists():
+        logger.warning("poplatnik source PDF not found on disk: %s", POPLATNIK_SOURCE)
         return None
     try:
         context = _build_overlay_context(fields)
@@ -139,4 +144,5 @@ def fill_poplatnik_pdf(fields: dict) -> Optional[Path]:
         doc.close()
         return out_path
     except Exception:
+        logger.exception("failed to fill poplatnik PDF")
         return None

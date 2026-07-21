@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
-import { AlertTriangle, Download, FileText, Loader2, Printer, Upload, X } from "lucide-react";
+import { AlertTriangle, Download, FileText, Loader2, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
 import {
@@ -52,17 +52,20 @@ const DOCUMENT_TYPE_LABELS = {
   vyplatni_paska: "Vyplatni_paska",
 };
 
-function buildContractFilename(person, ext) {
+function personNamePart(person) {
   const first = sanitizeFilenamePart(person.fields.first_name);
   const last = sanitizeFilenamePart(person.fields.last_name);
-  const namePart = [first, last].filter(Boolean).join("_") || "dokument";
+  return [first, last].filter(Boolean).join("_") || "dokument";
+}
+
+function buildContractFilename(person, ext) {
   // person.generation.templateId is the actual contract type used for
   // THIS generation (captured at fill time — see handleGenerateAll) —
   // not necessarily whatever the shared "Typ smlouvy" happens to be by
   // download time, which could already be set up for the next batch.
   const templateId = person.generation?.templateId;
   const docType = templateId ? sanitizeFilenamePart(DOCUMENT_TYPE_LABELS[templateId] || templateId) : "";
-  return [`Smlouva`, docType, namePart].filter(Boolean).join("_") + `.${ext}`;
+  return [`Smlouva`, docType, personNamePart(person)].filter(Boolean).join("_") + `.${ext}`;
 }
 
 // /api/download isn't rate-limited (no @limiter.limit in main.py, unlike
@@ -87,24 +90,33 @@ async function fetchDownloadWithRetry(apiFetch, token, maxAttempts = 3) {
   }
 }
 
-// Shared by both bulk-download buttons (Word .docx and PDF) — packaging
-// every generated file into ONE zip instead of N separate downloads/tab
-// opens is what makes either reliable in a real (non-automated) browser:
-// real-world testing confirmed Chrome throttles both a rapid sequence of
-// automatic downloads and a rapid sequence of window.open() calls after
-// the first one, requiring the person to notice and approve a
-// permission by hand — a single zip is one browser action, so that
-// throttling never gets a chance to trigger either way.
+// Shared by every bulk-download button — packaging every generated file
+// into ONE zip instead of N separate downloads/tab opens is what makes
+// either reliable in a real (non-automated) browser: real-world testing
+// confirmed Chrome throttles both a rapid sequence of automatic
+// downloads and a rapid sequence of window.open() calls after the first
+// one, requiring the person to notice and approve a permission by hand
+// — a single zip is one browser action, so that throttling never gets a
+// chance to trigger either way.
+//
+// One folder per person (e.g. "Jan_Novak/") rather than a flat pile —
+// requested once the 4-document onboarding packet made a flat zip
+// confusing to sort through by hand for more than one or two people.
+// `fileSpecs` is the list of {tokenKey, filename} pairs to look for on
+// each person's `generation` — which tokens exist depends on the
+// template type (see backend's _BUNDLE_TEMPLATE_IDS): a person with only
+// a docxToken still gets their own folder, just with one file in it.
 //
 // The reported "zip intermittently missing one file out of three" bug
-// turned out to live entirely in the CALLERS, not here — every fetch in
-// this function was already succeeding (confirmed via logging); the
-// `targets` array handed in was just occasionally one card short,
-// because handleDownloadAllDocx/handleDownloadAllPdf (and separately
-// handleGenerateAll's own snapshot) were reading peopleRef.current,
-// which can lag behind the actual latest state (see the comment above
-// handleDownloadAllDocx for why). Fixed by having all three read the
-// `people` state variable directly instead. fetchDownloadWithRetry is
+// (from before the folder-per-person rework) turned out to live
+// entirely in the CALLERS, not here — every fetch in this function was
+// already succeeding (confirmed via logging); the `targets` array handed
+// in was just occasionally one card short, because
+// handleDownloadAllBundle (and separately handleGenerateAll's own
+// snapshot) were reading peopleRef.current, which can lag behind the
+// actual latest state (see the comment above handleDownloadAllBundle
+// for why). Fixed by having both read the `people` state variable
+// directly instead. fetchDownloadWithRetry is
 // kept regardless, as a real (if smaller) improvement — /api/download
 // has no rate limit but a plain single fetch had no resilience at all
 // against an ordinary transient network hiccup.
@@ -113,43 +125,56 @@ async function fetchDownloadWithRetry(apiFetch, token, maxAttempts = 3) {
 // once served), which is why this must never run twice concurrently for
 // the same batch — two overlapping calls would race each other for the
 // same tokens, and whichever request loses arrives to find its file
-// already gone. See handleDownloadAllDocx/handleDownloadAllPdf's
-// isBulkDownloadingRef guard for how double-clicks are prevented from
-// causing that race.
-async function zipAndDownload(apiFetch, targets, tokenKey, ext, zipNamePrefix, setBatchError) {
+// already gone. See handleDownloadAllBundle's isBulkDownloadingRef
+// guard for how double-clicks are prevented from causing that race.
+async function zipPersonFoldersAndDownload(apiFetch, targets, fileSpecs, zipNamePrefix, setBatchError) {
   const zip = new JSZip();
-  const usedNames = new Set();
-  let addedCount = 0;
+  const usedFolderNames = new Set();
+  let addedPeopleCount = 0;
+  let anyDownloadFailed = false;
   for (const p of targets) {
-    try {
-      const res = await fetchDownloadWithRetry(apiFetch, p.generation[tokenKey]);
-      if (!res.ok) {
-        if (res.status !== 401) setBatchError(describeRequestError(res.status, "Stažení se nezdařilo."));
-        continue;
+    // Two people can share a display name (or both lack one) — dedupe so
+    // one never silently overwrites another's folder in the zip.
+    let folderName = personNamePart(p);
+    let suffix = 2;
+    while (usedFolderNames.has(folderName)) {
+      folderName = `${personNamePart(p)}_${suffix}`;
+      suffix += 1;
+    }
+
+    let addedAnyFileForThisPerson = false;
+    for (const { tokenKey, filename } of fileSpecs) {
+      const token = p.generation?.[tokenKey];
+      if (!token) continue; // this person's card has no such document (bundle doc failed, or not a bundle template at all)
+      try {
+        const res = await fetchDownloadWithRetry(apiFetch, token);
+        if (!res.ok) {
+          if (res.status !== 401) {
+            anyDownloadFailed = true;
+          }
+          continue;
+        }
+        const blob = await res.blob();
+        zip.file(`${folderName}/${filename}`, blob);
+        addedAnyFileForThisPerson = true;
+      } catch {
+        anyDownloadFailed = true;
       }
-      const blob = await res.blob();
-      // Two people can share a display name (or both lack one) — dedupe
-      // so one never silently overwrites another inside the zip.
-      const base = buildContractFilename(p, ext).replace(new RegExp(`\\.${ext}$`), "");
-      let name = `${base}.${ext}`;
-      let suffix = 2;
-      while (usedNames.has(name)) {
-        name = `${base}_${suffix}.${ext}`;
-        suffix += 1;
-      }
-      usedNames.add(name);
-      zip.file(name, blob);
-      addedCount += 1;
-    } catch {
-      setBatchError("Stažení se nezdařilo — zkontrolujte připojení a zkuste to znovu.");
+    }
+    if (addedAnyFileForThisPerson) {
+      usedFolderNames.add(folderName);
+      addedPeopleCount += 1;
     }
   }
-  if (addedCount === 0) return;
+  if (anyDownloadFailed) {
+    setBatchError("Některé soubory se nepodařilo stáhnout — zkontrolujte připojení a zkuste to znovu.");
+  }
+  if (addedPeopleCount === 0) return;
   const zipBlob = await zip.generateAsync({ type: "blob" });
   const zipUrl = URL.createObjectURL(zipBlob);
   const a = document.createElement("a");
   a.href = zipUrl;
-  a.download = `${zipNamePrefix}_${addedCount}_osob.zip`;
+  a.download = `${zipNamePrefix}_${addedPeopleCount}_osob.zip`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -196,7 +221,11 @@ function makePersonCard(file) {
     templateOverrideEnabled: false,
     templateOverride: null,
     expanded: false,
-    generation: { status: "idle", docxToken: null, pdfToken: null, error: null },
+    generation: {
+      status: "idle", docxToken: null, pdfToken: null,
+      gdprDocxToken: null, zdravotniDocxToken: null, poplatnikPdfToken: null,
+      error: null,
+    },
   };
 }
 
@@ -311,7 +340,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const [recognizeStats, setRecognizeStats] = useState({ total: 0, done: 0 });
   const [generateActive, setGenerateActive] = useState(false);
   const [generateStats, setGenerateStats] = useState({ total: 0, done: 0 });
-  const [bulkDownloadKind, setBulkDownloadKind] = useState(null); // null | "docx" | "pdf" — which bulk zip (if any) is currently being built
+  const [bulkDownloadBuilding, setBulkDownloadBuilding] = useState(false); // is the one combined-packet zip currently being built
 
   const fileInputRef = useRef(null);
   const peopleRef = useRef(people);
@@ -321,14 +350,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const recognizeStartTimesRef = useRef([]);
   const isGeneratingRef = useRef(false);
   const fillStartTimesRef = useRef([]);
-  // Guards handleDownloadAllDocx/handleDownloadAllPdf against running
-  // twice concurrently (an accidental double-click) — /api/download
-  // tokens are single-use server-side, so two overlapping zip-building
-  // passes would race each other for the same tokens and whichever
-  // request lost would find its file already gone, silently shrinking
-  // the resulting zip by one. A ref (not just the bulkDownloadKind state
-  // above) because the check has to be synchronous at click time, before
-  // React has necessarily re-rendered with the new state yet.
+  // Guards handleDownloadAllBundle against running twice concurrently
+  // (an accidental double-click) — /api/download tokens are single-use
+  // server-side, so two overlapping zip-building passes would race each
+  // other for the same tokens and whichever request lost would find its
+  // file already gone, silently shrinking the resulting zip by one. A
+  // ref (not just the bulkDownloadBuilding state above) because the
+  // check has to be synchronous at click time, before React has
+  // necessarily re-rendered with the new state yet.
   const isBulkDownloadingRef = useRef(false);
 
   useEffect(() => { peopleRef.current = people; }, [people]);
@@ -696,39 +725,35 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   // captured) reach the screen — and therefore reach a click — once a
   // commit has actually applied, at which point `people` in that
   // closure is guaranteed consistent with what's on screen.
-  const handleDownloadAllDocx = useCallback(async () => {
-    if (isBulkDownloadingRef.current) return;
-    isBulkDownloadingRef.current = true;
-    setBulkDownloadKind("docx");
-    try {
-      const targets = people.filter((p) => p.generation?.status === "done" && p.generation.docxToken);
-      await zipAndDownload(apiFetch, targets, "docxToken", "docx", "Smlouvy", setBatchError);
-    } finally {
-      isBulkDownloadingRef.current = false;
-      setBulkDownloadKind(null);
-    }
-  }, [apiFetch, people]);
+  // One combined packet per person rather than separate Word/PDF zips —
+  // each person's folder gets whatever of their documents actually
+  // exist (docxToken/pdfToken always; the three bundle tokens only for
+  // DPP/DPČ/HPP — see backend's _BUNDLE_TEMPLATE_IDS), so a non-bundle
+  // template still works exactly the same as before, just with the
+  // single file placed inside that person's own folder instead of at
+  // the zip's top level. Real-world testing (Chrome throttling both
+  // multi-download and multi-window.open() sequences after the first
+  // one — the same "[BULK-PDF-DEBUG]" finding the old separate PDF zip
+  // was built around) is why this stays one zip, one browser action,
+  // rather than one download per document.
+  const BUNDLE_FILE_SPECS = [
+    { tokenKey: "docxToken", filename: "smlouva.docx" },
+    { tokenKey: "pdfToken", filename: "smlouva.pdf" },
+    { tokenKey: "gdprDocxToken", filename: "souhlas_gdpr.docx" },
+    { tokenKey: "zdravotniDocxToken", filename: "prohlaseni_zdravotni.docx" },
+    { tokenKey: "poplatnikPdfToken", filename: "prohlaseni_poplatnika.pdf" },
+  ];
 
-  // Real-world testing confirmed the actual cause via [BULK-PDF-DEBUG]
-  // logs: real Chrome's popup blocker allowed only the first of the
-  // synchronously-opened tabs through and silently blocked the rest
-  // (window.open() returning null for #2/#3) — a hard browser policy on
-  // "how many popups can one click spawn," not something fixable by
-  // timing tricks. Same fix as bulk Word, for the same underlying reason
-  // (one browser action instead of several it can throttle): zip every
-  // generated PDF into a single archive instead of opening N tabs. This
-  // gives up "view immediately in the PDF viewer" for "guaranteed to
-  // actually get all of them" — the one thing that has to be reliable.
-  const handleDownloadAllPdf = useCallback(async () => {
+  const handleDownloadAllBundle = useCallback(async () => {
     if (isBulkDownloadingRef.current) return;
     isBulkDownloadingRef.current = true;
-    setBulkDownloadKind("pdf");
+    setBulkDownloadBuilding(true);
     try {
-      const targets = people.filter((p) => p.generation?.status === "done" && p.generation.pdfToken);
-      await zipAndDownload(apiFetch, targets, "pdfToken", "pdf", "PDF", setBatchError);
+      const targets = people.filter((p) => p.generation?.status === "done");
+      await zipPersonFoldersAndDownload(apiFetch, targets, BUNDLE_FILE_SPECS, "Dokumenty", setBatchError);
     } finally {
       isBulkDownloadingRef.current = false;
-      setBulkDownloadKind(null);
+      setBulkDownloadBuilding(false);
     }
   }, [apiFetch, people]);
 
@@ -760,6 +785,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       workplace: sharedFields.workplace || "",
       salary: sharedFields.salary || "",
       hours_per_week: sharedFields.hours_per_week || "",
+      // HPP-only (see FIELD_DEFS) — already rendered in this shared-
+      // fields form via the same generic FIELD_DEFS loop SimpleDocFiller
+      // uses, just wasn't being read out into the actual payload yet.
+      probation_period: sharedFields.probation_period || "",
       bank_account: sharedFields.bank_account || "",
       signing_place: sharedFields.signing_place || "",
       termination_reason: sharedFields.termination_reason || "",
@@ -784,7 +813,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     // peopleRef.current — real testing found the ref-based read
     // intermittently stale immediately after a split/merge action
     // (e.g. clicking "Vygenerovat" right after "Rozdělit"), for the same
-    // reason documented on handleDownloadAllDocx above: a functional
+    // reason documented on handleDownloadAllBundle above: a functional
     // setState updater isn't guaranteed to run before this code
     // continues, no matter where the ref gets assigned inside it.
     const ids = people.map((p) => p.id);
@@ -795,7 +824,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       // not only the network call — can never silently end the loop
       // early; it always turns into a visible per-card error instead.
       try {
-        updatePerson(id, (p) => ({ ...p, generation: { status: "generating", docxToken: null, pdfToken: null, error: null } }));
+        updatePerson(id, (p) => ({
+          ...p,
+          generation: {
+            status: "generating", docxToken: null, pdfToken: null,
+            gdprDocxToken: null, zdravotniDocxToken: null, poplatnikPdfToken: null,
+            error: null,
+          },
+        }));
         await paceRateLimit(fillStartTimesRef);
         const person = peopleRef.current.find((p) => p.id === id);
         if (person) {
@@ -844,7 +880,21 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
             // them.
             updatePerson(id, (p) => ({
               ...p,
-              generation: { status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token, error: null, templateId: effectiveTemplateId },
+              generation: {
+                status: "done", docxToken: data.docx_token, pdfToken: data.pdf_token,
+                // A real token only for DPP/DPČ/HPP (see backend's
+                // /api/fill and _BUNDLE_TEMPLATE_IDS) — data.*_token is
+                // absent entirely for any other template id, and `??
+                // null` folds that in with "this one bundle doc's own
+                // best-effort generation failed" (see
+                // _fill_bundle_docx/fill_poplatnik_pdf) — the zip-
+                // building code below only ever needs "is there a token
+                // to include," not which of those two this was.
+                gdprDocxToken: data.gdpr_docx_token ?? null,
+                zdravotniDocxToken: data.zdravotni_docx_token ?? null,
+                poplatnikPdfToken: data.poplatnik_pdf_token ?? null,
+                error: null, templateId: effectiveTemplateId,
+              },
             }));
           } catch (e) {
             if (e.status === 401) {
@@ -855,7 +905,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                 : describeRequestError(e.status, "Generování se nezdařilo.");
               updatePerson(id, (p) => ({
                 ...p,
-                generation: { status: "error", docxToken: null, pdfToken: null, error: message },
+                generation: {
+                  status: "error", docxToken: null, pdfToken: null,
+                  gdprDocxToken: null, zdravotniDocxToken: null, poplatnikPdfToken: null,
+                  error: message,
+                },
               }));
             }
           }
@@ -863,7 +917,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       } catch (e) {
         updatePerson(id, (p) => ({
           ...p,
-          generation: { status: "error", docxToken: null, pdfToken: null, error: "Neočekávaná chyba při generování — zkuste to prosím znovu." },
+          generation: {
+            status: "error", docxToken: null, pdfToken: null,
+            gdprDocxToken: null, zdravotniDocxToken: null, poplatnikPdfToken: null,
+            error: "Neočekávaná chyba při generování — zkuste to prosím znovu.",
+          },
         }));
       }
       setGenerateStats((s) => ({ ...s, done: s.done + 1 }));
@@ -874,8 +932,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
 
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
-  const generatedDocxCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.docxToken).length, [people]);
-  const generatedPdfCount = useMemo(() => people.filter((p) => p.generation?.status === "done" && p.generation.pdfToken).length, [people]);
+  const generatedCount = useMemo(() => people.filter((p) => p.generation?.status === "done").length, [people]);
 
   return (
     <div className="p-7 md:p-9">
@@ -1084,31 +1141,23 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           {/* Bulk download — once at least one contract is generated,
               this is the ONLY way to get it in batch mode (see
               PersonCard — no more per-card buttons), one click across
-              the whole batch instead of opening every card. */}
-          {(generatedDocxCount > 0 || generatedPdfCount > 0) && (
+              the whole batch instead of opening every card. One zip,
+              one folder per person, with whatever documents that
+              person actually has (contract +, for DPP/DPČ/HPP, the
+              GDPR/health-declaration/tax-office packet) — see
+              handleDownloadAllBundle. */}
+          {generatedCount > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {generatedDocxCount > 0 && (
-                <button
-                  type="button"
-                  onClick={handleDownloadAllDocx}
-                  disabled={bulkDownloadKind !== null}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#0B1220] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {bulkDownloadKind === "docx" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                  {bulkDownloadKind === "docx" ? "Balím do ZIP…" : `Stáhnout všechny (${generatedDocxCount}) jako ZIP (Word)`}
-                </button>
-              )}
-              {generatedPdfCount > 0 && (
-                <button
-                  type="button"
-                  onClick={handleDownloadAllPdf}
-                  disabled={bulkDownloadKind !== null}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 py-2 text-[12.5px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {bulkDownloadKind === "pdf" ? <Loader2 size={13} className="animate-spin" /> : <Printer size={13} />}
-                  {bulkDownloadKind === "pdf" ? "Balím do ZIP…" : `Stáhnout všechny (${generatedPdfCount}) jako ZIP (PDF)`}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={handleDownloadAllBundle}
+                disabled={bulkDownloadBuilding}
+                style={PRIMARY_GRADIENT}
+                className="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {bulkDownloadBuilding ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                {bulkDownloadBuilding ? "Balím do ZIP…" : `Stáhnout všechny (${generatedCount}) jako ZIP`}
+              </button>
             </div>
           )}
         </div>
