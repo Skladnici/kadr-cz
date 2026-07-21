@@ -20,7 +20,7 @@ const MAX_BATCH_FILES = 25;
 
 const EMPTY_PERSON_FIELDS = {
   first_name: "", last_name: "", birth_date: "", doc_number: "",
-  visa_number: "", visa_validity: "", residence_type: "",
+  visa_number: "", visa_validity: "", residence_type: "", visa_type_code: "",
 };
 const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative: "" };
 
@@ -50,6 +50,7 @@ function makePersonCard(file) {
     fields: { ...EMPTY_PERSON_FIELDS },
     docNumberVerified: false,
     warnings: [],
+    addressHint: null,
     rawText: "",
     ocrMode: null,
     czAddressParts: {},
@@ -85,10 +86,12 @@ function applyRecognizedResult(person, result) {
       doc_number: merged.fields.doc_number,
       visa_number: merged.fields.visa_number,
       visa_validity: merged.fields.visa_validity,
+      visa_type_code: merged.fields.visa_type_code,
       residence_type: "",
     },
     docNumberVerified: merged.docNumberVerified,
     warnings: merged.warnings,
+    addressHint: merged.addressHint,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -141,6 +144,7 @@ function combineCards(keep, merge) {
       doc_number: merged.fields.doc_number,
       visa_number: merged.fields.visa_number,
       visa_validity: merged.fields.visa_validity,
+      visa_type_code: merged.fields.visa_type_code,
       // A manually-typed "druh pobytu" on either card survives the
       // merge — OCR never fills this one, so there's nothing from
       // mergeRecognizedResults to prefer over it.
@@ -148,6 +152,7 @@ function combineCards(keep, merge) {
     },
     docNumberVerified: merged.docNumberVerified,
     warnings: merged.warnings,
+    addressHint: merged.addressHint,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -399,10 +404,12 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           doc_number: remainingMerged.fields.doc_number,
           visa_number: remainingMerged.fields.visa_number,
           visa_validity: remainingMerged.fields.visa_validity,
+          visa_type_code: remainingMerged.fields.visa_type_code,
           residence_type: person.fields.residence_type,
         },
         docNumberVerified: remainingMerged.docNumberVerified,
         warnings: remainingMerged.warnings,
+        addressHint: remainingMerged.addressHint,
         rawText: remainingMerged.rawText,
         ocrMode: remainingMerged.ocrMode,
       };

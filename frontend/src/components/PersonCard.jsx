@@ -4,7 +4,10 @@ import {
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
-import { calculateAge } from "../utils/age";
+import VisaExpiredWarningIcon from "./VisaExpiredWarningIcon";
+import StrpeniWarningIcon from "./StrpeniWarningIcon";
+import { calculateAge, isPastDate } from "../utils/age";
+import { isStrpeniVisaCode } from "../utils/visaStatus";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -103,6 +106,16 @@ export default function PersonCard({
   // same birth dates the same way. Never blocks generation.
   const personAge = useMemo(() => calculateAge(person.fields.birth_date), [person.fields.birth_date]);
   const isPersonMinor = personAge !== null && personAge < 18;
+  // Same advisory-only check as SimpleDocFiller's own (see utils/age.js's
+  // isPastDate) — reused as-is so both modes flag the same expired visas.
+  const isVisaExpiredWarning = useMemo(
+    () => isPastDate(person.fields.visa_validity),
+    [person.fields.visa_validity]
+  );
+  const isStrpeniWarning = useMemo(
+    () => isStrpeniVisaCode(person.fields.visa_type_code),
+    [person.fields.visa_type_code]
+  );
 
   // Binds this card's id once via useCallback so AddressBuilder sees a
   // stable setCzPart/setOriginPart/setOriginCountry reference across
@@ -143,6 +156,14 @@ export default function PersonCard({
     // handling — an empty-field warning takes priority when both would
     // otherwise apply (an empty date can't have a computed age anyway).
     const showMinorBorder = key === "birth_date" && isPersonMinor && !showEmptyWarning;
+    const showVisaExpiredBorder = key === "visa_validity" && isVisaExpiredWarning && !showEmptyWarning;
+    // "Druh pobytu"/residence_type is a free-text field OCR never fills
+    // (see combineCards' own comment) — this badge doesn't depend on
+    // what's typed there, only on the visa's own printed category code,
+    // but it's shown on this row since "residence status" is what it's
+    // actually about.
+    const showStrpeniBadge = key === "residence_type" && isStrpeniWarning;
+    const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
     return (
       <label key={key} className="block">
         <span className="text-[10.5px] md:text-[11.5px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -157,7 +178,7 @@ export default function PersonCard({
           <input
             value={value}
             onChange={(e) => onUpdateFields({ [key]: e.target.value })}
-            className={`${inputClass} ${showEmptyWarning || showMinorBorder ? "pr-8 " : ""}${showEmptyWarning || showMinorBorder ? "border-amber-300 bg-amber-50/40" : showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
+            className={`${inputClass} ${showEmptyWarning || showBadge ? "pr-8 " : ""}${showEmptyWarning || showBadge ? "border-amber-300 bg-amber-50/40" : showVerified ? "border-[#97C459] bg-[#F7FBF0]" : "border-slate-200"}`}
           />
           {showEmptyWarning && (
             <AlertTriangle
@@ -167,6 +188,8 @@ export default function PersonCard({
             />
           )}
           {showMinorBorder && <MinorWarningIcon />}
+          {showVisaExpiredBorder && <VisaExpiredWarningIcon />}
+          {showStrpeniBadge && <StrpeniWarningIcon />}
         </div>
       </label>
     );
@@ -218,13 +241,23 @@ export default function PersonCard({
               {person.error || "Rozpoznání se nezdařilo — údaje vyplňte prosím ručně."}
             </div>
           )}
-          {person.warnings?.length > 0 && (
+          {(person.warnings?.length > 0 || person.addressHint) && (
             <div className="space-y-1.5">
               {person.warnings.map((w, i) => (
                 <div key={i} className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
                   <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {w}
                 </div>
               ))}
+              {/* Shown here (expanded detail) but deliberately excluded
+                  from StatusDot's warning count above — see
+                  recognizeMerge.js's addressHint comment for why an
+                  address merely being present isn't a "needs review"
+                  signal the way an actual OCR/merge warning is. */}
+              {person.addressHint && (
+                <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {person.addressHint}
+                </div>
+              )}
             </div>
           )}
 

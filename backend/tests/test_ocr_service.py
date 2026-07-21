@@ -485,3 +485,31 @@ def test_find_visa_info_real_ocr_text_david_hambaryan():
     visa = _find_visa_info(text)
     assert visa["visa_number"] == "CZE901860119"
     assert visa["birth_date"] == "12.02.1977"
+    # "D/VR/27" here is a different visa category than "D/SD/91" (see the
+    # Shyshka case below) — confirms the code extraction isn't hardcoded
+    # to one specific category, just the general shape.
+    assert visa["visa_type_code"] == "D/VR/27"
+
+
+def test_find_visa_info_real_ocr_text_roman_shyshka_strpeni_visa():
+    # The exact raw OCR text for this case (pasted by the user), notable
+    # for having NO whitespace anywhere between printed fields/lines —
+    # e.g. "EUVIZUM/VISA902699651CESKO..." — unlike every other real
+    # sample captured so far (compare the Hambaryan text just above,
+    # which is newline-separated). The old \bVIZUM\b/\bVISA\b guard
+    # requires a word boundary on both sides, and letters/digits are both
+    # "word" characters to regex, so text glued together like this never
+    # satisfied it — _find_visa_info returned {} for a real, valid visa.
+    # Also confirms the visa_type_code digit count must stay exactly 2:
+    # the code sits directly against the following DD-MM-YY birth date
+    # with no separator at all ("D/SD/9114-11-96"), so a looser \d{1,3}
+    # would swallow the birth date's leading "1" into the code instead.
+    text = (
+        "EUVIZUM/VISA902699651CESKO/TCHEQUIE/CZECHIA CZE01-04-26 331-03-27"
+        "FP985352MULT509-03-26SHYSHKA ROMAN4469202603090128D/SD/9114-11-96"
+        "VDCZESHYSHKA<<ROMAN<<<<<9026996511UKR9611146M2703316TM<<0401"
+    )
+    visa = _find_visa_info(text)
+    assert visa["visa_type_code"] == "D/SD/91"
+    assert visa["birth_date"] == "14.11.1996"
+    assert visa["visa_validity"] == "31.03.2027"

@@ -60,3 +60,16 @@ export function calculateAge(raw, referenceDate = new Date()) {
   if (!hadBirthdayThisYear) age -= 1;
   return age;
 }
+
+// Same DMY/YMD parsing as birth dates (visa_validity/"platnost do" comes
+// back in the exact same shapes, from OCR or typed by hand) — used for
+// the expired-visa warning, so "is this date in the past" is one shared
+// check rather than a separate one per warning type. Returns false (not
+// null) for unparseable/empty input — a warning icon has no "unknown"
+// state to show, only "expired" or not.
+export function isPastDate(raw, referenceDate = new Date()) {
+  const parsed = parseFlexibleDate(raw);
+  if (!parsed) return false;
+  const ref = new Date(Date.UTC(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate()));
+  return parsed < ref;
+}

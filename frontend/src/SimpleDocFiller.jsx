@@ -8,13 +8,16 @@ import LoginForm from "./components/LoginForm";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
+import VisaExpiredWarningIcon from "./components/VisaExpiredWarningIcon";
+import StrpeniWarningIcon from "./components/StrpeniWarningIcon";
 import StatsWidget from "./components/StatsWidget";
 import BatchDocFiller from "./components/BatchDocFiller";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { mergeRecognizedResults } from "./utils/recognizeMerge";
 import { isValidIco, isValidDic } from "./utils/validation";
-import { calculateAge } from "./utils/age";
+import { calculateAge, isPastDate } from "./utils/age";
+import { isStrpeniVisaCode } from "./utils/visaStatus";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR, downloadGeneratedFile } from "./utils/api";
 import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "./utils/zipDownload";
 
@@ -220,7 +223,10 @@ export default function SimpleDocFiller() {
     // součtem" badge could show next to a number that isn't the one that
     // was actually checksum-verified.
     setDocNumberVerified(merged.docNumberVerified);
-    setWarnings(merged.warnings);
+    // Single mode shows every warning in one plain list — no status-icon
+    // equivalent to batch mode's StatusDot that needs the address hint
+    // kept separate (see recognizeMerge.js) — so it's folded back in here.
+    setWarnings(merged.addressHint ? [...merged.warnings, merged.addressHint] : merged.warnings);
     setRawText(merged.rawText);
     setOcrMode(merged.ocrMode);
     setStep(3);
@@ -434,6 +440,13 @@ export default function SimpleDocFiller() {
   // MinorWarningIcon) — never blocks generation.
   const personAge = useMemo(() => calculateAge(fields.birth_date), [fields.birth_date]);
   const isPersonMinor = personAge !== null && personAge < 18;
+  // Same advisory-only pattern as isPersonMinor, just for visa_validity
+  // instead of birth_date — see utils/age.js's isPastDate.
+  const isVisaExpiredWarning = useMemo(() => isPastDate(fields.visa_validity), [fields.visa_validity]);
+  const isStrpeniWarning = useMemo(
+    () => isStrpeniVisaCode(fields.visa_type_code),
+    [fields.visa_type_code]
+  );
 
   // "Místo výkonu práce" (workplace) isn't part of a saved company
   // profile — there's no dedicated field for it — but in practice it's
@@ -870,10 +883,16 @@ export default function SimpleDocFiller() {
                   const showIcoWarning = key === "company_ico" && value.trim() && !isValidIco(value);
                   const showDicWarning = key === "company_dic" && value.trim() && !isValidDic(value);
                   // Field border stays highlighted independently of the
-                  // MinorWarningIcon popover's own open/closed state — see
+                  // WarningIcon popover's own open/closed state — see
                   // that component's own comment for why.
                   const showMinorBorder = key === "birth_date" && isPersonMinor;
-                  const showWarning = showIcoWarning || showDicWarning || showMinorBorder;
+                  const showVisaExpiredBorder = key === "visa_validity" && isVisaExpiredWarning;
+                  // Same reasoning as PersonCard's own — the badge is
+                  // about the visa's printed category code, not whatever
+                  // is (or isn't) typed into "Druh pobytu" itself.
+                  const showStrpeniBadge = key === "residence_type" && isStrpeniWarning;
+                  const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
+                  const showWarning = showIcoWarning || showDicWarning || showBadge;
                   const inputEl = (
                     <input
                       value={fields[key] || ""}
@@ -885,7 +904,7 @@ export default function SimpleDocFiller() {
                       }
                       style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
                       className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
-                        ${showMinorBorder ? "pr-8 " : ""}${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
+                        ${showBadge ? "pr-8 " : ""}${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                     />
                   );
                   return (
@@ -898,10 +917,12 @@ export default function SimpleDocFiller() {
                           </span>
                         )}
                       </span>
-                      {showMinorBorder ? (
+                      {showBadge ? (
                         <div className="relative">
                           {inputEl}
-                          <MinorWarningIcon />
+                          {showMinorBorder && <MinorWarningIcon />}
+                          {showVisaExpiredBorder && <VisaExpiredWarningIcon />}
+                          {showStrpeniBadge && <StrpeniWarningIcon />}
                         </div>
                       ) : (
                         inputEl

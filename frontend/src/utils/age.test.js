@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateAge, parseFlexibleDate } from "./age";
+import { calculateAge, parseFlexibleDate, isPastDate } from "./age";
 
 // Fixed "today" so results don't depend on when the suite happens to run.
 const TODAY = new Date(2026, 6, 17); // 2026-07-17, months are 0-indexed
@@ -74,5 +74,25 @@ describe("parseFlexibleDate", () => {
     expect(parseFlexibleDate("")).toBeNull();
     expect(parseFlexibleDate("   ")).toBeNull();
     expect(parseFlexibleDate("hello")).toBeNull();
+  });
+});
+
+describe("isPastDate", () => {
+  it("flags a visa_validity date before today as expired", () => {
+    expect(isPastDate("16.07.2026", TODAY)).toBe(true);
+  });
+
+  it("does not flag today itself as expired", () => {
+    expect(isPastDate("17.07.2026", TODAY)).toBe(false);
+  });
+
+  it("does not flag a future date", () => {
+    expect(isPastDate("18.07.2026", TODAY)).toBe(false);
+  });
+
+  it("returns false (not an error) for empty or unparseable input", () => {
+    expect(isPastDate("", TODAY)).toBe(false);
+    expect(isPastDate(undefined, TODAY)).toBe(false);
+    expect(isPastDate("not a date", TODAY)).toBe(false);
   });
 });

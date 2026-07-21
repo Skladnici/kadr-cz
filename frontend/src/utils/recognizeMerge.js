@@ -86,13 +86,24 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
     }
   );
 
-  const recognizedAddress = pick("address");
+  // Actionable warnings only — backend per-file quality/checksum/expiry
+  // flags, plus a genuine cross-document name mismatch. Deliberately
+  // excludes the address hint below: that fires whenever an address
+  // happened to appear in the OCR text, which is routine on most ID
+  // documents, not a sign anything went wrong. Kept separate (as
+  // `addressHint`, not folded into `warnings`) specifically so a caller
+  // that uses `warnings.length` to flag "this needs a manual look" (see
+  // BatchDocFiller/PersonCard's StatusDot) doesn't light up on every
+  // ordinary successful merge just because an address was printed on the
+  // document — a real bug found by testing two real people in one batch:
+  // one had an address on their ID and got flagged, the other didn't and
+  // came up clean, even though both merged without any actual problem.
   const warnings = [...results.flatMap((r) => r.warnings || []), ...nameMismatchWarnings];
-  if (recognizedAddress) {
-    warnings.push(
-      `V dokumentu byl nalezen možný adresní text: „${recognizedAddress}" — zkontrolujte a případně zkopírujte ručně, automaticky se nevyplňuje.`
-    );
-  }
+
+  const recognizedAddress = pick("address");
+  const addressHint = recognizedAddress
+    ? `V dokumentu byl nalezen možný adresní text: „${recognizedAddress}" — zkontrolujte a případně zkopírujte ručně, automaticky se nevyplňuje.`
+    : null;
 
   return {
     fields: {
@@ -103,9 +114,16 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
       doc_number: docNumberSource?.doc_number || "",
       visa_number: pick("visa_number"),
       visa_validity: pick("visa_validity"),
+      // The visa's printed category/type code (e.g. "D/SD/91") — see
+      // ocr_service.py's _find_visa_info. Never user-edited, only ever
+      // set from OCR, so a plain pick() (first non-empty result) is
+      // enough — no reliability ranking needed the way name/doc_number
+      // have.
+      visa_type_code: pick("visa_type_code"),
     },
     docNumberVerified: Boolean(docNumberSource?.doc_number_verified),
     warnings,
+    addressHint,
     rawText: results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"),
     ocrMode: results[0]?.ocr_mode,
   };

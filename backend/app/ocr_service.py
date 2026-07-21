@@ -249,8 +249,9 @@ PASSPORT_NUMBER_PATTERN = r"\b([A-Z]{1,2}\d{6,8})\b"
 
 
 def _find_visa_info(text: str) -> dict:
-    """Extracts visa number, birth date, and expiry date from a Czech/
-    Schengen visa sticker. Two independent sources, used together for
+    """Extracts visa number, birth date, expiry date, and (when present)
+    the printed visa type/category code from a Czech/Schengen visa
+    sticker. Two independent sources for number/dates, used together for
     reliability:
       1. The plain visa number printed near 'VIZUM/VISA' (6-10 digits).
       2. The visa's own MRZ-style line at the bottom, which also encodes
@@ -263,8 +264,35 @@ def _find_visa_info(text: str) -> dict:
     """
     result = {}
 
-    if not re.search(r"\bV[IÍ]ZUM\b|\bVISA\b", text, re.IGNORECASE):
+    # Real case (Roman Shyshka): the OCR text for this visa arrived with
+    # no whitespace at all between printed fields/lines (e.g.
+    # "...EUVIZUM/VISA902699651CESKO..." — "VIZUM" glued directly to the
+    # text before and after it). A strict \bVIZUM\b/\bVISA\b requires a
+    # word-boundary on both sides, and digits/letters are both "word"
+    # characters to regex, so glued text like that never had one to
+    # begin with — the old anchored check returned nothing at all for a
+    # real, valid visa. A plain substring search has no such requirement
+    # and isn't any less safe here: nothing else in ID-document OCR text
+    # plausibly contains "VIZUM" or "VISA" as a substring by accident
+    # (Czech "víza" has an accented í, so it doesn't collide).
+    if not re.search(r"V[IÍ]ZUM|VISA", text, re.IGNORECASE):
         return result  # doesn't look like a visa document at all
+
+    # The visa's printed category/type code (e.g. "D/SD/91") — seen
+    # printed right next to the holder's name, immediately before the
+    # printed birth date and the MRZ block. Format: 1-2 letters, "/", 2
+    # letters, "/", exactly 2 digits. The trailing digit count must stay
+    # exactly 2 (not a range) because, in the one real sample seen so
+    # far, this code sits directly against the following DD-MM-YY birth
+    # date with no separator at all ("D/SD/9114-11-96") — a greedy \d{1,3}
+    # eats one digit of "14" into the code instead, leaving a mangled
+    # "4-11-96" behind. Some particular codes carry a legal meaning of
+    # their own (see visaWarnings.js on the frontend for "SD" = the
+    # "strpění" residence status) — this only extracts the raw code,
+    # deciding what it means is a frontend/UI concern.
+    m_type = re.search(r"[A-Z]{1,2}/[A-Z]{2}/\d{2}", text)
+    if m_type:
+        result["visa_type_code"] = m_type.group(0)
 
     # Most reliable source for the series: the visa's own MRZ line always
     # starts with "V" + a subtype char + the 3-letter issuing country
@@ -630,6 +658,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "address": address,
         "visa_number": visa_info.get("visa_number"),
         "visa_validity": visa_info.get("visa_validity"),
+        "visa_type_code": visa_info.get("visa_type_code"),
         "visa_referenced_doc_number": visa_info.get("visa_referenced_doc_number"),
         "mrz_raw": mrz,
         "ocr_quality_score": quality,
