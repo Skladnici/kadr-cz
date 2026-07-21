@@ -8,6 +8,7 @@ import os
 import time
 
 import pytest
+from docx import Document
 
 from app.config import settings
 import app.blank_service as blank_service
@@ -17,6 +18,16 @@ from app.blank_service import (
     list_templates,
     fill_blank,
 )
+
+
+def _docx_text(path):
+    doc = Document(str(path))
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.append(cell.text)
+    return "\n".join(parts)
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +80,28 @@ def test_fill_blank_sanitizes_traversal_in_name_fields(tmp_path, monkeypatch):
     # traversal sequences smuggled through a name field.
     assert out_path.parent == tmp_path.resolve()
     assert list(tmp_path.iterdir()) == [out_path]
+
+
+def test_fill_blank_never_renders_the_literal_word_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "GENERATED_DIR", tmp_path)
+    # FillRequest (main.py) declares every field Optional[str] = None, so
+    # payload.model_dump() sends any field the frontend didn't touch as
+    # None (a *present* key with value None) rather than omitting it —
+    # this must never surface as the literal word "None" in the
+    # generated document (docxtpl/Jinja2 renders str(None) verbatim
+    # otherwise). Covers every plain-text placeholder in dpp_template.
+    fields = {
+        "last_name": "Novak", "first_name": "Jan",
+        "position": None, "workplace": None, "salary": None,
+        "hours_per_week": None, "bank_account": None,
+        "company_name": None, "company_ico": None, "company_dic": None,
+        "company_address": None, "company_representative": None,
+        "visa_number": None, "visa_validity": None, "residence_type": None,
+        "signing_place": None, "address": None, "address_origin": None,
+        "doc_number": None, "nationality": None,
+    }
+    out_path = fill_blank("dpp_template", fields)
+    assert "None" not in _docx_text(out_path)
 
 
 def test_cleanup_stale_generated_files_removes_only_old_files(tmp_path, monkeypatch):

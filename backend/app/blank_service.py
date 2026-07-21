@@ -8,6 +8,13 @@ blank type: just add a new .docx file to that folder — no code change.
 The filename (without extension) becomes the blank's internal id; a
 human-readable title is read from the first heading in the document if
 present, otherwise the filename is used.
+
+hpp_template.docx (pracovní smlouva na hlavní pracovní poměr) is an
+original draft based on publicly available §34 zákoníku práce 2026
+requirements — it is not legal advice, and a lawyer or mzdová účetní
+should review it before real use (the template text itself carries the
+same note). dpp_template.docx and dpc_template.docx are digitized from
+the user's own real-world templates.
 """
 from datetime import date, datetime
 from pathlib import Path
@@ -107,6 +114,99 @@ def _safe_filename_part(value: str, fallback: str = "") -> str:
     return cleaned or fallback
 
 
+def _s(fields: dict, key: str, default: str = "") -> str:
+    """Same as fields.get(key, default), except a key that's *present*
+    with value None also falls back to default. FillRequest (main.py)
+    declares every field Optional[str] = None, so payload.model_dump()
+    always includes every key — any field the frontend didn't send comes
+    through as None rather than missing, and plain fields.get(key,
+    default) doesn't catch that (the key IS there, just with value None).
+    Left uncaught, docxtpl/Jinja2 renders str(None) as the literal text
+    "None" in the generated document — a real bug users hit whenever an
+    optional field they left blank happened not to get sent at all."""
+    v = fields.get(key)
+    return v if v is not None else default
+
+
+def _build_context(fields: dict) -> dict:
+    """Normalizes the raw `fields` dict (from FillRequest.model_dump())
+    into the {{PLACEHOLDER}} context every template — the three main
+    contracts and the bundle docs (GDPR/health declaration) alike — is
+    rendered with. Shared by fill_blank() and _fill_bundle_docx() so
+    both read the exact same fields the person filled in once, rather
+    than each maintaining its own (and inevitably drifting) mapping."""
+    return {
+        "JMENO": _s(fields, "first_name"),
+        "PRIJMENI": _s(fields, "last_name"),
+        "ADRESA": _s(fields, "address"),
+        "ADRESA_PUVODU": _s(fields, "address_origin"),
+        "DATUM_NAROZENI": _fmt_date(fields.get("birth_date")),
+        "CISLO_DOKLADU": _s(fields, "doc_number"),
+        "STATNI_PRISLUSNOST": _s(fields, "nationality"),
+        "POZICE": _s(fields, "position"),
+        "MISTO_VYKONU": _s(fields, "workplace"),
+        "MZDA": _s(fields, "salary"),
+        "HODIN_TYDNE": _s(fields, "hours_per_week"),
+        "DATUM_NASTUPU": _fmt_date(fields.get("start_date")),
+        "DATUM_UKONCENI": _fmt_date(fields.get("end_date")),
+        "BANKOVNI_UCET": _s(fields, "bank_account"),
+        "FIRMA": _s(fields, "company_name"),
+        "ICO": _s(fields, "company_ico"),
+        "DIC": _s(fields, "company_dic"),
+        "ADRESA_FIRMY": _s(fields, "company_address"),
+        "ZASTUPCE_FIRMY": _s(fields, "company_representative"),
+        "DATUM_DNES": _fmt_date(date.today()),
+        # DPP/DPČ/HPP-specific: foreign worker residence/visa info + auto years
+        "CISLO_VIZA": _s(fields, "visa_number"),
+        "PLATNOST_VIZA": _fmt_date(fields.get("visa_validity")) or _s(fields, "visa_validity"),
+        "DRUH_POBYTU": _s(fields, "residence_type"),
+        "MISTO_PODPISU": _s(fields, "signing_place", "Praze"),
+        "ROK_AKTUALNI": str(date.today().year),
+        "ROK_PRISTI": str(date.today().year + 1),
+        # HPP-specific: optional probation period + fixed-term/indefinite switch
+        "ZKUSEBNI_DOBA": _s(fields, "probation_period"),
+        "DOBA_NEURCITA": bool(fields.get("contract_indefinite")),
+        # Ukončení pracovního poměru (termination)
+        "DUVOD_UKONCENI": _s(fields, "termination_reason"),
+        "POSLEDNI_DEN": _fmt_date(fields.get("last_working_day")),
+        # Výplatní páska (payslip)
+        "OBDOBI": _s(fields, "pay_period"),
+        "HRUBA_MZDA": _s(fields, "gross_salary"),
+        "ZDRAVOTNI_POJISTENI": _s(fields, "health_insurance"),
+        "SOCIALNI_POJISTENI": _s(fields, "social_insurance"),
+        "DAN_ZE_MZDY": _s(fields, "income_tax"),
+        "CISTA_MZDA": _s(fields, "net_salary"),
+    }
+
+
+def _render_and_save(template_path: Path, fields: dict, out_prefix: str) -> Path:
+    """Shared render+save core for both a public (template_id-based)
+    blank and an internal bundle document — same context, same
+    filename/path-safety handling, only the template file and output
+    name prefix differ."""
+    doc = DocxTemplate(str(template_path))
+    doc.render(_build_context(fields))
+
+    safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
+    safe_first = _safe_filename_part(fields.get("first_name"))
+    # Full 128-bit token — this is the *only* thing standing between an
+    # anonymous request and a document full of PII (birth date, ID number,
+    # address, salary, bank account), since /api/download has no auth.
+    # A short 6-hex-char suffix (24 bits, ~16.7M values) was brute-forceable;
+    # a full UUID4 is not.
+    unique = uuid.uuid4().hex
+    out_name = f"{out_prefix}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
+    out_path = (settings.GENERATED_DIR / out_name).resolve()
+
+    # Defense in depth: even though every input above is now sanitized,
+    # refuse to write anywhere outside GENERATED_DIR.
+    if settings.GENERATED_DIR.resolve() not in out_path.parents:
+        raise ValueError("Neplatná cesta k vygenerovanému souboru.")
+
+    doc.save(str(out_path))
+    return out_path
+
+
 def fill_blank(template_id: str, fields: dict) -> Path:
     """
     Fills the given template with the provided field values and returns
@@ -126,70 +226,30 @@ def fill_blank(template_id: str, fields: dict) -> Path:
     if not template_path.exists():
         raise FileNotFoundError(f"Šablona '{template_id}' nenalezena.")
 
-    doc = DocxTemplate(str(template_path))
+    return _render_and_save(template_path, fields, template_id)
 
-    # Normalize context: fill both the raw keys given and today's date,
-    # defaulting missing fields to empty strings so rendering never fails
-    # on an unmapped placeholder.
-    context = {
-        "JMENO": fields.get("first_name", ""),
-        "PRIJMENI": fields.get("last_name", ""),
-        "ADRESA": fields.get("address", ""),
-        "ADRESA_PUVODU": fields.get("address_origin", ""),
-        "DATUM_NAROZENI": _fmt_date(fields.get("birth_date")),
-        "CISLO_DOKLADU": fields.get("doc_number", ""),
-        "STATNI_PRISLUSNOST": fields.get("nationality", ""),
-        "POZICE": fields.get("position", ""),
-        "MISTO_VYKONU": fields.get("workplace", ""),
-        "MZDA": fields.get("salary", ""),
-        "HODIN_TYDNE": fields.get("hours_per_week", ""),
-        "DATUM_NASTUPU": _fmt_date(fields.get("start_date")),
-        "DATUM_UKONCENI": _fmt_date(fields.get("end_date")),
-        "BANKOVNI_UCET": fields.get("bank_account", ""),
-        "FIRMA": fields.get("company_name", ""),
-        "ICO": fields.get("company_ico", ""),
-        "DIC": fields.get("company_dic", ""),
-        "ADRESA_FIRMY": fields.get("company_address", ""),
-        "ZASTUPCE_FIRMY": fields.get("company_representative", ""),
-        "DATUM_DNES": _fmt_date(date.today()),
-        # DPP-specific: foreign worker residence/visa info + auto years
-        "CISLO_VIZA": fields.get("visa_number", ""),
-        "PLATNOST_VIZA": _fmt_date(fields.get("visa_validity")) or fields.get("visa_validity", ""),
-        "DRUH_POBYTU": fields.get("residence_type", ""),
-        "MISTO_PODPISU": fields.get("signing_place", "Praze"),
-        "ROK_AKTUALNI": str(date.today().year),
-        "ROK_PRISTI": str(date.today().year + 1),
-        # Ukončení pracovního poměru (termination)
-        "DUVOD_UKONCENI": fields.get("termination_reason", ""),
-        "POSLEDNI_DEN": _fmt_date(fields.get("last_working_day")),
-        # Výplatní páska (payslip)
-        "OBDOBI": fields.get("pay_period", ""),
-        "HRUBA_MZDA": fields.get("gross_salary", ""),
-        "ZDRAVOTNI_POJISTENI": fields.get("health_insurance", ""),
-        "SOCIALNI_POJISTENI": fields.get("social_insurance", ""),
-        "DAN_ZE_MZDY": fields.get("income_tax", ""),
-        "CISTA_MZDA": fields.get("net_salary", ""),
-    }
-    doc.render(context)
 
-    safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
-    safe_first = _safe_filename_part(fields.get("first_name"))
-    # Full 128-bit token — this is the *only* thing standing between an
-    # anonymous request and a document full of PII (birth date, ID number,
-    # address, salary, bank account), since /api/download has no auth.
-    # A short 6-hex-char suffix (24 bits, ~16.7M values) was brute-forceable;
-    # a full UUID4 is not.
-    unique = uuid.uuid4().hex
-    out_name = f"{template_id}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
-    out_path = (settings.GENERATED_DIR / out_name).resolve()
+# Documents auto-generated alongside a DPP/DPČ/HPP contract (see
+# main.py's /api/fill) — GDPR consent + health declaration. Kept in a
+# subfolder rather than TEMPLATES_DIR itself so list_templates()'s
+# non-recursive glob never picks them up as a user-selectable "Typ
+# smlouvy" — they're only ever reachable through _fill_bundle_docx().
+BUNDLE_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates" / "bundle"
 
-    # Defense in depth: even though every input above is now sanitized,
-    # refuse to write anywhere outside GENERATED_DIR.
-    if settings.GENERATED_DIR.resolve() not in out_path.parents:
-        raise ValueError("Neplatná cesta k vygenerovanému souboru.")
 
-    doc.save(str(out_path))
-    return out_path
+def _fill_bundle_docx(name: str, fields: dict) -> Optional[Path]:
+    """Fills one of the fixed bundle documents (see BUNDLE_TEMPLATES_DIR)
+    with the same fields as the main contract. Returns None (rather than
+    raising) if the template file is missing, so a bundle doc issue
+    never turns a successful contract generation into a failed request —
+    same reasoning as convert_to_pdf()'s best-effort PDF conversion."""
+    template_path = BUNDLE_TEMPLATES_DIR / f"{name}.docx"
+    if not template_path.exists():
+        return None
+    try:
+        return _render_and_save(template_path, fields, name)
+    except Exception:
+        return None
 
 
 def convert_to_pdf(docx_path: Path) -> Optional[Path]:

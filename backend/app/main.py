@@ -31,7 +31,8 @@ from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.ocr_service import recognize_document
-from app.blank_service import list_templates, fill_blank, convert_to_pdf
+from app.blank_service import list_templates, fill_blank, convert_to_pdf, _fill_bundle_docx
+from app.pdf_fill import fill_poplatnik_pdf
 
 logging.basicConfig(
     level=settings.LOG_LEVEL,
@@ -310,6 +311,9 @@ class FillRequest(BaseModel):
     visa_validity: Optional[str] = None
     residence_type: Optional[str] = None
     signing_place: Optional[str] = None
+    # HPP-specific: optional probation period + fixed-term/indefinite switch
+    probation_period: Optional[str] = None
+    contract_indefinite: Optional[bool] = None
     termination_reason: Optional[str] = None
     last_working_day: Optional[str] = None
     pay_period: Optional[str] = None
@@ -320,13 +324,32 @@ class FillRequest(BaseModel):
     net_salary: Optional[str] = None
 
 
+# DPP/DPČ/HPP are the three "employment onboarding" contract types that
+# get the standard 4-document packet (see BUNDLE_DOCS below) — the
+# ukončení/výplatní páska blanks are standalone documents, not part of
+# a new-hire packet, so they're deliberately left out.
+_BUNDLE_TEMPLATE_IDS = {"dpp_template", "dpc_template", "hpp_template"}
+
+
 @app.post("/api/fill", dependencies=[Depends(_require_site_auth)])
 @limiter.limit("10/minute")
 async def fill(request: Request, payload: FillRequest):
     """Fills the chosen blank with the given fields and returns a
-    download token; nothing is saved to a database."""
+    download token; nothing is saved to a database.
+
+    For DPP/DPČ/HPP specifically, also auto-generates the standard
+    onboarding packet alongside the main contract — GDPR consent, health
+    declaration, and the tax office declaration (overlaid onto the real
+    government form, see pdf_fill.py) — using the exact same fields
+    already submitted for the contract itself. Each bundle document is
+    best-effort (see _fill_bundle_docx/fill_poplatnik_pdf): a problem
+    generating one of them never fails the main contract's generation,
+    it just comes back with that token as null. Single (non-batch) mode
+    only — batch mode's own per-card generation/zip-download is
+    untouched by this."""
+    fields = payload.model_dump()
     try:
-        docx_path = fill_blank(payload.template_id, payload.model_dump())
+        docx_path = fill_blank(payload.template_id, fields)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -337,15 +360,25 @@ async def fill(request: Request, payload: FillRequest):
     # thread any longer than the subprocess call itself needs.
     pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
 
+    result = {
+        "docx_token": docx_path.name,
+        "pdf_token": pdf_path.name if pdf_path else None,
+    }
+
+    if payload.template_id in _BUNDLE_TEMPLATE_IDS:
+        gdpr_path = _fill_bundle_docx("gdpr_template", fields)
+        zdravotni_path = _fill_bundle_docx("zdravotni_template", fields)
+        poplatnik_path = fill_poplatnik_pdf(fields)
+        result["gdpr_docx_token"] = gdpr_path.name if gdpr_path else None
+        result["zdravotni_docx_token"] = zdravotni_path.name if zdravotni_path else None
+        result["poplatnik_pdf_token"] = poplatnik_path.name if poplatnik_path else None
+
     # Best-effort usage counter (see _log_generation below) — logged only
     # once generation has actually succeeded, and never allowed to turn a
     # successful fill into a failed request.
     await _log_generation(payload.template_id, payload.company_name)
 
-    return {
-        "docx_token": docx_path.name,
-        "pdf_token": pdf_path.name if pdf_path else None,
-    }
+    return result
 
 
 @app.get("/api/download/{filename}", dependencies=[Depends(_require_site_auth)])

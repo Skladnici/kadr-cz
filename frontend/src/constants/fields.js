@@ -18,6 +18,11 @@ export const FIELD_DEFS = [
   ["hours_per_week", "Hodin týdně", ["dpp", "dpc", "hpp"]],
   ["start_date", "Datum nástupu", ["dpp", "dpc", "hpp"]],
   ["end_date", "Datum ukončení", ["dpp", "dpc", "hpp"]],
+  // HPP-specific — probation is a plain optional text field (e.g. "3
+  // měsíce", left blank to omit the clause entirely); contract_indefinite
+  // is a checkbox (see SimpleDocFiller's own dedicated rendering for it,
+  // not the generic text-input loop) that hides end_date when checked.
+  ["probation_period", "Zkušební doba (nepovinné)", ["hpp"]],
   ["bank_account", "Bankovní účet", "all"],
   ["company_name", "Firma (zaměstnavatel)", "all"],
   ["company_ico", "IČO", "all"],

@@ -820,7 +820,15 @@ export default function SimpleDocFiller() {
                 const relevantFields = FIELD_DEFS.filter(([, , scope]) => isFieldRelevant(scope, templateId));
                 const personFields = relevantFields.filter(([key]) => PERSON_FIELD_KEYS.has(key));
                 const companyReqFields = relevantFields.filter(([key]) => COMPANY_FIELD_KEYS.has(key));
-                const restFields = relevantFields.filter(([key]) => !PERSON_FIELD_KEYS.has(key) && !COMPANY_FIELD_KEYS.has(key));
+                // HPP's "na dobu neurčitou" checkbox (rendered separately,
+                // below) hides end_date entirely rather than leaving a
+                // date field visible that a "na dobu neurčitou" contract
+                // has no use for.
+                const isHppIndefinite = templateId === "hpp_template" && fields.contract_indefinite;
+                const restFields = relevantFields.filter(
+                  ([key]) => !PERSON_FIELD_KEYS.has(key) && !COMPANY_FIELD_KEYS.has(key)
+                    && !(isHppIndefinite && key === "end_date")
+                );
 
                 const renderField = ([key, label]) => {
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
@@ -914,6 +922,27 @@ export default function SimpleDocFiller() {
                     <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px] max-h-[300px] overflow-y-auto pr-1">
                       {restFields.map(renderField)}
                     </div>
+
+                    {templateId === "hpp_template" && (
+                      <label className="mb-[22px] flex items-center gap-2 text-[13px] text-[#0B1220]">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(fields.contract_indefinite)}
+                          onChange={(e) =>
+                            setFields((f) => ({
+                              ...f,
+                              contract_indefinite: e.target.checked,
+                              // A cleared end_date can't linger as a stale
+                              // value that would silently reappear if the
+                              // checkbox is unticked later.
+                              end_date: e.target.checked ? "" : f.end_date,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        Na dobu neurčitou (bez data ukončení)
+                      </label>
+                    )}
 
                     {/* 4. Employee's own address, last — a separate,
                         unrelated section that doesn't need to gate anything
@@ -1011,6 +1040,48 @@ export default function SimpleDocFiller() {
                     <RotateCcw size={15} /> Nový dokument
                   </button>
                 </div>
+
+                {/* DPP/DPČ/HPP's standard onboarding packet — see
+                    backend's /api/fill, which only includes these three
+                    tokens for those template ids in the first place, so
+                    this section simply doesn't render for other blanks
+                    (ukončení, výplatní páska, ...) or if a given bundle
+                    document happened to fail to generate (best-effort,
+                    see _fill_bundle_docx/fill_poplatnik_pdf). */}
+                {(result.gdpr_docx_token || result.zdravotni_docx_token || result.poplatnik_pdf_token) && (
+                  <div className="mt-6 border-t border-slate-100 pt-6">
+                    <p className="text-[12px] text-slate-500 mb-3">Společně s hlavní smlouvou se vygenerovaly i tyto dokumenty:</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {result.gdpr_docx_token && (
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(result.gdpr_docx_token, { filename: result.gdpr_docx_token })}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                        >
+                          <Download size={14} /> Souhlas GDPR
+                        </button>
+                      )}
+                      {result.zdravotni_docx_token && (
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(result.zdravotni_docx_token, { filename: result.zdravotni_docx_token })}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                        >
+                          <Download size={14} /> Prohlášení o zdravotní způsobilosti
+                        </button>
+                      )}
+                      {result.poplatnik_pdf_token && (
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(result.poplatnik_pdf_token, { openInNewTab: true })}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+                        >
+                          <Printer size={14} /> Prohlášení poplatníka (PDF)
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

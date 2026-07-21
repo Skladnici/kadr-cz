@@ -44,6 +44,43 @@ def test_fill_generates_a_downloadable_document(configured_auth, tmp_path, monke
     assert data["pdf_token"] is None or data["pdf_token"].endswith(".pdf")
 
 
+@pytest.mark.parametrize("template_id", ["dpp_template", "dpc_template", "hpp_template"])
+def test_fill_bundle_templates_also_generate_the_onboarding_packet(
+    configured_auth, tmp_path, monkeypatch, template_id
+):
+    monkeypatch.setattr(settings, "GENERATED_DIR", tmp_path)
+
+    resp = client.post(
+        "/api/fill",
+        auth=("hr", "test123"),
+        json={"template_id": template_id, "last_name": "Novak", "first_name": "Jan"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["gdpr_docx_token"].endswith(".docx")
+    assert data["zdravotni_docx_token"].endswith(".docx")
+    assert data["poplatnik_pdf_token"].endswith(".pdf")
+    for token in (data["gdpr_docx_token"], data["zdravotni_docx_token"], data["poplatnik_pdf_token"]):
+        assert (tmp_path / token).exists()
+
+
+def test_fill_non_bundle_template_has_no_packet_tokens(configured_auth, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "GENERATED_DIR", tmp_path)
+
+    resp = client.post(
+        "/api/fill",
+        auth=("hr", "test123"),
+        json={"template_id": "ukonceni_pracovniho_pomeru", "last_name": "Novak", "first_name": "Jan"},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "gdpr_docx_token" not in data
+    assert "zdravotni_docx_token" not in data
+    assert "poplatnik_pdf_token" not in data
+
+
 def test_fill_rejects_unknown_template(configured_auth):
     resp = client.post(
         "/api/fill",
