@@ -37,11 +37,27 @@ function sleep(ms) {
 export async function paceRateLimit(startTimesRef, limit = PACE_SAFETY_LIMIT, windowMs = BATCH_RATE_WINDOW_MS) {
   const now = Date.now();
   startTimesRef.current = startTimesRef.current.filter((t) => now - t < windowMs);
+
+  // Even ("leaky bucket") spacing: never start a request less than
+  // windowMs/limit after the previous one. Without this, the count-only
+  // check below lets the first `limit` requests fire back-to-back (only
+  // gated by real request latency), then forces the next one to wait out
+  // almost the entire window in one lump sum — e.g. 9 requests firing in
+  // ~15s means the 10th waits ~45s, even though the queue could have
+  // been paced evenly at ~6.7s/request the whole time. That one-time
+  // burst-then-stall was mistaken for a bug/hang by a user watching
+  // batch mode process >9 files (an ~47s dead pause after the first 9).
+  const lastStart = startTimesRef.current[startTimesRef.current.length - 1];
+  let wait = lastStart === undefined ? 0 : windowMs / limit - (now - lastStart);
+
+  // Sliding-window count check stays as a safety net against clock skew
+  // between this client's window and the server's (see module comment).
   if (startTimesRef.current.length >= limit) {
     const oldest = startTimesRef.current[0];
-    const wait = windowMs - (now - oldest);
-    if (wait > 0) await sleep(wait);
+    wait = Math.max(wait, windowMs - (now - oldest));
   }
+
+  if (wait > 0) await sleep(wait);
   startTimesRef.current.push(Date.now());
 }
 
