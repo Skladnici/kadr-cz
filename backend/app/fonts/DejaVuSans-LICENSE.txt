@@ -1,0 +1,15 @@
+DejaVuSans.ttf is bundled here so pdf_fill.py's PDF text overlay (see its
+own comment) has a real embedded Unicode font with full Czech/Central
+European glyph coverage (ř, ě, ď, ť, ň, ů, ...) — PyMuPDF's built-in
+"helv" (Base-14 Helvetica) alias uses a strict 8-bit WinAnsiEncoding that
+cannot represent these characters at all, which was silently rendering
+them as a placeholder dot in generated documents.
+
+DejaVu Fonts are released under a permissive, freely redistributable
+license (a Bitstream Vera License derivative, plus public-domain
+additions) that explicitly allows bundling and redistribution — see
+https://dejavu-fonts.github.io/License.html for the full text. This copy
+was extracted from the `matplotlib` PyPI package's bundled font data
+(matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf), which ships the same file
+for the same reason (Unicode-safe text rendering without relying on
+whatever fonts happen to be installed on the host system).

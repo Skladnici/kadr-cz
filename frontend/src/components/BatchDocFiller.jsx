@@ -21,6 +21,7 @@ const MAX_BATCH_FILES = 25;
 const EMPTY_PERSON_FIELDS = {
   first_name: "", last_name: "", birth_date: "", doc_number: "",
   visa_number: "", visa_validity: "", residence_type: "", visa_type_code: "",
+  nationality: "",
 };
 const EMPTY_COMPANY = { name: "", ico: "", dic: "", address: "", representative: "" };
 
@@ -87,6 +88,7 @@ function applyRecognizedResult(person, result) {
       visa_number: merged.fields.visa_number,
       visa_validity: merged.fields.visa_validity,
       visa_type_code: merged.fields.visa_type_code,
+      nationality: merged.fields.nationality,
       residence_type: "",
     },
     docNumberVerified: merged.docNumberVerified,
@@ -145,6 +147,7 @@ function combineCards(keep, merge) {
       visa_number: merged.fields.visa_number,
       visa_validity: merged.fields.visa_validity,
       visa_type_code: merged.fields.visa_type_code,
+      nationality: merged.fields.nationality,
       // A manually-typed "druh pobytu" on either card survives the
       // merge — OCR never fills this one, so there's nothing from
       // mergeRecognizedResults to prefer over it.
@@ -425,6 +428,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           visa_number: remainingMerged.fields.visa_number,
           visa_validity: remainingMerged.fields.visa_validity,
           visa_type_code: remainingMerged.fields.visa_type_code,
+          nationality: remainingMerged.fields.nationality,
           residence_type: person.fields.residence_type,
         },
         docNumberVerified: remainingMerged.docNumberVerified,
@@ -637,6 +641,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       doc_number: person.fields.doc_number,
       visa_number: person.fields.visa_number,
       visa_validity: person.fields.visa_validity,
+      nationality: person.fields.nationality,
       residence_type: person.fields.residence_type,
       address: composeCzAddress(person.czAddressParts),
       address_origin: composeOriginAddress(person.originCountry, person.originAddressParts),

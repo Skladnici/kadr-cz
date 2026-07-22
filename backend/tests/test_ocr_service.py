@@ -98,7 +98,7 @@ def test_extract_passport_number_from_mrz_self_verifies():
         "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<\n"
         "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
     )
-    doc_number, verified, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_text)
+    doc_number, verified, birth_date, expiry_date, nationality = _extract_passport_number_from_mrz(mrz_text)
     assert doc_number == "L898902C3"
     assert verified is True
     # ICAO's own standard MRZ example: birth date 12 Aug 1974, positioned
@@ -108,10 +108,14 @@ def test_extract_passport_number_from_mrz_self_verifies():
     # Same example's expiry date: 15 Apr 2012 (YYMMDD "120415" right
     # after the birth-date check digit and sex).
     assert expiry_date == "15.04.2012"
+    # "UTO" is ICAO 9303's own fictional example country code (not a
+    # real one) — correctly unmapped, rather than showing a made-up
+    # country name.
+    assert nationality is None
 
 
 def test_extract_passport_number_from_mrz_none_without_mrz():
-    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False, None, None)
+    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False, None, None, None)
 
 
 def test_extract_passport_number_from_mrz_real_armenian_passport_ernest_tadevosyan():
@@ -130,9 +134,10 @@ def test_extract_passport_number_from_mrz_real_armenian_passport_ernest_tadevosy
     # elsewhere in this module misread as expiry=15.01.2025 (the *issue*
     # date) — wrongly flagging a passport valid until 2035 as expired.
     mrz_line2 = "AX05955872ARM7402016M3501151<<<<04"
-    _, _, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_line2)
+    _, _, birth_date, expiry_date, nationality = _extract_passport_number_from_mrz(mrz_line2)
     assert birth_date == "01.02.1974"
     assert expiry_date == "15.01.2035"
+    assert nationality == "Arménie"
 
 
 def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan():
@@ -141,8 +146,9 @@ def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan
     # confirms the regex doesn't depend on that optional tail being
     # present.
     mrz_line2 = "AX06570519ARM7702129M3503144"
-    _, _, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_line2)
+    _, _, birth_date, expiry_date, nationality = _extract_passport_number_from_mrz(mrz_line2)
     assert birth_date == "12.02.1977"
+    assert nationality == "Arménie"
     assert expiry_date == "14.03.2035"
 
 
@@ -442,6 +448,10 @@ def test_extract_fields_expiry_prefers_mrz_over_misordered_printed_text():
     fields = _extract_fields_from_text(text, quality=88, mode="mock")
     assert fields["expiry_date"] == "15.01.2035"
     assert fields["is_expired"] is False
+    # Same document, same fix pattern (MRZ_NATIONALITY_TO_CZECH via the
+    # MRZ's own nationality code) — used by the "Prohlášení poplatníka"
+    # PDF's "Stát, který tento doklad vydal" field.
+    assert fields["nationality"] == "Arménie"
 
 
 def test_extract_fields_prefers_labeled_birth_date_over_mrz():

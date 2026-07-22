@@ -65,6 +65,44 @@ COUNTRY_HINTS = {
     "Polsko": ["poland", "polska", "pol"],
 }
 
+# ISO 3166-1 alpha-3 codes, as printed in a passport's own MRZ nationality
+# field — the same fixed ICAO 9303 position _extract_passport_number_
+# from_mrz already reads doc_number/birth_date/expiry_date from, and for
+# the same reason preferred over COUNTRY_HINTS' free-text keyword search
+# above: it's a structured field, not a guess from whatever OCR text
+# happens to be recognizable. Covers the countries this HR business's
+# foreign workforce most commonly comes from; an unmapped code falls back
+# to COUNTRY_HINTS (see _extract_fields_from_text) rather than showing a
+# raw, possibly-confusing 3-letter code on an official tax form.
+MRZ_NATIONALITY_TO_CZECH = {
+    "UKR": "Ukrajina",
+    "ARM": "Arménie",
+    "CZE": "Česká republika",
+    "SVK": "Slovensko",
+    "POL": "Polsko",
+    "RUS": "Rusko",
+    "BLR": "Bělorusko",
+    "MDA": "Moldavsko",
+    "GEO": "Gruzie",
+    "AZE": "Ázerbájdžán",
+    "KAZ": "Kazachstán",
+    "UZB": "Uzbekistán",
+    "KGZ": "Kyrgyzstán",
+    "TJK": "Tádžikistán",
+    "TKM": "Turkmenistán",
+    "MNG": "Mongolsko",
+    "VNM": "Vietnam",
+    "IND": "Indie",
+    "SRB": "Srbsko",
+    "ROU": "Rumunsko",
+    "BGR": "Bulharsko",
+    "HUN": "Maďarsko",
+    "DEU": "Německo",
+    "AUT": "Rakousko",
+    "USA": "Spojené státy americké",
+    "GBR": "Spojené království",
+}
+
 
 def _detect_doc_type(text: str) -> str:
     low = text.lower()
@@ -461,13 +499,15 @@ def _normalize_mrz_text(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
-    """Reads the document number, the holder's birth date, and the
-    document's own expiry date, straight from the MRZ's own fields +
-    check digits, rather than guessing from printed (often smudged,
-    glare-affected, or non-Latin-script) text elsewhere on the page —
-    this is the same field real e-passport gates rely on, and the doc
-    number self-verifies via checksum.
+def _extract_passport_number_from_mrz(
+    text: str,
+) -> tuple[Optional[str], bool, Optional[str], Optional[str], Optional[str]]:
+    """Reads the document number, the holder's birth date, the document's
+    own expiry date, and the issuing country/nationality, straight from
+    the MRZ's own fields + check digits, rather than guessing from
+    printed (often smudged, glare-affected, or non-Latin-script) text
+    elsewhere on the page — this is the same field real e-passport gates
+    rely on, and the doc number self-verifies via checksum.
 
     The birth-date digits sit in the very same regex match (ICAO 9303
     TD3 line 2: doc number, check digit, nationality, birth date YYMMDD,
@@ -492,11 +532,21 @@ def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, O
     — same fixed-position reasoning as birth date above — and per this
     module's existing pattern for doc_number/visa validity, callers
     should prefer this over the printed-text guess whenever it's
-    available, not just fall back to it when the guess comes up empty."""
-    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}(\d{6})\d[MF<](\d{6})\d", _normalize_mrz_text(text))
+    available, not just fall back to it when the guess comes up empty.
+
+    The nationality code (between the doc-number check digit and birth
+    date) had the same gap once more: matched to anchor the regex, never
+    captured. Unlike the date fields, this one still needs a lookup
+    table (MRZ_NATIONALITY_TO_CZECH) to turn the 3-letter ICAO code into
+    the Czech-language country name the tax form actually wants — an
+    unrecognized code returns None so the caller can fall back to
+    COUNTRY_HINTS' free-text guess instead of printing a raw code."""
+    m = re.search(r"([A-Z0-9<]{9})(\d)([A-Z]{3})(\d{6})\d[MF<](\d{6})\d", _normalize_mrz_text(text))
     if not m:
-        return None, False, None, None
-    raw, check, birth_raw, expiry_raw = m.group(1), m.group(2), m.group(3), m.group(4)
+        return None, False, None, None, None
+    raw, check, nationality_code, birth_raw, expiry_raw = (
+        m.group(1), m.group(2), m.group(3), m.group(4), m.group(5),
+    )
     corrected, verified = _verify_and_correct(raw, check)
     doc_number = corrected.replace("<", "").strip()
 
@@ -511,8 +561,9 @@ def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, O
 
     birth_date = _decode(birth_raw, "birth")
     expiry_date = _decode(expiry_raw, "expiry")
+    nationality = MRZ_NATIONALITY_TO_CZECH.get(nationality_code)
 
-    return (doc_number or None), verified, birth_date, expiry_date
+    return (doc_number or None), verified, birth_date, expiry_date, nationality
 
 
 def _find_doc_number(text: str) -> Optional[str]:
@@ -598,7 +649,9 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # Prefer the MRZ-derived document number — it self-verifies via a
     # checksum, unlike text found elsewhere on the page. Only fall back
     # to the generic label/pattern search if there's no MRZ to read.
-    mrz_doc_number, doc_number_verified, mrz_birth_date, mrz_expiry_date = _extract_passport_number_from_mrz(raw_text)
+    mrz_doc_number, doc_number_verified, mrz_birth_date, mrz_expiry_date, mrz_nationality = (
+        _extract_passport_number_from_mrz(raw_text)
+    )
     doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
 
@@ -624,6 +677,15 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # field has no such ambiguity to get shifted by.
     if mrz_expiry_date:
         expiry_date = mrz_expiry_date
+
+    # Same "MRZ wins when present" priority — a passport-tax-declaration
+    # form field ("Stát, který tento doklad vydal") needs a specific
+    # Czech country name, not a guess from whichever keyword happened to
+    # be recognizable in noisy OCR text. Falls back to the free-text
+    # COUNTRY_HINTS guess (via `country`, already computed above) for a
+    # nationality code not in MRZ_NATIONALITY_TO_CZECH, or when there's
+    # no MRZ to read at all (e.g. a plain ID card).
+    nationality = mrz_nationality or country
 
     # If nothing about this text looks like an actual ID document (no
     # MRZ, no recognized doc type, no doc number) and it's short — the
@@ -681,6 +743,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     return {
         "doc_type": doc_type,
         "issuing_country": country,
+        "nationality": nationality,
         "document_language": language,
         "issue_date": issue_date,
         "expiry_date": expiry_date,
