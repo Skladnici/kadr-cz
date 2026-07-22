@@ -866,8 +866,13 @@ export default function SimpleDocFiller() {
                 // date field visible that a "na dobu neurčitou" contract
                 // has no use for.
                 const isHppIndefinite = templateId === "hpp_template" && fields.contract_indefinite;
+                // "residence_type" is rendered separately, in its own
+                // collapsed <details> right after personFields (see
+                // below) — excluded here so the generic loop doesn't
+                // also render it a second time as a permanent field.
                 const restFields = relevantFields.filter(
                   ([key]) => !PERSON_FIELD_KEYS.has(key) && !COMPANY_FIELD_KEYS.has(key)
+                    && key !== "residence_type"
                     && !(isHppIndefinite && key === "end_date")
                 );
 
@@ -887,10 +892,12 @@ export default function SimpleDocFiller() {
                   // that component's own comment for why.
                   const showMinorBorder = key === "birth_date" && isPersonMinor;
                   const showVisaExpiredBorder = key === "visa_validity" && isVisaExpiredWarning;
-                  // Same reasoning as PersonCard's own — the badge is
-                  // about the visa's printed category code, not whatever
-                  // is (or isn't) typed into "Druh pobytu" itself.
-                  const showStrpeniBadge = key === "residence_type" && isStrpeniWarning;
+                  // Shown on visa_number (see PersonCard's identical
+                  // reasoning) — residence_type itself isn't rendered by
+                  // this generic loop at all anymore (see its own
+                  // <details> block below), so the badge needs to live
+                  // on whichever visa field is actually always visible.
+                  const showStrpeniBadge = key === "visa_number" && isStrpeniWarning;
                   const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
                   const showWarning = showIcoWarning || showDicWarning || showBadge;
                   const inputEl = (
@@ -941,12 +948,34 @@ export default function SimpleDocFiller() {
                   );
                 };
 
+                const residenceTypeDef = relevantFields.find(([key]) => key === "residence_type");
+
                 return (
                   <>
                     {/* 1. Person's own data first */}
                     <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px]">
                       {personFields.map(renderField)}
                     </div>
+
+                    {/* Collapsed by default — OCR never fills this in
+                        (free text describing the residence permit
+                        category for the printed contract, not anything
+                        printed verbatim on the visa itself), so it'd
+                        otherwise sit empty on every single card. Still
+                        the same "residence_type" field sent to
+                        /api/fill as DRUH_POBYTU when it *is* filled in. */}
+                    {residenceTypeDef && (
+                      <details className="mb-[22px] -mt-3">
+                        <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-[#0B1220]">
+                          {residenceTypeDef[1]}
+                        </summary>
+                        <input
+                          value={fields.residence_type || ""}
+                          onChange={(e) => setFields((f) => ({ ...f, residence_type: e.target.value }))}
+                          className="mt-2 w-full rounded-xl border border-slate-200 px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300"
+                        />
+                      </details>
+                    )}
 
                     {/* 2. Company section: picker + its own particulars
                         (IČO, název, adresa firmy, zástupce) as one unbroken

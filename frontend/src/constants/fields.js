@@ -50,9 +50,15 @@ export const FIELD_DEFS = [
 // Fields shown in the "person" group at the top of the review form —
 // everything else (contract terms, company, payslip specifics) renders
 // further down, after the address section.
+// "residence_type" is deliberately NOT in this set — it's still a real
+// merge field (DRUH_POBYTU, see blank_service.py) but is no longer shown
+// in the main field grid; both SimpleDocFiller and PersonCard render it
+// themselves inside a collapsed <details> instead (see their own "Druh
+// pobytu" block), since day-to-day it's rarely filled in and doesn't
+// need to occupy permanent screen space like visa_number/visa_validity.
 export const PERSON_FIELD_KEYS = new Set([
   "first_name", "last_name", "birth_date", "doc_number",
-  "visa_number", "visa_validity", "residence_type",
+  "visa_number", "visa_validity",
 ]);
 
 // Company's own particulars — rendered as one visual block right after

@@ -157,12 +157,13 @@ export default function PersonCard({
     // otherwise apply (an empty date can't have a computed age anyway).
     const showMinorBorder = key === "birth_date" && isPersonMinor && !showEmptyWarning;
     const showVisaExpiredBorder = key === "visa_validity" && isVisaExpiredWarning && !showEmptyWarning;
-    // "Druh pobytu"/residence_type is a free-text field OCR never fills
-    // (see combineCards' own comment) — this badge doesn't depend on
-    // what's typed there, only on the visa's own printed category code,
-    // but it's shown on this row since "residence status" is what it's
-    // actually about.
-    const showStrpeniBadge = key === "residence_type" && isStrpeniWarning;
+    // Shown on visa_number (the field printed with the visa's own "CZE
+    // ######" number) rather than residence_type — residence_type is a
+    // free-text field OCR never fills in and isn't shown in this grid at
+    // all anymore (see the collapsed "Druh pobytu" details below), while
+    // visa_number is always visible here for every visa card, so that's
+    // where the badge needs to live to actually be seen.
+    const showStrpeniBadge = key === "visa_number" && isStrpeniWarning;
     const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
     return (
       <label key={key} className="block">
@@ -329,10 +330,25 @@ export default function PersonCard({
               Údaje z víza <span className="normal-case text-slate-400">(jen pro cizince)</span>
             </div>
             <div className="grid grid-cols-2 gap-x-3 gap-y-3">
-              {renderIdentityField("residence_type", "Typ víza")}
               {renderIdentityField("visa_number", "Číslo víza")}
               {renderIdentityField("visa_validity", "Platnost víza do")}
             </div>
+            {/* Collapsed by default — OCR never fills this in (it's
+                free text describing the residence permit category for
+                the printed contract, not anything printed verbatim on
+                the visa itself), so it'd otherwise sit empty on every
+                single card. Still the same "residence_type" field sent
+                to /api/fill as DRUH_POBYTU when it *is* filled in. */}
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-[#0B1220]">
+                Druh pobytu na území ČR (nepovinné)
+              </summary>
+              <input
+                value={person.fields.residence_type || ""}
+                onChange={(e) => onUpdateFields({ residence_type: e.target.value })}
+                className={`${inputClass} border-slate-200 mt-2`}
+              />
+            </details>
           </div>
 
           {/* Adresa v ČR + Adresa v zemi původu */}
