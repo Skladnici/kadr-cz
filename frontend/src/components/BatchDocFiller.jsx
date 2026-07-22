@@ -350,6 +350,26 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     recognizeQueueRef.current = recognizeQueueRef.current.filter((item) => item.id !== id);
   }, []);
 
+  // Manual fallback for when canAutoMerge's birth-date match misses —
+  // OCR.space is non-deterministic call-to-call on the same image (see
+  // combineCards' own neighboring comments and _looks_like_garbage_name
+  // in ocr_service.py), so a passport and its own visa can occasionally
+  // come back with a birth date that reads slightly differently on one
+  // of the two, and no regex-level fix can catch a wrong-but-plausible
+  // digit the way it can catch obviously garbled text. Reuses the exact
+  // same combineCards() path the automatic merge does, so a manual merge
+  // behaves identically (including being reversible via "Rozdělit").
+  const handleManualMerge = useCallback((id, otherId) => {
+    setPeopleAndSync((prev) => {
+      const a = prev.find((p) => p.id === id);
+      const b = prev.find((p) => p.id === otherId);
+      if (!a || !b) return prev;
+      const combined = combineCards(a, b);
+      return prev.filter((p) => p.id !== b.id).map((p) => (p.id === a.id ? combined : p));
+    });
+    peopleCountRef.current = Math.max(0, peopleCountRef.current - 1);
+  }, [setPeopleAndSync]);
+
   // Wipes the entire batch — every card, its files/thumbnails, the
   // recognize queue, and the shared fields — back to a clean slate.
   // Confirms first if there's anything that would actually be lost.
@@ -447,10 +467,11 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           // A passport and its own visa sticker land as separate cards
           // (one /api/recognize call per file) — auto-merge them back
           // into one the moment the second one finishes, whenever birth
-          // date agrees (see canAutoMerge). The "Sloučit s další kartou"
-          // button on the card (or the "Možná stejná osoba" suggestion,
-          // for a doc-number-only cross-check hit) is the fallback
-          // otherwise.
+          // date agrees (see canAutoMerge). The "Sloučit s jinou kartou"
+          // button on the card (see PersonCard's mergeCandidates/
+          // onManualMerge, and handleManualMerge below) is the fallback
+          // for whenever OCR non-determinism makes the two readings
+          // disagree even though they're the same document/person.
           const match = afterRecognize.find(
             (p) => p.id !== item.id && p.status === "done" && canAutoMerge(p, justRecognized)
           );
@@ -866,6 +887,8 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               sharedTemplateId={templateId}
               onRemove={() => removePerson(person.id)}
               onSplit={() => splitPerson(person.id)}
+              mergeCandidates={people.filter((p) => p.id !== person.id && p.status === "done")}
+              onManualMerge={(otherId) => handleManualMerge(person.id, otherId)}
               onToggleExpand={() => {
                 // TEMP DEBUG — remove once the "card reopens itself"
                 // report is confirmed fixed on a real batch. Search

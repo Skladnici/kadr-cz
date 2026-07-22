@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, FileText, Loader2, Scissors, X,
+  AlertTriangle, Check, ChevronDown, FileText, Link2, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
@@ -77,6 +77,8 @@ export default function PersonCard({
   sharedTemplateId,
   onRemove,
   onSplit,
+  mergeCandidates,
+  onManualMerge,
   onToggleExpand,
   onOpenLightbox,
   onUpdateFields,
@@ -96,6 +98,12 @@ export default function PersonCard({
   // "hidden by default, only opens on an explicit click" literally rather
   // than remembering whether it was open on a previous expand.
   const [individualOpen, setIndividualOpen] = useState(false);
+  // Manual-merge fallback for when canAutoMerge's birth-date match missed
+  // (OCR non-determinism — see BatchDocFiller's handleManualMerge) — a
+  // pending selection, not committed until "Sloučit" is clicked, same
+  // shape as the override toggles below.
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
   const displayName = [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ");
   const hasOverride = person.companyOverrideEnabled || person.startDateOverrideEnabled
     || person.endDateOverrideEnabled || person.templateOverrideEnabled;
@@ -311,6 +319,57 @@ export default function PersonCard({
                 </button>
               ))}
             </div>
+            {/* Manual fallback for when canAutoMerge's birth-date match
+                missed — see BatchDocFiller's handleManualMerge comment
+                for why this is needed even with matching people (OCR
+                non-determinism, not a bug this UI can fix outright). */}
+            {person.status === "done" && mergeCandidates?.length > 0 && (
+              <div className="mt-2">
+                {!mergeOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setMergeOpen(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 hover:text-slate-600"
+                  >
+                    <Link2 size={11} /> Sloučit s jinou kartou
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <select
+                      value={mergeTargetId}
+                      onChange={(e) => setMergeTargetId(e.target.value)}
+                      className="rounded-lg border border-slate-200 px-2 py-1 text-[11.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                    >
+                      <option value="">— vyberte osobu —</option>
+                      {mergeCandidates.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {[c.fields.first_name, c.fields.last_name].filter(Boolean).join(" ") || c.fields.doc_number || "(bez jména)"}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!mergeTargetId}
+                      onClick={() => {
+                        onManualMerge(mergeTargetId);
+                        setMergeOpen(false);
+                        setMergeTargetId("");
+                      }}
+                      className="text-[11px] font-medium text-[#185FA5] hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Sloučit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMergeOpen(false); setMergeTargetId(""); }}
+                      className="text-[11px] font-medium text-slate-400 hover:text-slate-600"
+                    >
+                      Zrušit
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Údaje z pasu */}
