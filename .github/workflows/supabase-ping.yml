@@ -1,0 +1,52 @@
+name: Supabase keep-alive ping
+
+# Supabase's free plan pauses a project after ~7 days with zero activity,
+# and unlike Render's own free-tier sleep, nothing can wake a paused
+# project back up automatically — someone has to click "Restore" in the
+# Supabase dashboard. Hitting /api/ping/supabase every few days keeps the
+# project active. If it turns out to be paused anyway (missed a run,
+# abuse flag, owner-requested pause, ...), that endpoint answers 503 and
+# this job fails on purpose — a failed scheduled workflow run is enough
+# to make GitHub email the person who owns it, so a paused project gets
+# noticed without needing any separate notification setup.
+on:
+  schedule:
+    # Day-of-month */3 isn't perfectly evenly spaced across month
+    # boundaries, but the gap never exceeds ~4 days either way — well
+    # inside Supabase's 7-day pause window.
+    - cron: "0 6 */3 * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend and check Supabase status
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          PING_TOKEN: ${{ secrets.PING_TOKEN }}
+        run: |
+          set -u
+
+          # --max-time covers Render's free-tier cold start (30-60s) on
+          # top of the actual request; --retry handles a dropped
+          # connection during that wake-up without treating it as a
+          # failure on its own.
+          http_code=$(curl -s -o response.json -w "%{http_code}" \
+            --max-time 90 --retry 3 --retry-delay 15 \
+            "${BACKEND_URL}/api/ping/supabase?token=${PING_TOKEN}" || echo "000")
+
+          echo "HTTP status: ${http_code}"
+          cat response.json 2>/dev/null || true
+          echo
+
+          if [ "${http_code}" = "503" ]; then
+            echo "::error::Supabase project is PAUSED — go to the Supabase dashboard and click Restore."
+            exit 1
+          fi
+
+          # Anything else (200 ok/network_error/error, or even a transient
+          # 000/timeout on the way there) is not the confirmed-pause
+          # signal — logged above for visibility, but not worth a failed
+          # run and an email over an ordinary blip.
+          exit 0

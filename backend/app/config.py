@@ -22,6 +22,12 @@ class Settings:
     # those endpoints disabled with a clear 503 rather than open.
     SITE_USERNAME: str = os.getenv("SITE_USERNAME", "")
     SITE_PASSWORD: str = os.getenv("SITE_PASSWORD", "")
+    # Guards /api/ping/supabase (the keep-alive cron hits this unattended,
+    # without the site login) — see main.py's _require_ping_token. Leave
+    # unset to keep the endpoint open; it's a single cheap, read-only
+    # Supabase query with no PII, so that's an acceptable default for a
+    # small internal tool.
+    PING_TOKEN: str = os.getenv("PING_TOKEN", "")
     # Engine priority:
     # "live"     = Google Vision — best accuracy, needs billing account
     # "ocrspace" = OCR.space free API — no card, no billing, processing

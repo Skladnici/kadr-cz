@@ -586,3 +586,85 @@ async def get_stats_by_type(request: Request):
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
     return resp.json()
+
+
+# ------------------------------------------------------------- Keep-alive
+# Supabase's free plan pauses a project after ~7 days with no activity —
+# unlike Render's own free-tier sleep (which any request wakes up on its
+# own after a 30-60s cold start), a paused Supabase project needs someone
+# to click "Restore" in the Supabase dashboard by hand; no request can
+# wake it back up. .github/workflows/supabase-ping.yml hits this endpoint
+# every few days so Supabase never sees the project go quiet long enough
+# to pause it, and — since that can still happen (abuse flag, owner
+# request, a run the ping missed, etc.) — tells the caller plainly when
+# it already has, so that workflow can fail loudly (GitHub emails the
+# repo owner on a failed scheduled run) instead of the outage being
+# discovered only when someone opens the site and it's broken.
+
+_SUPABASE_PAUSED_HTTP_STATUS = 540  # Supabase's own custom code for "this project is paused"
+
+
+def _require_ping_token(request: Request):
+    """Separate from _require_site_auth: this endpoint is meant to be hit
+    unattended by a scheduled job, not a logged-in person, so it can't
+    require the site's username/password. With no PING_TOKEN configured
+    it's left open — it only ever runs one cheap, read-only Supabase
+    query with no PII, which isn't worth locking down further for a small
+    internal tool — but setting one keeps random internet traffic from
+    needlessly poking Supabase and waking a sleeping Render instance."""
+    if not settings.PING_TOKEN:
+        return
+    token = request.query_params.get("token") or request.headers.get("X-Ping-Token")
+    if not secrets.compare_digest(token or "", settings.PING_TOKEN):
+        raise HTTPException(401, "Neplatny ping token.")
+
+
+@app.get("/api/ping/supabase", dependencies=[Depends(_require_ping_token)])
+@limiter.limit("30/hour")
+async def ping_supabase(request: Request):
+    """Runs one real Supabase query (resetting its inactivity clock) and
+    reports whether the project is healthy, merely slow/erroring, or has
+    actually been paused outright.
+
+    Supabase's API gateway answers a *paused* project with its own custom
+    540 status — a real HTTP response, not a dropped connection — so
+    that's the only signal treated as the hard "needs a human to click
+    Restore" case (503 here, which a `curl --fail`-style check in the cron
+    workflow can key off). A network-level failure (timeout, connection
+    refused, DNS hiccup) is NOT the same thing — a paused project still
+    answers 540 rather than dropping the connection — so those, along with
+    any other unexpected status Supabase might return, are logged for
+    visibility but reported back as 200: nothing here needs to page
+    anyone over an ordinary blip.
+    Reference: https://supabase.com/docs/guides/troubleshooting/http-status-codes
+    """
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return {"status": "not_configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/companies",
+                headers=_supabase_headers(),
+                params={"select": "id", "limit": 1},
+            )
+    except httpx.RequestError as e:
+        logging.getLogger(__name__).warning("supabase ping: network error (not a confirmed pause): %s", e)
+        return {"status": "network_error", "detail": str(e)}
+
+    if resp.status_code == _SUPABASE_PAUSED_HTTP_STATUS:
+        logging.getLogger(__name__).error(
+            "supabase ping: project is PAUSED (HTTP 540) — needs a manual Restore in the Supabase dashboard"
+        )
+        raise HTTPException(
+            503,
+            "Supabase projekt je pozastaven (HTTP 540) — je potreba rucne kliknout Restore v Supabase dashboardu.",
+        )
+
+    if resp.status_code >= 400:
+        logging.getLogger(__name__).warning(
+            "supabase ping: unexpected status %s (not a confirmed pause): %s", resp.status_code, resp.text
+        )
+        return {"status": "error", "http_status": resp.status_code}
+
+    return {"status": "ok"}
