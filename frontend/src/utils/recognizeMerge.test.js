@@ -42,7 +42,21 @@ describe("mergeRecognizedResults — warnings vs addressHint split", () => {
     expect(merged.addressHint).toContain("Vinohradská 45, Praha 2");
   });
 
-  it("flags a genuine name mismatch between two merged documents as a warning", () => {
+  it("flags a genuine name mismatch between two merged documents as a warning (single mode)", () => {
+    const merged = mergeRecognizedResults([
+      baseResult({ first_name: "JAN" }),
+      baseResult({ first_name: "JOHN" }),
+    ]);
+    expect(merged.warnings.length).toBeGreaterThan(0);
+    expect(merged.warnings.some((w) => w.includes("Jméno"))).toBe(true);
+  });
+
+  it("keeps a compact-mode name mismatch out of warnings — it's expected OCR noise on an already birth-date-confirmed identity, not a real problem", () => {
+    // Real bug this guards against: every successfully auto-merged (and
+    // manually merged) batch card was showing the same amber warning
+    // triangle as a genuine failure, even though the merge itself was
+    // entirely correct — a visa's MRZ name reading slightly differently
+    // than the passport's is routine, not a sign anything went wrong.
     const merged = mergeRecognizedResults(
       [
         baseResult({ first_name: "JAN" }),
@@ -50,7 +64,15 @@ describe("mergeRecognizedResults — warnings vs addressHint split", () => {
       ],
       { compactNameWarning: true }
     );
-    expect(merged.warnings.length).toBeGreaterThan(0);
-    expect(merged.warnings.some((w) => w.includes("Jméno"))).toBe(true);
+    expect(merged.warnings).toEqual([]);
+    expect(merged.nameMismatchHint).toContain("Jméno");
+  });
+
+  it("leaves nameMismatchHint null when names agree", () => {
+    const merged = mergeRecognizedResults(
+      [baseResult({ first_name: "JAN" }), baseResult({ first_name: "JAN" })],
+      { compactNameWarning: true }
+    );
+    expect(merged.nameMismatchHint).toBeNull();
   });
 });

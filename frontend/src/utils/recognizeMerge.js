@@ -64,7 +64,7 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
   // warns — it never blocks or auto-picks a "winner" — leaving the final
   // call to the person who can look at the actual photos, same as the
   // honest photo-quality hedge above.
-  const nameMismatchWarnings = [["first_name", "Jméno"], ["last_name", "Příjmení"]].flatMap(
+  const nameMismatchMessages = [["first_name", "Jméno"], ["last_name", "Příjmení"]].flatMap(
     ([key, label]) => {
       const variants = [];
       results.forEach((r, i) => {
@@ -86,19 +86,42 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
     }
   );
 
+  // In compact mode (batch/merged cards), a name mismatch is *expected*
+  // OCR noise on an identity already confirmed by an independent
+  // birth-date match (see this function's own top comment) — a
+  // successful, correct merge routinely produces one (visa MRZ names
+  // often read slightly differently than a passport's). It must NOT set
+  // off the same amber-triangle "this needs a manual look" signal a real
+  // problem does (missing field, failed checksum, expired document) —
+  // real case: every auto-merged and manually-merged card was showing
+  // the warning triangle even when the merge was entirely correct,
+  // reading as "something went wrong" to whoever's reviewing the batch.
+  // Surfaced separately (like `addressHint` below) instead, purely
+  // informational. In non-compact (single) mode this stays a real
+  // `warnings` entry — there, the person combining files IS the identity
+  // check, so a differing name is the only signal they get that the
+  // files might not belong together at all.
+  const nameMismatchHint = compactNameWarning && nameMismatchMessages.length > 0
+    ? nameMismatchMessages.join(" ")
+    : null;
+
   // Actionable warnings only — backend per-file quality/checksum/expiry
-  // flags, plus a genuine cross-document name mismatch. Deliberately
-  // excludes the address hint below: that fires whenever an address
-  // happened to appear in the OCR text, which is routine on most ID
-  // documents, not a sign anything went wrong. Kept separate (as
-  // `addressHint`, not folded into `warnings`) specifically so a caller
-  // that uses `warnings.length` to flag "this needs a manual look" (see
-  // BatchDocFiller/PersonCard's StatusDot) doesn't light up on every
-  // ordinary successful merge just because an address was printed on the
-  // document — a real bug found by testing two real people in one batch:
-  // one had an address on their ID and got flagged, the other didn't and
-  // came up clean, even though both merged without any actual problem.
-  const warnings = [...results.flatMap((r) => r.warnings || []), ...nameMismatchWarnings];
+  // flags, plus (single mode only) a genuine cross-document name
+  // mismatch. Deliberately excludes the address hint below: that fires
+  // whenever an address happened to appear in the OCR text, which is
+  // routine on most ID documents, not a sign anything went wrong. Kept
+  // separate (as `addressHint`, not folded into `warnings`) specifically
+  // so a caller that uses `warnings.length` to flag "this needs a manual
+  // look" (see BatchDocFiller/PersonCard's StatusDot) doesn't light up
+  // on every ordinary successful merge just because an address was
+  // printed on the document — a real bug found by testing two real
+  // people in one batch: one had an address on their ID and got
+  // flagged, the other didn't and came up clean, even though both
+  // merged without any actual problem.
+  const warnings = [
+    ...results.flatMap((r) => r.warnings || []),
+    ...(compactNameWarning ? [] : nameMismatchMessages),
+  ];
 
   const recognizedAddress = pick("address");
   const addressHint = recognizedAddress
@@ -124,6 +147,7 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
     docNumberVerified: Boolean(docNumberSource?.doc_number_verified),
     warnings,
     addressHint,
+    nameMismatchHint,
     rawText: results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"),
     ocrMode: results[0]?.ocr_mode,
   };

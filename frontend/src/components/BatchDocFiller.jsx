@@ -52,6 +52,7 @@ function makePersonCard(file) {
     docNumberVerified: false,
     warnings: [],
     addressHint: null,
+    nameMismatchHint: null,
     rawText: "",
     ocrMode: null,
     czAddressParts: {},
@@ -94,6 +95,7 @@ function applyRecognizedResult(person, result) {
     docNumberVerified: merged.docNumberVerified,
     warnings: merged.warnings,
     addressHint: merged.addressHint,
+    nameMismatchHint: merged.nameMismatchHint,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -156,6 +158,7 @@ function combineCards(keep, merge) {
     docNumberVerified: merged.docNumberVerified,
     warnings: merged.warnings,
     addressHint: merged.addressHint,
+    nameMismatchHint: merged.nameMismatchHint,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -434,6 +437,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         docNumberVerified: remainingMerged.docNumberVerified,
         warnings: remainingMerged.warnings,
         addressHint: remainingMerged.addressHint,
+        nameMismatchHint: remainingMerged.nameMismatchHint,
         rawText: remainingMerged.rawText,
         ocrMode: remainingMerged.ocrMode,
       };

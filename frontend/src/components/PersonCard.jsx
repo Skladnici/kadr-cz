@@ -250,7 +250,7 @@ export default function PersonCard({
               {person.error || "Rozpoznání se nezdařilo — údaje vyplňte prosím ručně."}
             </div>
           )}
-          {(person.warnings?.length > 0 || person.addressHint) && (
+          {(person.warnings?.length > 0 || person.addressHint || person.nameMismatchHint) && (
             <div className="space-y-1.5">
               {person.warnings.map((w, i) => (
                 <div key={i} className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
@@ -265,6 +265,17 @@ export default function PersonCard({
               {person.addressHint && (
                 <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
                   <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {person.addressHint}
+                </div>
+              )}
+              {/* Same reasoning as addressHint just above — see
+                  recognizeMerge.js's nameMismatchHint comment. A
+                  successfully merged card routinely has a slightly
+                  differently-read name between its passport and visa;
+                  that's expected noise, not a reason to show the same
+                  amber triangle StatusDot uses for a real problem. */}
+              {person.nameMismatchHint && (
+                <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {person.nameMismatchHint}
                 </div>
               )}
             </div>
