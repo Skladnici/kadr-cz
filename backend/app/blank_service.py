@@ -131,14 +131,14 @@ def _s(fields: dict, key: str, default: str = "") -> str:
     return v if v is not None else default
 
 
-def _build_context(fields: dict) -> dict:
+def _build_context(fields: dict, template_id: str = "") -> dict:
     """Normalizes the raw `fields` dict (from FillRequest.model_dump())
     into the {{PLACEHOLDER}} context every template — the three main
     contracts and the bundle docs (GDPR/health declaration) alike — is
     rendered with. Shared by fill_blank() and _fill_bundle_docx() so
     both read the exact same fields the person filled in once, rather
     than each maintaining its own (and inevitably drifting) mapping."""
-    return {
+    context = {
         "JMENO": _s(fields, "first_name"),
         "PRIJMENI": _s(fields, "last_name"),
         "ADRESA": _s(fields, "address"),
@@ -181,6 +181,14 @@ def _build_context(fields: dict) -> dict:
         "CISTA_MZDA": _s(fields, "net_salary"),
     }
 
+    # DPP's "Místo výkonu práce" is always Czechia, regardless of whatever
+    # the workplace field was filled with (e.g. a specific employer
+    # address) — fixed per business requirement rather than left to input.
+    if template_id == "dpp_template":
+        context["MISTO_VYKONU"] = "ČR"
+
+    return context
+
 
 def _render_and_save(template_path: Path, fields: dict, out_prefix: str) -> Path:
     """Shared render+save core for both a public (template_id-based)
@@ -188,7 +196,7 @@ def _render_and_save(template_path: Path, fields: dict, out_prefix: str) -> Path
     filename/path-safety handling, only the template file and output
     name prefix differ."""
     doc = DocxTemplate(str(template_path))
-    doc.render(_build_context(fields))
+    doc.render(_build_context(fields, out_prefix))
 
     safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
     safe_first = _safe_filename_part(fields.get("first_name"))
