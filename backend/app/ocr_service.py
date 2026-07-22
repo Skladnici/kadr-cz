@@ -461,12 +461,13 @@ def _normalize_mrz_text(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, Optional[str]]:
-    """Reads the document number, and the holder's birth date, straight
-    from the MRZ's own field + check digit, rather than guessing from
-    printed (often smudged, glare-affected, or non-Latin-script) text
-    elsewhere on the page — this is the same field real e-passport gates
-    rely on, and the doc number self-verifies via checksum.
+def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
+    """Reads the document number, the holder's birth date, and the
+    document's own expiry date, straight from the MRZ's own fields +
+    check digits, rather than guessing from printed (often smudged,
+    glare-affected, or non-Latin-script) text elsewhere on the page —
+    this is the same field real e-passport gates rely on, and the doc
+    number self-verifies via checksum.
 
     The birth-date digits sit in the very same regex match (ICAO 9303
     TD3 line 2: doc number, check digit, nationality, birth date YYMMDD,
@@ -477,24 +478,41 @@ def _extract_passport_number_from_mrz(text: str) -> tuple[Optional[str], bool, O
     the page, so this needs no per-country handling: confirmed against a
     real Armenian passport ("...ARM7402016M3501151<<<<04") whose printed
     "DATE OF BIRTH" a passport-side label search couldn't reliably catch,
-    while this MRZ field read correctly."""
-    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}(\d{6})\d[MF<]\d{6}\d", _normalize_mrz_text(text))
+    while this MRZ field read correctly.
+
+    The expiry-date digits (immediately after birth date + sex) had the
+    exact same gap: matched structurally to anchor the regex, but never
+    captured. Real case (the same Tadevosyan passport): the printed page
+    had "DATE OF ISSUE\nDATE OF EXPIRY\n15 JAN 2025\n15 JAN 2035" — OCR
+    line order put both labels before both dates, so a labeled search
+    for "Date of expiry" never finds a date right after it, and the
+    generic positional date-fallback elsewhere in this file ends up
+    picking the *issue* date instead (15.01.2025) because nothing had
+    excluded it first. The MRZ's own expiry field has no such ambiguity
+    — same fixed-position reasoning as birth date above — and per this
+    module's existing pattern for doc_number/visa validity, callers
+    should prefer this over the printed-text guess whenever it's
+    available, not just fall back to it when the guess comes up empty."""
+    m = re.search(r"([A-Z0-9<]{9})(\d)[A-Z]{3}(\d{6})\d[MF<](\d{6})\d", _normalize_mrz_text(text))
     if not m:
-        return None, False, None
-    raw, check, birth_raw = m.group(1), m.group(2), m.group(3)
+        return None, False, None, None
+    raw, check, birth_raw, expiry_raw = m.group(1), m.group(2), m.group(3), m.group(4)
     corrected, verified = _verify_and_correct(raw, check)
     doc_number = corrected.replace("<", "").strip()
 
-    birth_date = None
-    try:
-        yy, mm, dd = int(birth_raw[0:2]), int(birth_raw[2:4]), int(birth_raw[4:6])
-        year = _interpret_two_digit_year(yy, role="birth")
-        date(year, mm, dd)  # validate
-        birth_date = f"{dd:02d}.{mm:02d}.{year}"
-    except (ValueError, IndexError):
-        pass
+    def _decode(raw_digits, role):
+        try:
+            yy, mm, dd = int(raw_digits[0:2]), int(raw_digits[2:4]), int(raw_digits[4:6])
+            year = _interpret_two_digit_year(yy, role=role)
+            date(year, mm, dd)  # validate
+            return f"{dd:02d}.{mm:02d}.{year}"
+        except (ValueError, IndexError):
+            return None
 
-    return (doc_number or None), verified, birth_date
+    birth_date = _decode(birth_raw, "birth")
+    expiry_date = _decode(expiry_raw, "expiry")
+
+    return (doc_number or None), verified, birth_date, expiry_date
 
 
 def _find_doc_number(text: str) -> Optional[str]:
@@ -580,7 +598,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # Prefer the MRZ-derived document number — it self-verifies via a
     # checksum, unlike text found elsewhere on the page. Only fall back
     # to the generic label/pattern search if there's no MRZ to read.
-    mrz_doc_number, doc_number_verified, mrz_birth_date = _extract_passport_number_from_mrz(raw_text)
+    mrz_doc_number, doc_number_verified, mrz_birth_date, mrz_expiry_date = _extract_passport_number_from_mrz(raw_text)
     doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
 
@@ -592,6 +610,20 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # decoded here exactly as ICAO 9303 defines it for every country.
     if not birth_date and mrz_birth_date:
         birth_date = mrz_birth_date
+
+    # Unlike birth_date above, this WINS over the printed-text guess
+    # rather than just filling a gap — same priority _extract_fields_
+    # from_text already gives doc_number. Real case: a passport whose
+    # OCR text had "DATE OF ISSUE\nDATE OF EXPIRY\n15 JAN 2025\n15 JAN
+    # 2035" (both labels before both dates, so the labeled search above
+    # never found "Date of expiry"'s own date) fell through to the
+    # generic positional dates[] fallback, which — with no birth_date
+    # found yet either to exclude from consideration — ended up reading
+    # the *issue* date (15.01.2025) into expiry_date instead, wrongly
+    # flagging a passport valid until 2035 as expired. The MRZ's expiry
+    # field has no such ambiguity to get shifted by.
+    if mrz_expiry_date:
+        expiry_date = mrz_expiry_date
 
     # If nothing about this text looks like an actual ID document (no
     # MRZ, no recognized doc type, no doc number) and it's short — the

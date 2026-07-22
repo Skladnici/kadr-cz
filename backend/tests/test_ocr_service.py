@@ -98,17 +98,20 @@ def test_extract_passport_number_from_mrz_self_verifies():
         "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<\n"
         "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
     )
-    doc_number, verified, birth_date = _extract_passport_number_from_mrz(mrz_text)
+    doc_number, verified, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_text)
     assert doc_number == "L898902C3"
     assert verified is True
     # ICAO's own standard MRZ example: birth date 12 Aug 1974, positioned
     # right after the nationality code in the same MRZ field this
     # function already reads doc_number from.
     assert birth_date == "12.08.1974"
+    # Same example's expiry date: 15 Apr 2012 (YYMMDD "120415" right
+    # after the birth-date check digit and sex).
+    assert expiry_date == "15.04.2012"
 
 
 def test_extract_passport_number_from_mrz_none_without_mrz():
-    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False, None)
+    assert _extract_passport_number_from_mrz("no mrz line here") == (None, False, None, None)
 
 
 def test_extract_passport_number_from_mrz_real_armenian_passport_ernest_tadevosyan():
@@ -120,9 +123,16 @@ def test_extract_passport_number_from_mrz_real_armenian_passport_ernest_tadevosy
     # against its (correctly-read) visa. The MRZ line is unaffected by
     # any of that: ICAO 9303 TD3 field positions are the same regardless
     # of issuing country or printed-text script.
+    #
+    # Same real case also motivated the expiry-date fix: the printed page
+    # had "DATE OF ISSUE\nDATE OF EXPIRY\n15 JAN 2025\n15 JAN 2035" (both
+    # labels before both dates), which the generic printed-text fallback
+    # elsewhere in this module misread as expiry=15.01.2025 (the *issue*
+    # date) — wrongly flagging a passport valid until 2035 as expired.
     mrz_line2 = "AX05955872ARM7402016M3501151<<<<04"
-    _, _, birth_date = _extract_passport_number_from_mrz(mrz_line2)
+    _, _, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_line2)
     assert birth_date == "01.02.1974"
+    assert expiry_date == "15.01.2035"
 
 
 def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan():
@@ -131,8 +141,9 @@ def test_extract_passport_number_from_mrz_real_armenian_passport_david_hambaryan
     # confirms the regex doesn't depend on that optional tail being
     # present.
     mrz_line2 = "AX06570519ARM7702129M3503144"
-    _, _, birth_date = _extract_passport_number_from_mrz(mrz_line2)
+    _, _, birth_date, expiry_date = _extract_passport_number_from_mrz(mrz_line2)
     assert birth_date == "12.02.1977"
+    assert expiry_date == "14.03.2035"
 
 
 def test_find_visa_info_real_armenian_visa_david_hambaryan():
@@ -383,6 +394,54 @@ def test_extract_fields_uses_generic_mrz_birth_date_fallback_for_passport():
     )
     fields = _extract_fields_from_text(text, quality=88, mode="mock")
     assert fields["birth_date"] == "01.02.1974"
+
+
+def test_extract_fields_expiry_prefers_mrz_over_misordered_printed_text():
+    # Real case, full unedited OCR text this time (the simplified version
+    # above only covers the birth-date fallback): this passport's actual
+    # scan came back with both date labels before both dates ("DATE OF
+    # ISSUE\nDATE OF EXPIRY\n15 JAN 2025\n15 JAN 2035"), so the labeled
+    # search for "Date of expiry" never finds a date right after it (nor
+    # does "Date of issue"). It fell through to the generic printed-text
+    # date fallback, which -- with no birth_date having been found yet
+    # either to exclude from consideration -- read the numeric Armenian-
+    # script header dates in document order and landed on the *issue*
+    # date (15.01.2025) for expiry_date instead, wrongly flagging a
+    # passport valid until 2035 as expired (is_expired=True).
+    text = (
+        "USUUSUZUS REPUBLIC OF ARMENIA\n"
+        "01.02-1974\n"
+        "15.01.2025\n"
+        "046\n"
+        "15.01.2052\n"
+        "SUBUUSULUS REPUBLIC OF ARMENIA\n"
+        "TYPE\n"
+        "COUNTRY CODE PASSPORT No\n"
+        "ARM\n"
+        "PASSPORT\n"
+        "P\n"
+        "AX0595587\n"
+        "SURNAME(S)\n"
+        "TADEVOSYAN\n"
+        "NAME\n"
+        "ERNEST\n"
+        "NATIONALITY REPUBLIC OF ARMENIA\n"
+        "DATE OF BIRTH\n"
+        "01 FEB 1974\n"
+        "SEX\n"
+        "M\n"
+        "DATE OF ISSUE\n"
+        "DATE OF EXPIRY\n"
+        "15 JAN 2025\n"
+        "15 JAN 2035\n"
+        "046\n"
+        "P<ARMTADEVOSYAN<<ERNEST<<<<<<<<<<<<<<<<<<<\n"
+        "AX05955872ARM7402016M3501151<<\n"
+        "<<<<04"
+    )
+    fields = _extract_fields_from_text(text, quality=88, mode="mock")
+    assert fields["expiry_date"] == "15.01.2035"
+    assert fields["is_expired"] is False
 
 
 def test_extract_fields_prefers_labeled_birth_date_over_mrz():
