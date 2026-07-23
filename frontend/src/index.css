@@ -86,10 +86,10 @@ body {
   position: relative;
   overflow: hidden; /* clips the sheen sweep below to the rounded corners */
   border-radius: inherit;
-  background: rgba(255, 255, 255, .38);
+  background: rgba(255, 255, 255, .22);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
-  box-shadow: 0 20px 45px rgba(24, 95, 165, .14), inset 0 1px 0 rgba(255, 255, 255, .8);
+  box-shadow: 0 20px 45px rgba(24, 95, 165, .08), inset 0 1px 0 rgba(255, 255, 255, .8);
 }
 
 /* Diagonal light sweep, once on appearance — not looped, matching a real
@@ -154,5 +154,6 @@ body {
   margin-top: 4px;
   font-size: 12.5px;
   color: #3a5a7a;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .6);
   animation: welcomeTextIn .4s ease-out .3s both;
 }
