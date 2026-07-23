@@ -16,6 +16,7 @@ import logging
 import secrets
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -382,7 +383,8 @@ async def fill(request: Request, payload: FillRequest):
     # Best-effort usage counter (see _log_generation below) — logged only
     # once generation has actually succeeded, and never allowed to turn a
     # successful fill into a failed request.
-    await _log_generation(payload.template_id, payload.company_name)
+    employee_name = f"{payload.first_name or ''} {payload.last_name or ''}".strip()
+    await _log_generation(payload.template_id, payload.company_name, employee_name)
 
     return result
 
@@ -514,12 +516,13 @@ async def delete_company(company_id: str):
 
 # ---------------------------------------------------------------- Stats
 # Lightweight, all-time usage counter: how many documents were generated
-# per company. No employee/personal data — see create_generation_log_table.sql.
-# Logged best-effort from fill() above on every successful generation: if
-# Supabase isn't configured, or the insert itself fails, the document is
-# still generated and served normally — only the counter silently misses
-# that one entry, since a stats widget is not worth failing a real
-# document request over.
+# per company (and, since employee_name was added for the per-person
+# signing-status dots in StatsWidget.jsx, per person too) — see
+# create_generation_log_table.sql. Logged best-effort from fill() above
+# on every successful generation: if Supabase isn't configured, or the
+# insert itself fails, the document is still generated and served
+# normally — only the counter silently misses that one entry, since a
+# stats widget is not worth failing a real document request over.
 
 _DOCUMENT_TYPE_LABELS = {
     "dpp_template": "DPP",
@@ -530,17 +533,18 @@ _DOCUMENT_TYPE_LABELS = {
 }
 
 
-async def _log_generation(template_id: str, company_name: Optional[str]) -> None:
+async def _log_generation(template_id: str, company_name: Optional[str], employee_name: Optional[str] = None) -> None:
     if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
         return
     document_type = _DOCUMENT_TYPE_LABELS.get(template_id, template_id)
     name = (company_name or "").strip() or None
+    person = (employee_name or "").strip() or None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
                 f"{settings.SUPABASE_URL}/rest/v1/generation_log",
                 headers=_supabase_headers(),
-                json={"company_name": name, "document_type": document_type},
+                json={"company_name": name, "employee_name": person, "document_type": document_type},
             )
         if resp.status_code >= 400:
             logging.getLogger(__name__).warning(
@@ -553,10 +557,12 @@ async def _log_generation(template_id: str, company_name: Optional[str]) -> None
 @app.get("/api/stats", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
 @limiter.limit("60/minute")
 async def get_stats(request: Request):
-    """Per-company document counts, all-time, no date breakdown — powers
-    the corner stats widget (StatsWidget.jsx). Reads the generation_stats
-    view (a plain GROUP BY that PostgREST's REST API can't express
-    directly) rather than aggregating every row in Python."""
+    """Per-company document counts, all-time, no date breakdown, plus an
+    all_signed flag (true only if every document logged for that company
+    has a signed_at) — powers the corner stats widget's per-company status
+    dot (StatsWidget.jsx). Reads the generation_stats view (a plain GROUP
+    BY that PostgREST's REST API can't express directly) rather than
+    aggregating every row in Python."""
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.SUPABASE_URL}/rest/v1/generation_stats",
@@ -586,6 +592,61 @@ async def get_stats_by_type(request: Request):
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
     return resp.json()
+
+
+@app.get("/api/stats/by-person", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("60/minute")
+async def get_stats_by_person(request: Request):
+    """Per-person document counts and signing status under each company —
+    powers StatsWidget.jsx's per-person status dots in the expanded detail
+    view. Reads the generation_stats_by_person view (see
+    create_generation_log_table.sql); rows with no employee_name on record
+    (blank at generation time, or predating that column) are excluded by
+    the view itself, not here."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/generation_stats_by_person",
+            headers=_supabase_headers(),
+            params={"select": "*"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp.json()
+
+
+class SignIn(BaseModel):
+    company_name: str
+    employee_name: str
+    signed: bool
+
+
+@app.post("/api/stats/sign", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("60/minute")
+async def set_signed_status(request: Request, payload: SignIn):
+    """Marks/unmarks every generation_log row for one person at one
+    company as signed — StatsWidget.jsx's per-person dot always reflects
+    "all of this person's documents", so clicking it acts on that whole
+    set at once rather than one document at a time. company_name/
+    employee_name are matched against the same coalesce(...)'d values
+    generation_stats_by_person returns, not necessarily the raw column
+    (company_name can be NULL in the table but show up here as the
+    'Bez firmy' bucket the frontend already displays)."""
+    params: dict = {"employee_name": f"eq.{payload.employee_name}"}
+    if payload.company_name == "Bez firmy":
+        params["or"] = f"(company_name.is.null,company_name.eq.{payload.company_name})"
+    else:
+        params["company_name"] = f"eq.{payload.company_name}"
+    body = {"signed_at": datetime.now(timezone.utc).isoformat() if payload.signed else None}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(
+            f"{settings.SUPABASE_URL}/rest/v1/generation_log",
+            headers=_supabase_headers(),
+            params=params,
+            json=body,
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return {"ok": True}
 
 
 # ------------------------------------------------------------- Keep-alive

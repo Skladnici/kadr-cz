@@ -21,6 +21,7 @@ function pluralizeDocs(n) {
 export default function StatsWidget({ apiFetch, refreshSignal }) {
   const [stats, setStats] = useState(null); // null = hidden (not loaded yet, or unavailable)
   const [statsByType, setStatsByType] = useState([]);
+  const [statsByPerson, setStatsByPerson] = useState([]);
   const [expanded, setExpanded] = useState(false);
   // Set of company_name — which company rows have their per-document-type
   // breakdown open. A Set (not a single "which one" value) so several
@@ -41,15 +42,24 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
       setStats(null);
     }
 
-    // The by-type breakdown is supplementary detail, not the widget's core
-    // feature — a failure here just means expanded rows show no detail
-    // rather than hiding the whole widget the way a failed /api/stats does.
+    // The by-type/by-person breakdowns are supplementary detail, not the
+    // widget's core feature — a failure here just means expanded rows show
+    // no detail rather than hiding the whole widget the way a failed
+    // /api/stats does.
     try {
       const res = await apiFetch("/api/stats/by-type");
       const data = res.ok ? await res.json() : [];
       setStatsByType(Array.isArray(data) ? data : []);
     } catch {
       setStatsByType([]);
+    }
+
+    try {
+      const res = await apiFetch("/api/stats/by-person");
+      const data = res.ok ? await res.json() : [];
+      setStatsByPerson(Array.isArray(data) ? data : []);
+    } catch {
+      setStatsByPerson([]);
     }
   }, [apiFetch]);
 
@@ -65,6 +75,14 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
     return map;
   }, [statsByType]);
 
+  const byPersonByCompany = useMemo(() => {
+    const map = {};
+    for (const row of statsByPerson) {
+      (map[row.company_name] ||= []).push(row);
+    }
+    return map;
+  }, [statsByPerson]);
+
   const toggleCompany = useCallback((companyName) => {
     setExpandedCompanies((prev) => {
       const next = new Set(prev);
@@ -73,6 +91,25 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
       return next;
     });
   }, []);
+
+  // Clicking a person's dot/row marks or unmarks every document logged for
+  // them at that company as signed (see /api/stats/sign's own docstring —
+  // the dot always reflects "all of this person's documents", so there's
+  // no finer-grained per-document toggle here). Best-effort like the rest
+  // of this widget: a failed request just leaves the dot showing its
+  // previous state instead of surfacing an error banner.
+  const toggleSigned = useCallback(async (companyName, employeeName, nextSigned) => {
+    try {
+      const res = await apiFetch("/api/stats/sign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ company_name: companyName, employee_name: employeeName, signed: nextSigned }),
+      });
+      if (res.ok) load();
+    } catch {
+      // ignored — best-effort, see comment above
+    }
+  }, [apiFetch, load]);
 
   if (stats === null) return null;
 
@@ -100,6 +137,7 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
               {stats.map((s) => {
                 const isOpen = expandedCompanies.has(s.company_name);
                 const byType = byTypeByCompany[s.company_name] || [];
+                const byPerson = byPersonByCompany[s.company_name] || [];
                 return (
                   <li key={s.company_name}>
                     <button
@@ -108,7 +146,14 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                       aria-expanded={isOpen}
                       className="flex w-full items-center justify-between gap-2 rounded-lg px-1.5 py-1 text-[12px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                     >
-                      <span className="truncate">{s.company_name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span
+                          className={`status-dot ${s.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
+                          aria-hidden="true"
+                          title={s.all_signed ? "Vše podepsáno" : "Něco nepodepsáno"}
+                        />
+                        <span className="truncate">{s.company_name}</span>
+                      </span>
                       <span className="flex shrink-0 items-center gap-1">
                         <span className="font-semibold text-[#0B1220] tabular-nums">{s.document_count}</span>
                         {isOpen
@@ -117,11 +162,33 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                       </span>
                     </button>
                     {isOpen && (
-                      <p className="px-1.5 pb-1.5 pt-0.5 text-[11px] text-slate-400">
-                        {byType.length > 0
-                          ? byType.map((t) => `${t.document_type}: ${t.document_count}`).join(" · ")
-                          : "Žádná data podle typu."}
-                      </p>
+                      <div className="px-1.5 pb-1.5 pt-0.5">
+                        <p className="text-[11px] text-slate-400">
+                          {byType.length > 0
+                            ? byType.map((t) => `${t.document_type}: ${t.document_count}`).join(" · ")
+                            : "Žádná data podle typu."}
+                        </p>
+                        {byPerson.length > 0 && (
+                          <ul className="mt-1.5 space-y-0.5 border-t border-slate-100 pt-1.5">
+                            {byPerson.map((p) => (
+                              <li key={p.employee_name}>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSigned(s.company_name, p.employee_name, !p.all_signed)}
+                                  className="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[11.5px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                                  title={p.all_signed ? "Označit jako nepodepsané" : "Označit jako podepsané"}
+                                >
+                                  <span className="truncate">{p.employee_name}</span>
+                                  <span
+                                    className={`status-dot ${p.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
+                                    aria-hidden="true"
+                                  />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
                   </li>
                 );
