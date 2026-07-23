@@ -32,9 +32,9 @@ export default function WelcomeToast({ onDone }) {
   }, [onDone]);
 
   return (
-    <div className="fixed top-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-xs px-4 pointer-events-none">
+    <div className="fixed top-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-[520px] px-4 pointer-events-none">
       <div className="welcome-toast-frame rounded-[18px]">
-        <div className="welcome-toast-glass rounded-[18px] px-[34px] py-5 text-center">
+        <div className="welcome-toast-glass rounded-[18px] px-[40px] pt-[28px] pb-[26px] text-center">
           <div className="welcome-toast-text">
             <div className="welcome-toast-eyebrow">KADR.CZ</div>
             <div className="welcome-toast-title">{greeting}</div>
