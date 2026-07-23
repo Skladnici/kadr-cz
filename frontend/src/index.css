@@ -86,7 +86,7 @@ body {
   position: relative;
   overflow: hidden; /* clips the sheen sweep below to the rounded corners */
   border-radius: inherit;
-  background: rgba(255, 255, 255, .55);
+  background: rgba(255, 255, 255, .38);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
   box-shadow: 0 20px 45px rgba(24, 95, 165, .14), inset 0 1px 0 rgba(255, 255, 255, .8);
