@@ -35,13 +35,17 @@ export default function WelcomeToast({ onDone }) {
     <div className="fixed top-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-xs px-4 pointer-events-none">
       <div className="welcome-toast-frame rounded-[18px]">
         <div className="welcome-toast-glass rounded-[18px] px-[34px] py-5 text-center">
-          <span className="welcome-toast-sheen" aria-hidden="true" />
           <div className="welcome-toast-text">
             <div className="welcome-toast-eyebrow">KADR.CZ</div>
             <div className="welcome-toast-title">{greeting}</div>
             <div className="welcome-toast-subtitle">Vyberte typ zpracování a pokračujte.</div>
           </div>
         </div>
+        {/* Sibling of .welcome-toast-glass, not nested inside it — so its
+            overflow:hidden clips against the outer .frame (border ring
+            included) rather than just the card interior, letting the
+            sheen sweep across the gradient border too, not just the text. */}
+        <span className="welcome-toast-sheen" aria-hidden="true" />
       </div>
     </div>
   );

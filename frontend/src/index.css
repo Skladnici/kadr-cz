@@ -48,14 +48,15 @@ body {
   color: #5b6472;
 }
 
-/* Post-login greeting (see WelcomeToast.jsx) — a light glassmorphism
-   card, not a solid brand-color one, so it reads as a transient overlay
-   rather than another opaque panel stacked on the page. Built as two
-   nested boxes rather than a border property: .welcome-toast-frame is
-   the flowing-gradient background with a 1.4px padding "ring", and
-   .welcome-toast-glass sits inside that padding with its own opaque(ish)
-   background — the classic gradient-border trick, since a real animated
-   gradient border isn't otherwise possible with plain CSS `border`. */
+/* Post-login greeting (see WelcomeToast.jsx) — a solid card in the same
+   tone as the page background, so it reads as part of the page rather
+   than a floating overlay; only the animated gradient ring and the
+   one-shot sheen mark it as transient. Built as two nested boxes rather
+   than a border property: .welcome-toast-frame is the flowing-gradient
+   background with a 1.6px padding "ring", and .welcome-toast-glass sits
+   inside that padding with its own opaque background — the classic
+   gradient-border trick, since a real animated gradient border isn't
+   otherwise possible with plain CSS `border`. */
 @keyframes welcomeBorderFlow {
   0%   { background-position: 0% 50%; }
   50%  { background-position: 100% 50%; }
@@ -73,7 +74,12 @@ body {
 }
 
 .welcome-toast-frame {
-  padding: 1.4px;
+  position: relative;
+  overflow: hidden; /* clips the sheen sweep below to the rounded corners —
+                        including the border ring, since the sheen is a
+                        sibling of .welcome-toast-glass at this level, not
+                        nested inside it */
+  padding: 1.6px;
   background: var(--gradient-shimmer);
   background-size: 300% 300%;
   animation:
@@ -84,16 +90,16 @@ body {
 
 .welcome-toast-glass {
   position: relative;
-  overflow: hidden; /* clips the sheen sweep below to the rounded corners */
   border-radius: inherit;
-  background: rgba(255, 255, 255, .22);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  box-shadow: 0 20px 45px rgba(24, 95, 165, .08), inset 0 1px 0 rgba(255, 255, 255, .8);
+  background: #f8fafc;
+  box-shadow: 0 16px 40px rgba(24, 95, 165, .10);
 }
 
 /* Diagonal light sweep, once on appearance — not looped, matching a real
-   light reflection rather than a loading-shimmer effect. */
+   light reflection rather than a loading-shimmer effect. Blended with
+   `overlay` (rather than painted at low opacity) so it shows up bright
+   against the gradient ring/text and stays subtle over the plain
+   `#f8fafc` card body, instead of just washing everything out equally. */
 @keyframes welcomeSheen {
   from { transform: skewX(-15deg) translateX(-120%); opacity: 0; }
   15%  { opacity: 1; }
@@ -106,15 +112,15 @@ body {
   left: -10%;
   width: 40%;
   height: 160%;
-  background: rgba(24, 95, 165, .10);
-  animation: welcomeSheen 1.1s ease-out .15s both;
+  background: rgba(255, 255, 255, .85);
+  mix-blend-mode: overlay;
+  animation: welcomeSheen 1.2s ease-out .15s both;
   pointer-events: none;
+  z-index: 2; /* above .welcome-toast-glass (auto/0 stacking level), so the
+                 overlay blend picks up the gradient border/text tones as
+                 it sweeps, not just the plain card background underneath */
 }
 
-/* Positioned (not static) purely so normal painting order stacks it
-   above .welcome-toast-sheen, which is itself absolutely positioned —
-   see MDN's stacking-without-z-index rules: positioned descendants
-   always paint over non-positioned ones regardless of DOM order. */
 .welcome-toast-text {
   position: relative;
   z-index: 1;
@@ -127,7 +133,7 @@ body {
 
 .welcome-toast-eyebrow,
 .welcome-toast-title {
-  background: var(--gradient-shimmer);
+  background: var(--gradient-primary);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -153,7 +159,6 @@ body {
 .welcome-toast-subtitle {
   margin-top: 4px;
   font-size: 12.5px;
-  color: #3a5a7a;
-  text-shadow: 0 1px 2px rgba(255, 255, 255, .6);
+  color: #475569;
   animation: welcomeTextIn .4s ease-out .3s both;
 }
