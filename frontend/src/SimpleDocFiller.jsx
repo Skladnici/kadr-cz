@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 
 import LoginForm from "./components/LoginForm";
+import WelcomeToast from "./components/WelcomeToast";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
@@ -98,6 +99,11 @@ export default function SimpleDocFiller() {
   });
   const [loginError, setLoginError] = useState(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  // Only ever set from handleLogin's success branch below — never from
+  // the sessionStorage-seeded initial authHeader above — so the greeting
+  // shows on every actual sign-in but not on a page reload that restores
+  // an already-valid session.
+  const [showWelcome, setShowWelcome] = useState(false);
 
   // Single point that keeps sessionStorage in sync with authHeader,
   // regardless of which of the three call sites below changed it —
@@ -142,6 +148,7 @@ export default function SimpleDocFiller() {
         setBlanks(data);
         if (data.length > 0) setTemplateId(data[0].id);
         setAuthHeader(header);
+        setShowWelcome(true);
       } else if (res.status === 401) {
         setLoginError("Nesprávné uživatelské jméno nebo heslo.");
       } else {
@@ -570,6 +577,7 @@ export default function SimpleDocFiller() {
         ...(isNightMode ? {} : { background: "var(--gradient-page-bg)" }),
       }}
     >
+      {showWelcome && <WelcomeToast onDone={() => setShowWelcome(false)} />}
       <div className="w-full max-w-xl md:max-w-2xl">
         {/* Header — the logo/title doubles as a "go back to the start"
             control, like clicking a site's logo does almost everywhere
