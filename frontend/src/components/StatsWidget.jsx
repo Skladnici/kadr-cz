@@ -23,6 +23,11 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
   const [statsByType, setStatsByType] = useState([]);
   const [statsByPerson, setStatsByPerson] = useState([]);
   const [expanded, setExpanded] = useState(false);
+  // "type" (Podle typu) and "signing" (Podpisy) are two independent views
+  // over the same company list — never rendered together, so a company
+  // row never shows both a document-type breakdown and signing dots at
+  // once. See the render below for how each tab's expanded detail differs.
+  const [activeTab, setActiveTab] = useState("type");
   // Set of company_name — which company rows have their per-document-type
   // breakdown open. A Set (not a single "which one" value) so several
   // companies can be expanded independently at once, each toggled on its
@@ -130,6 +135,27 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
 
       {expanded && (
         <div className="mt-1.5 w-64 max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.25)]">
+          <div className="flex items-center gap-1 mb-1.5 rounded-lg bg-slate-100 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("type")}
+              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                activeTab === "type" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
+              }`}
+            >
+              Podle typu
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("signing")}
+              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                activeTab === "signing" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
+              }`}
+            >
+              Podpisy
+            </button>
+          </div>
+
           {stats.length === 0 ? (
             <p className="px-1.5 py-1 text-[11.5px] text-slate-400">Zatím žádné dokumenty.</p>
           ) : (
@@ -147,11 +173,13 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                       className="flex w-full items-center justify-between gap-2 rounded-lg px-1.5 py-1 text-[12px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <span
-                          className={`status-dot ${s.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
-                          aria-hidden="true"
-                          title={s.all_signed ? "Vše podepsáno" : "Něco nepodepsáno"}
-                        />
+                        {activeTab === "signing" && (
+                          <span
+                            className={`status-dot ${s.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
+                            aria-hidden="true"
+                            title={s.all_signed ? "Vše podepsáno" : "Něco nepodepsáno"}
+                          />
+                        )}
                         <span className="truncate">{s.company_name}</span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1">
@@ -161,15 +189,19 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                           : <ChevronDown size={11} className="shrink-0 text-slate-400" />}
                       </span>
                     </button>
-                    {isOpen && (
+
+                    {isOpen && activeTab === "type" && (
+                      <p className="px-1.5 pb-1.5 pt-0.5 text-[11px] text-slate-400">
+                        {byType.length > 0
+                          ? byType.map((t) => `${t.document_type}: ${t.document_count}`).join(" · ")
+                          : "Žádná data podle typu."}
+                      </p>
+                    )}
+
+                    {isOpen && activeTab === "signing" && (
                       <div className="px-1.5 pb-1.5 pt-0.5">
-                        <p className="text-[11px] text-slate-400">
-                          {byType.length > 0
-                            ? byType.map((t) => `${t.document_type}: ${t.document_count}`).join(" · ")
-                            : "Žádná data podle typu."}
-                        </p>
-                        {byPerson.length > 0 && (
-                          <ul className="mt-1.5 space-y-0.5 border-t border-slate-100 pt-1.5">
+                        {byPerson.length > 0 ? (
+                          <ul className="space-y-0.5">
                             {byPerson.map((p) => (
                               <li key={p.employee_name}>
                                 <button
@@ -187,6 +219,8 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                               </li>
                             ))}
                           </ul>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">Žádná data o osobách.</p>
                         )}
                       </div>
                     )}
