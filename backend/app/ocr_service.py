@@ -1195,6 +1195,22 @@ def _looks_like_garbage_name(name: Optional[str]) -> bool:
     return len(set(compact)) <= 2
 
 
+def _has_missing_important_field(fields: dict) -> bool:
+    """A first-pass read that came back without one of a document's core
+    identifying fields is a strong sign the OCR read itself was bad, not
+    that the field is genuinely absent — birth_date is expected on
+    essentially every ID document, and doc_number/visa_number is the one
+    field the upload exists to capture. Checked per document type (a
+    visa's own number lives in visa_number, not doc_number) so this
+    doesn't fire on every non-visa upload just because visa_number is
+    (correctly) empty there."""
+    if not fields.get("birth_date"):
+        return True
+    if fields.get("doc_type") == "Vízum":
+        return not fields.get("visa_number")
+    return not fields.get("doc_number")
+
+
 async def recognize_document(file_path: Path, original_filename: str) -> dict:
     """
     Main entry point used by the API layer.
@@ -1254,28 +1270,56 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
 
         # OCR.space's result can vary between calls to the same image (it
         # tries several engine/language combos internally and returns
-        # whichever succeeds first — see _ocr_space_ocr). If the name it
-        # settled on looks like pure noise, one extra full attempt is
-        # cheap insurance against just having drawn the worse of two
-        # readings, and often nets the caller a usable name instead of
-        # visible garbage. Only tried once, and only replaces the result
-        # if the retry's name actually looks better — never risks making
+        # whichever succeeds first — see _ocr_space_ocr). Several signals
+        # can each independently mark a first read as low quality: a
+        # garbled name, a core field (birth_date/doc_number/visa_number)
+        # that came back empty, or an MRZ check digit that didn't verify
+        # (a near-certain sign the digits it read are wrong). Any one of
+        # these is cheap insurance to try a second full attempt against —
+        # but regardless of how many fire at once, only a single extra
+        # OCR.space call is ever made per file (never risk multiplying
+        # request volume against its free-tier quota), and the retry only
+        # replaces the original result if it actually resolved the
+        # specific problem(s) that triggered it — never risks making
         # things worse.
-        if _looks_like_garbage_name(first) or _looks_like_garbage_name(last):
-            logger.info("name looks garbled (%r / %r) - retrying OCR.space once", first, last)
+        name_garbled = _looks_like_garbage_name(first) or _looks_like_garbage_name(last)
+        missing_field = _has_missing_important_field(fields)
+        mrz_doc_number, mrz_verified, _, _, _ = _extract_passport_number_from_mrz(raw_text)
+        checksum_failed = bool(mrz_doc_number and not mrz_verified)
+
+        if name_garbled or missing_field or checksum_failed:
+            logger.info(
+                "low-quality OCR read (garbled_name=%s, missing_field=%s, checksum_failed=%s) - retrying OCR.space once",
+                name_garbled, missing_field, checksum_failed,
+            )
             try:
                 retry_text = await _ocr_space_ocr(image_bytes, original_filename)
             except Exception as e:
                 logger.warning("OCR.space retry failed: %s: %s", type(e).__name__, e)
                 retry_text = ""
             if retry_text.strip():
+                retry_fields = _extract_fields_from_text(retry_text, quality, mode="ocrspace")
                 retry_first, retry_last = _parse_name_from_text(retry_text)
-                if (retry_first or retry_last) and not _looks_like_garbage_name(retry_first) and not _looks_like_garbage_name(retry_last):
-                    fields = _extract_fields_from_text(retry_text, quality, mode="ocrspace")
-                    fields["first_name"] = retry_first
-                    fields["last_name"] = retry_last
-                    fields["ocr_raw_text"] = retry_text
-                    logger.info("retry produced a cleaner name (%r / %r) - using it", retry_first, retry_last)
+                retry_fields["first_name"] = retry_first
+                retry_fields["last_name"] = retry_last
+                retry_fields["ocr_raw_text"] = retry_text
+
+                name_fixed = (
+                    (retry_first or retry_last)
+                    and not _looks_like_garbage_name(retry_first)
+                    and not _looks_like_garbage_name(retry_last)
+                )
+                missing_field_fixed = not _has_missing_important_field(retry_fields)
+                retry_mrz_doc_number, retry_verified, _, _, _ = _extract_passport_number_from_mrz(retry_text)
+                checksum_fixed = bool(retry_mrz_doc_number and retry_verified)
+
+                if (
+                    (not name_garbled or name_fixed)
+                    and (not missing_field or missing_field_fixed)
+                    and (not checksum_failed or checksum_fixed)
+                ):
+                    fields = retry_fields
+                    logger.info("retry produced a better read - using it")
 
         logger.info("TOTAL: %.1fs", time.time() - t0)
         return fields
