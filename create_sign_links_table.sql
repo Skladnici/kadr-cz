@@ -21,6 +21,15 @@
 -- token is the ONLY thing gating access to a public, unauthenticated
 -- route — same 128-bit uuid4-hex trust model as the existing
 -- /api/download tokens (see blank_service.py's own comment on that).
+--
+-- A row's lifetime, whichever ends it first (see main.py's own comment
+-- on _fetch_sign_link/_cleanup_expired_sign_links for the full reasoning):
+--   1. The admin downloads it — deleted right after serving the file.
+--   2. 24h since signed_at, once signed.
+--   3. 24h since created_at, if never signed.
+-- No separate scheduler for #2/#3 — checked lazily whenever a token is
+-- looked up, plus an opportunistic sweep on link creation and on every
+-- poll of the corner "recently signed" notifier.
 
 create table if not exists sign_links (
     token text primary key,
@@ -30,7 +39,7 @@ create table if not exists sign_links (
     employee_name text,
     signature_image text,                -- base64 PNG; set once, when the employee signs
     signed_at timestamptz,               -- null until signed
-    employee_downloaded_at timestamptz,  -- null until the employee's one-time download; once set, the public routes treat this token as used up
+    employee_downloaded_at timestamptz,  -- informational only (see main.py) — does not gate access; the employee can re-download until the row itself expires or the admin downloads it
     created_at timestamptz not null default now()
 );
 
@@ -49,8 +58,16 @@ create index if not exists sign_links_company_employee_idx on sign_links (compan
 -- without this, PostgREST's schema-cache introspection silently omits
 -- it entirely, and every /api/sign-links or /api/podepsat/* call fails
 -- with "Could not find the table ... in the schema cache" (PGRST205)
--- even though the table genuinely exists.
-grant select, insert, update on sign_links to anon, authenticated, service_role;
+-- even though the table genuinely exists. delete is required too now —
+-- both the admin's one-time download and the 24h TTL sweep issue DELETEs.
+--
+-- If Supabase forced Row Level Security on despite the disabled-by-
+-- default statement above (observed happening for tables created via the
+-- SQL editor on some projects, regardless of what the SQL itself says),
+-- every insert/update/delete here fails with a "new row violates
+-- row-level security policy" 502 until you run:
+--   alter table sign_links disable row level security;
+grant select, insert, update, delete on sign_links to anon, authenticated, service_role;
 
 -- Run after any of the above changes schema-cache-visible state
 -- (CREATE/GRANT) — Supabase's Dashboard SQL editor usually fires this

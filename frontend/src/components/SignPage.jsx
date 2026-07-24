@@ -107,7 +107,21 @@ export default function SignPage({ token }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ signature_image: dataUrl }),
       });
-      if (!res.ok) throw new Error("sign failed");
+      if (!res.ok) {
+        // A 400 here can mean "already signed" (e.g. another tab/device
+        // beat this one to it, or a double-submit) rather than a real
+        // failure — the document IS signed either way, just not by this
+        // exact request, so check before showing a scary error that
+        // retrying would only repeat.
+        if (res.status === 400) {
+          const check = await fetch(`${API_BASE}/api/podepsat/${token}`).then((r) => r.json()).catch(() => null);
+          if (check?.signed) {
+            setPhase("done");
+            return;
+          }
+        }
+        throw new Error("sign failed");
+      }
       setPhase("done");
     } catch {
       setActionError("Nepodařilo se uložit podpis. Zkuste to prosím znovu.");

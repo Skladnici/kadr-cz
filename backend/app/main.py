@@ -17,7 +17,7 @@ import logging
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -676,8 +676,76 @@ async def set_signed_status(request: Request, payload: SignIn):
 # create_sign_links_table.sql) is what stands in for auth. Each of them
 # calls _require_supabase() directly instead of via Depends(), precisely
 # so a stray copy-paste can't silently reattach a site-auth dependency.
+#
+# Row lifetime — whichever comes first:
+#   1. The admin downloads it (admin_download_signed_contract deletes
+#      the row right after serving the file).
+#   2. SIGN_LINK_TTL_HOURS (24h) since signed_at, once signed.
+#   3. SIGN_LINK_TTL_HOURS (24h) since created_at, if never signed.
+# Checked lazily in _fetch_sign_link on whatever request happens to touch
+# a given token next, plus an opportunistic sweep (_cleanup_expired_sign_
+# links) piggybacked on link creation and the notifier's own frequent
+# polling — no separate scheduler/cron for this.
+
+SIGN_LINK_TTL_HOURS = 24
+
+
+def _parse_supabase_timestamp(value: str) -> datetime:
+    # Supabase/PostgREST returns timestamptz as ISO 8601 with an explicit
+    # +00:00 offset, which datetime.fromisoformat handles directly; a
+    # trailing "Z" (seen from some drivers/configs) needs translating
+    # first since fromisoformat only started accepting it in Python 3.11.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _sign_link_is_expired(link: dict) -> bool:
+    """A link expires (and gets lazily deleted — see _fetch_sign_link)
+    24h after the fact that actually matters for it: signed_at once it's
+    been signed, created_at if it never was. Whichever anchor applies,
+    it's a hard cutoff regardless of whether the employee or admin ever
+    downloaded anything — see this feature's own design conversation for
+    why 24h-from-signing (not e.g. 24h-from-download) is the rule."""
+    anchor = link.get("signed_at") or link["created_at"]
+    deadline = _parse_supabase_timestamp(anchor) + timedelta(hours=SIGN_LINK_TTL_HOURS)
+    return datetime.now(timezone.utc) >= deadline
+
+
+async def _delete_sign_link(token: str) -> None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.delete(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"token": f"eq.{token}"},
+        )
+
+
+async def _cleanup_expired_sign_links() -> None:
+    """Best-effort sweep for links nobody has individually touched since
+    they expired (see _fetch_sign_link's own per-token check, which only
+    fires when that exact token is looked up again). Piggybacked on the
+    two routes an admin naturally hits often — creating a new link and
+    the notifier's own frequent polling — rather than a dedicated
+    scheduler, since the user-facing requirement was explicitly "no
+    separate scheduler needed"."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=SIGN_LINK_TTL_HOURS)).isoformat()
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.delete(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"and": f"(signed_at.not.is.null,signed_at.lte.{cutoff})"},
+        )
+        await client.delete(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"and": f"(signed_at.is.null,created_at.lte.{cutoff})"},
+        )
+
 
 async def _fetch_sign_link(token: str) -> Optional[dict]:
+    """Fetches a sign_links row — or lazily deletes and returns None for
+    one that's past its TTL (see _sign_link_is_expired). Every route
+    below reaches Supabase through this one function, so the expiry
+    check happens everywhere without each route needing its own copy."""
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.SUPABASE_URL}/rest/v1/sign_links",
@@ -687,15 +755,17 @@ async def _fetch_sign_link(token: str) -> Optional[dict]:
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
     rows = resp.json()
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    link = rows[0]
+    if _sign_link_is_expired(link):
+        await _delete_sign_link(token)
+        return None
+    return link
 
 
 def _sign_link_is_usable(link: Optional[dict]) -> bool:
-    # Once the employee has downloaded their signed copy, the link is
-    # spent for them — every public route below treats a not-found and an
-    # already-downloaded token identically (a 404), so a stale link can't
-    # be used to distinguish "never existed" from "already used".
-    return link is not None and not link.get("employee_downloaded_at")
+    return link is not None
 
 
 @app.post("/api/sign-links", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
@@ -708,6 +778,7 @@ async def create_sign_link(request: Request, payload: FillRequest):
     /api/fill call."""
     if payload.template_id not in SIGNABLE_TEMPLATE_IDS:
         raise HTTPException(400, "Tento typ dokumentu nelze podepsat odkazem.")
+    await _cleanup_expired_sign_links()
     token = uuid.uuid4().hex
     row = {
         "token": token,
@@ -740,13 +811,26 @@ async def get_recent_signed_links(request: Request):
     company-level summary, but actively misleading for a notification
     that's supposed to mean "a real person just signed via their link".
     sign_links.signed_at is never backfilled — every row returned here
-    reflects an actual signature."""
+    reflects an actual signature.
+
+    Also doubles as this feature's main opportunistic cleanup trigger
+    (see _cleanup_expired_sign_links) — polled every 30s by
+    SignedDocsNotifier.jsx, so it sweeps expired rows often without a
+    dedicated scheduler. The signed_at.gt filter below is a second,
+    belt-and-suspenders reason a signed-but-expired row (one nothing else
+    has individually touched since the sweep last ran) never shows up
+    here even for the single request where it's mid-sweep: NULL fails a
+    `gt` comparison in SQL too, so this one filter already excludes both
+    "never signed" and "signed too long ago" rows without an explicit
+    "not.is.null"."""
+    await _cleanup_expired_sign_links()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=SIGN_LINK_TTL_HOURS)).isoformat()
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{settings.SUPABASE_URL}/rest/v1/sign_links",
             headers=_supabase_headers(),
             params={
-                "signed_at": "not.is.null",
+                "signed_at": f"gt.{cutoff}",
                 "select": "token,company_name,employee_name,signed_at,template_id",
                 "order": "signed_at.desc",
                 "limit": "50",
@@ -760,12 +844,12 @@ async def get_recent_signed_links(request: Request):
 @app.get("/api/sign-links/{token}/download", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
 @limiter.limit("30/minute")
 async def admin_download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
-    """The admin-facing re-download (e.g. the download button next to a
-    name in SignedDocsNotifier.jsx). Deliberately a separate route from
-    /api/podepsat/{token}/download: this one never touches
-    employee_downloaded_at, so it can be called any number of times and
-    never interferes with — or is blocked by — the employee's own
-    one-time download."""
+    """The admin-facing download (the download button next to a name in
+    SignedDocsNotifier.jsx) — a one-time grab for the admin too now: once
+    they have their copy, the whole sign_links row is deleted (as a
+    background task, same delete-after-serve pattern as
+    /api/download's own file cleanup, so a dropped connection mid-transfer
+    doesn't destroy a row whose file the admin never actually received)."""
     link = await _fetch_sign_link(token)
     if link is None:
         raise HTTPException(404, "Odkaz nenalezen.")
@@ -775,6 +859,7 @@ async def admin_download_signed_contract(request: Request, token: str, backgroun
         render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
     )
     background_tasks.add_task(docx_path.unlink, missing_ok=True)
+    background_tasks.add_task(_delete_sign_link, token)
     return FileResponse(
         docx_path, filename=docx_path.name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -832,10 +917,18 @@ class SubmitSignatureIn(BaseModel):
 @app.post("/api/podepsat/{token}/sign")
 @limiter.limit("10/minute")
 async def submit_signature(request: Request, token: str, payload: SubmitSignatureIn):
+    """Signing is a one-shot action per link — once signed_at is set,
+    this route refuses to run again (400), regardless of what the
+    frontend shows. SignPage.jsx already skips straight to the "done"
+    screen for an already-signed link (see get_sign_link_status's own
+    `signed` flag), but that's a UI nicety, not what actually prevents a
+    second signature from overwriting the first."""
     _require_supabase()
     link = await _fetch_sign_link(token)
     if not _sign_link_is_usable(link):
         raise HTTPException(404, "Odkaz nenalezen nebo již není platný.")
+    if link.get("signed_at"):
+        raise HTTPException(400, "Dokument je již podepsán.")
 
     b64 = payload.signature_image.split(",", 1)[-1].strip()
     try:
@@ -866,6 +959,11 @@ async def submit_signature(request: Request, token: str, payload: SubmitSignatur
 
 
 async def _mark_employee_downloaded(token: str) -> None:
+    # Informational only now — nothing gates on employee_downloaded_at
+    # (see _sign_link_is_usable). The link's actual lifetime is bounded by
+    # _sign_link_is_expired (24h from signed_at) and by the admin's own
+    # download deleting the row outright, not by whether/how many times
+    # the employee has grabbed their own copy.
     async with httpx.AsyncClient(timeout=15) as client:
         await client.patch(
             f"{settings.SUPABASE_URL}/rest/v1/sign_links",
@@ -878,10 +976,12 @@ async def _mark_employee_downloaded(token: str) -> None:
 @app.get("/api/podepsat/{token}/download")
 @limiter.limit("10/minute")
 async def download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
-    """The employee's own one-time download. employee_downloaded_at is
-    stamped as a background task — same pattern as /api/download's
-    delete-after-serve — so a connection that drops mid-transfer doesn't
-    burn the employee's one shot at a file they never actually received."""
+    """The employee's own download — re-downloadable as many times as
+    they like within the link's 24h-from-signing lifetime (see
+    _sign_link_is_expired), since a phone dying or a browser closing
+    mid-download shouldn't cost them their only copy. What actually ends
+    the link is that 24h TTL, or the admin grabbing their own copy
+    (which deletes the row outright — see admin_download_signed_contract)."""
     _require_supabase()
     link = await _fetch_sign_link(token)
     if not _sign_link_is_usable(link):

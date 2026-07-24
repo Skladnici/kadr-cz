@@ -16,12 +16,19 @@ What actually matters here, beyond "the routes return 200":
    _apply_signed_status() helper the admin's manual dot-click uses (see
    main.py's own comment on why that's intentional, not a duplicate
    mechanism) — GET /api/stats must reflect it.
-3. employee_downloaded_at makes the link unusable for the employee after
-   one successful download, but never for the admin's own separate
-   re-download route.
+3. A signed link is re-downloadable by the employee any number of times
+   (not one-time) — what actually ends its life is the 24h TTL
+   (_sign_link_is_expired) or the admin's own download, which deletes the
+   row outright. Signing itself, though, IS one-time: a second
+   POST .../sign 400s and never overwrites the first signature.
 4. vyplatni_paska (no signature line in that template) can't get a link.
+5. Expiry (_sign_link_is_expired) is checked lazily, in _fetch_sign_link,
+   on whatever request happens to touch a given token — there's no
+   separate scheduler, just that check plus the opportunistic sweep
+   piggybacked on link creation and GET /api/sign-links/recent.
 """
 import base64
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -58,6 +65,10 @@ class FakeSignLinks:
         row.setdefault("signature_image", None)
         row.setdefault("signed_at", None)
         row.setdefault("employee_downloaded_at", None)
+        # Real Supabase sets this via `default now()` — the fake has to
+        # supply its own, since _sign_link_is_expired reads it for any
+        # never-signed row.
+        row.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         self.rows[row["token"]] = row
         return 201, [row]
 
@@ -70,12 +81,15 @@ class FakeSignLinks:
         if "token" in params:
             row = self.rows.get(self._token_from_params(params))
             return 200, ([row] if row else [])
-        # GET /api/sign-links/recent's query shape: signed_at=not.is.null,
+        # GET /api/sign-links/recent's query shape: signed_at=gt.<cutoff>,
         # order=signed_at.desc, limit=... — mirrors main.py's own filter
         # closely enough to prove it builds the right query, not a general
-        # PostgREST filter parser.
-        assert params.get("signed_at") == "not.is.null", params
-        rows = [r for r in self.rows.values() if r.get("signed_at")]
+        # PostgREST filter parser. A plain `gt` comparison already excludes
+        # NULL signed_at (SQL semantics), same as main.py relies on.
+        signed_at_filter = params.get("signed_at", "")
+        assert signed_at_filter.startswith("gt."), params
+        cutoff = signed_at_filter[len("gt."):]
+        rows = [r for r in self.rows.values() if r.get("signed_at") and r["signed_at"] > cutoff]
         rows.sort(key=lambda r: r["signed_at"], reverse=True)
         limit = int(params.get("limit", len(rows)))
         return 200, rows[:limit]
@@ -86,6 +100,36 @@ class FakeSignLinks:
             return 200, []
         row.update(json_body)
         return 200, [row]
+
+    def delete(self, params):
+        params = params or {}
+        if "token" in params:
+            self.rows.pop(self._token_from_params(params), None)
+            return 200, []
+        # _cleanup_expired_sign_links's two compound filters — mirrors
+        # main.py's own PostgREST "and=(...)" syntax closely enough to
+        # prove it builds the right query, not a general filter parser.
+        parts = params.get("and", "").strip("()").split(",")
+        assert parts, params
+        for token in list(self.rows):
+            row = self.rows[token]
+            matches = True
+            for part in parts:
+                if part == "signed_at.not.is.null":
+                    matches = matches and bool(row.get("signed_at"))
+                elif part == "signed_at.is.null":
+                    matches = matches and not row.get("signed_at")
+                elif part.startswith("signed_at.lte."):
+                    cutoff = part[len("signed_at.lte."):]
+                    matches = matches and bool(row.get("signed_at")) and row["signed_at"] <= cutoff
+                elif part.startswith("created_at.lte."):
+                    cutoff = part[len("created_at.lte."):]
+                    matches = matches and row["created_at"] <= cutoff
+                else:
+                    raise AssertionError(f"unexpected and-filter part: {part!r}")
+            if matches:
+                del self.rows[token]
+        return 200, []
 
 
 class FakeGenerationLog:
@@ -146,6 +190,8 @@ def fake_supabase(monkeypatch, tmp_path):
                 status, body = sign_links.select(params)
             elif method == "PATCH":
                 status, body = sign_links.patch(params, json)
+            elif method == "DELETE":
+                status, body = sign_links.delete(params)
             else:
                 raise AssertionError(f"unexpected method for sign_links: {method}")
         elif url.endswith("/generation_log"):
@@ -206,7 +252,7 @@ def test_unknown_token_is_reported_invalid_not_500(fake_supabase):
     assert resp.json() == {"valid": False}
 
 
-def test_sign_then_download_then_second_download_is_refused(fake_supabase):
+def test_employee_can_download_multiple_times_after_signing(fake_supabase):
     token = _create_link().json()["token"]
 
     # Can't download before signing.
@@ -225,10 +271,39 @@ def test_sign_then_download_then_second_download_is_refused(fake_supabase):
     )
     assert len(first.content) > 0
 
-    # One-time: the exact same token is now dead for the employee.
+    # Not one-time for the employee anymore — a phone dying or a browser
+    # closing mid-download shouldn't cost them their only copy. What
+    # actually ends the link is the 24h TTL or the admin's own download.
     second = client.get(f"/api/podepsat/{token}/download")
-    assert second.status_code == 404
-    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+    assert second.status_code == 200
+    assert client.get(f"/api/podepsat/{token}").json()["signed"] is True
+
+
+def test_revisiting_after_signing_shows_signed_not_a_blank_form(fake_supabase):
+    # What SignPage.jsx polls on every load — must keep saying "signed",
+    # not flip back to an unsigned/blank state or report the link as dead,
+    # so a repeat visit shows the download screen, never the signing form
+    # again.
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+
+    status = client.get(f"/api/podepsat/{token}").json()
+    assert status == {
+        "valid": True, "signed": True,
+        "company_name": "ACME s.r.o.", "employee_name": "Jan Novak", "template_id": "dpp_template",
+    }
+
+
+def test_signing_twice_is_rejected(fake_supabase):
+    token = _create_link().json()["token"]
+    first = client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    assert first.status_code == 200
+
+    second = client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    assert second.status_code == 400
+
+    # Rejecting the second attempt doesn't undo the first.
+    assert client.get(f"/api/podepsat/{token}").json()["signed"] is True
 
 
 def test_signing_marks_the_person_signed_in_stats(fake_supabase):
@@ -249,21 +324,21 @@ def test_signing_marks_the_person_signed_in_stats(fake_supabase):
     assert client.get("/api/stats", auth=AUTH).json()[0]["all_signed"] is True
 
 
-def test_admin_can_redownload_after_employee_used_their_one_time_link(fake_supabase):
+def test_admin_download_deletes_the_link_for_everyone(fake_supabase):
     token = _create_link().json()["token"]
     client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    # Employee already has their own copy — doesn't affect what happens next.
     assert client.get(f"/api/podepsat/{token}/download").status_code == 200
-    # Employee's token is now spent...
-    assert client.get(f"/api/podepsat/{token}/download").status_code == 404
 
-    # ...but the admin's own route is unaffected by that.
     admin = client.get(f"/api/sign-links/{token}/download", auth=AUTH)
     assert admin.status_code == 200
     assert len(admin.content) > 0
 
-    # And works again a second time too — it's not one-time for the admin.
-    admin2 = client.get(f"/api/sign-links/{token}/download", auth=AUTH)
-    assert admin2.status_code == 200
+    # One-time for the admin too now: the row is gone, for everyone.
+    admin_again = client.get(f"/api/sign-links/{token}/download", auth=AUTH)
+    assert admin_again.status_code == 404
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+    assert client.get(f"/api/podepsat/{token}/download").status_code == 404
 
 
 def test_admin_download_requires_site_auth(fake_supabase):
@@ -361,3 +436,71 @@ def test_recent_signed_links_503s_when_supabase_is_unconfigured(monkeypatch):
 
     resp = client.get("/api/sign-links/recent", auth=AUTH)
     assert resp.status_code == 503
+
+
+# --------------------------------------------------- 24h TTL / expiry
+
+def _age_field(fake_supabase, token, field, hours_ago):
+    fake_supabase["sign_links"].rows[token][field] = (
+        datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    ).isoformat()
+
+
+def test_unsigned_link_expires_24h_after_creation(fake_supabase):
+    token = _create_link().json()["token"]
+    _age_field(fake_supabase, token, "created_at", 25)
+
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+    # Lazily deleted by that same fetch.
+    assert token not in fake_supabase["sign_links"].rows
+
+
+def test_unsigned_link_within_24h_is_still_valid(fake_supabase):
+    token = _create_link().json()["token"]
+    _age_field(fake_supabase, token, "created_at", 1)
+
+    assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
+    assert token in fake_supabase["sign_links"].rows
+
+
+def test_signed_link_expires_24h_after_signing_even_if_never_downloaded(fake_supabase):
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    _age_field(fake_supabase, token, "signed_at", 25)
+
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+    assert token not in fake_supabase["sign_links"].rows
+
+
+def test_signed_link_within_24h_of_signing_is_still_valid_even_if_created_long_ago(fake_supabase):
+    # The 24h clock restarts at signed_at, not created_at, once signed —
+    # an old, slow-to-be-signed link shouldn't die the instant it's
+    # finally signed.
+    token = _create_link().json()["token"]
+    _age_field(fake_supabase, token, "created_at", 23)
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+
+    status = client.get(f"/api/podepsat/{token}").json()
+    assert status["valid"] is True
+    assert status["signed"] is True
+
+
+def test_recent_signed_links_sweeps_an_expired_signed_entry(fake_supabase):
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    _age_field(fake_supabase, token, "signed_at", 25)
+
+    rows = client.get("/api/sign-links/recent", auth=AUTH).json()
+    assert rows == []
+    # GET /api/sign-links/recent's own opportunistic sweep should have
+    # deleted it too, not just excluded it from this one response.
+    assert token not in fake_supabase["sign_links"].rows
+
+
+def test_creating_a_link_sweeps_an_expired_unsigned_one(fake_supabase):
+    stale_token = _create_link(first_name="Stale", last_name="One").json()["token"]
+    _age_field(fake_supabase, stale_token, "created_at", 25)
+
+    _create_link(first_name="Fresh", last_name="One")  # triggers the sweep as a side effect
+
+    assert stale_token not in fake_supabase["sign_links"].rows
