@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { Building2, ChevronDown, ChevronUp } from "lucide-react";
+import { Building2, ChevronDown, ChevronUp, Download } from "lucide-react";
 
 // Czech noun declension for "document(s)" depends on the count: 1 =
 // dokument, 2-4 = dokumenty, 0 or 5+ = dokumentů.
@@ -116,6 +116,28 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
     }
   }, [apiFetch, load]);
 
+  // Lets an admin grab the same signed file the employee already
+  // downloaded — signed_download_token comes from generation_stats_by_
+  // person's own correlated subquery (see create_generation_log_table.sql)
+  // and is only ever set once a person has at least one signed sign_link.
+  const downloadSignedDoc = useCallback(async (token) => {
+    try {
+      const res = await apiFetch(`/api/sign-links/${token}/download`);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "smlouva_podepsana.docx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // ignored — best-effort, see toggleSigned's own comment above
+    }
+  }, [apiFetch]);
+
   if (stats === null) return null;
 
   const total = stats.reduce((sum, s) => sum + (s.document_count || 0), 0);
@@ -203,11 +225,11 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                         {byPerson.length > 0 ? (
                           <ul className="space-y-0.5">
                             {byPerson.map((p) => (
-                              <li key={p.employee_name}>
+                              <li key={p.employee_name} className="flex items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => toggleSigned(s.company_name, p.employee_name, !p.all_signed)}
-                                  className="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[11.5px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                                  className="flex flex-1 min-w-0 items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[11.5px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                                   title={p.all_signed ? "Označit jako nepodepsané" : "Označit jako podepsané"}
                                 >
                                   <span className="truncate">{p.employee_name}</span>
@@ -216,6 +238,16 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                                     aria-hidden="true"
                                   />
                                 </button>
+                                {p.signed_download_token && (
+                                  <button
+                                    type="button"
+                                    onClick={() => downloadSignedDoc(p.signed_download_token)}
+                                    title="Stáhnout podepsaný dokument"
+                                    className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                                  >
+                                    <Download size={13} />
+                                  </button>
+                                )}
                               </li>
                             ))}
                           </ul>

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, FileText, Link2, Loader2, Scissors, X,
+  AlertTriangle, Check, ChevronDown, Copy, FileText, Link2, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
@@ -8,6 +8,7 @@ import VisaExpiredWarningIcon from "./VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./StrpeniWarningIcon";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
+import { SIGNABLE_TEMPLATE_IDS } from "../constants/fields";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -93,6 +94,7 @@ export default function PersonCard({
   onUpdateEndDateOverride,
   onToggleTemplateOverride,
   onUpdateTemplateOverride,
+  onCreateSignLink,
 }) {
   // Starts closed every time the card itself is (re-)expanded — matches
   // "hidden by default, only opens on an explicit click" literally rather
@@ -559,10 +561,51 @@ export default function PersonCard({
           {/* No per-card download here on purpose — downloading one
               contract at a time defeated the point of batch mode.
               Download/print for everyone lives once, at the bottom of
-              the batch, as "Stáhnout všechny"/"Otevřít / Tisk všechny". */}
+              the batch, as "Stáhnout všechny"/"Otevřít / Tisk všechny".
+              The e-signature link IS per-card, unlike that bulk download —
+              each person needs their own distinct token/link, so there's
+              no equivalent "create links for everyone" bulk action. */}
           {person.generation?.status === "done" && (
-            <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
-              <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
+                <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
+              </div>
+              {SIGNABLE_TEMPLATE_IDS.has(person.templateOverrideEnabled ? person.templateOverride : sharedTemplateId) && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                  {!person.generation.signLink ? (
+                    <button
+                      type="button"
+                      onClick={onCreateSignLink}
+                      disabled={person.generation.signLinkLoading}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {person.generation.signLinkLoading
+                        ? <Loader2 size={13} className="animate-spin" />
+                        : <Link2 size={13} />}
+                      Vytvořit odkaz k podpisu
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={person.generation.signLink}
+                        onFocus={(e) => e.target.select()}
+                        className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11.5px] text-slate-700"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
+                        className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        <Copy size={12} /> Kopírovat
+                      </button>
+                    </div>
+                  )}
+                  {person.generation.signLinkError && (
+                    <p className="mt-1 text-[11px] text-red-600">{person.generation.signLinkError}</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

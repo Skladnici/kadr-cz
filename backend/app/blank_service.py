@@ -16,16 +16,19 @@ should review it before real use (the template text itself carries the
 same note). dpp_template.docx and dpc_template.docx are digitized from
 the user's own real-world templates.
 """
-from datetime import date, datetime
-from pathlib import Path
-from typing import Optional
+import base64
 import logging
 import re
 import time
 import uuid
+from datetime import date, datetime
+from io import BytesIO
+from pathlib import Path
+from typing import Optional
 
 from docx import Document as DocxDocument
-from docxtpl import DocxTemplate
+from docx.shared import Mm
+from docxtpl import DocxTemplate, InlineImage
 
 from app.config import settings
 
@@ -38,6 +41,11 @@ logger = logging.getLogger(__name__)
 # on the next generation request — no cron/queue needed for a handful of
 # files a day.
 STALE_GENERATED_FILE_MAX_AGE_HOURS = 24
+
+# Default text for the {{PODPIS_ZAMESTNANCE}}/{{PODPIS_ZAMESTNAVATELE}}
+# tags on an unsigned contract — the same dotted line dpp_template.docx
+# originally had hardcoded before those tags existed.
+SIGNATURE_PLACEHOLDER = "…" * 10 + "."
 
 
 def _cleanup_stale_generated_files() -> None:
@@ -179,6 +187,14 @@ def _build_context(fields: dict, template_id: str = "") -> dict:
         "SOCIALNI_POJISTENI": _s(fields, "social_insurance"),
         "DAN_ZE_MZDY": _s(fields, "income_tax"),
         "CISTA_MZDA": _s(fields, "net_salary"),
+        # Signature lines on the four contract templates (dpp/hpp/dpc/
+        # ukonceni) — plain placeholder dots by default. render_signed_
+        # contract() below overrides either key with an InlineImage once
+        # an actual signature exists; fill_blank() (ordinary, unsigned
+        # generation) never does, so a freshly generated contract just
+        # shows this same dotted line the templates always had.
+        "PODPIS_ZAMESTNANCE": SIGNATURE_PLACEHOLDER,
+        "PODPIS_ZAMESTNAVATELE": SIGNATURE_PLACEHOLDER,
     }
 
     # DPP's "Místo výkonu práce" is always Czechia, regardless of whatever
@@ -216,6 +232,13 @@ def _render_and_save(template_path: Path, fields: dict, out_prefix: str) -> Path
 
     doc.save(str(out_path))
     return out_path
+
+
+# The only templates with a {{PODPIS_ZAMESTNANCE}} signature line at all
+# (see the four *_template.docx edits made for the e-signature feature) —
+# vyplatni_paska has no signature line, so offering "Vytvořit odkaz k
+# podpisu" for it wouldn't have anywhere in the document to put one.
+SIGNABLE_TEMPLATE_IDS = {"dpp_template", "hpp_template", "dpc_template", "ukonceni_pracovniho_pomeru"}
 
 
 def fill_blank(template_id: str, fields: dict) -> Path:
@@ -291,3 +314,73 @@ def convert_to_pdf(docx_path: Path) -> Optional[Path]:
         return pdf_path if pdf_path.exists() else None
     except Exception:
         return None
+
+
+# ------------------------------------------------------------ E-signature
+# Powers the /api/podepsat/{token}* public routes and the admin's
+# /api/sign-links/{token}/download in main.py. Deliberately re-renders
+# from scratch every time (the read-before-signing preview, the sign
+# step itself, the employee's one-time download, and any later admin
+# re-download) rather than persisting a rendered file anywhere: the only
+# state that has to survive between those calls is `fields` (the exact
+# FillRequest payload from the original /api/fill) and, once signed,
+# `signature_image` — both plain data already sitting in Supabase's
+# sign_links table. That sidesteps Render's ephemeral disk (a redeploy
+# mid-flow would otherwise silently orphan a pending signing link) at
+# the cost of one extra LibreOffice conversion per view/download.
+
+
+def _signature_or_placeholder(tpl: DocxTemplate, signature_b64: Optional[str]):
+    """Returns an InlineImage for a base64-encoded signature PNG, or the
+    same dotted-line placeholder fill_blank()'s unsigned contracts show,
+    if there's no signature (yet) to draw."""
+    if not signature_b64:
+        return SIGNATURE_PLACEHOLDER
+    try:
+        image_bytes = base64.b64decode(signature_b64, validate=True)
+        return InlineImage(tpl, BytesIO(image_bytes), width=Mm(35))
+    except Exception:
+        logger.warning("signature_image failed to decode — falling back to placeholder", exc_info=True)
+        return SIGNATURE_PLACEHOLDER
+
+
+def render_signed_contract(
+    template_id: str,
+    fields: dict,
+    employee_signature_b64: Optional[str] = None,
+    employer_signature_b64: Optional[str] = None,
+) -> Path:
+    """Re-renders one of the SIGNABLE_TEMPLATE_IDS contracts from a saved
+    `fields` snapshot, with either signature drawn in if supplied.
+
+    employer_signature_b64 has no caller yet — there's no UI for an
+    employer to upload their own signature image. It's threaded through
+    now so that future feature only has to start passing a value here;
+    it doesn't need to touch this function, the employee-signing
+    endpoints, or their own separate, independent {{PODPIS_ZAMESTNAVATELE}}
+    tag in the templates.
+    """
+    if template_id not in SIGNABLE_TEMPLATE_IDS:
+        raise ValueError(f"Šablona '{template_id}' nepodporuje podpis odkazem.")
+
+    template_path = settings.TEMPLATES_DIR / f"{template_id}.docx"
+    if not template_path.exists():
+        raise FileNotFoundError(f"Šablona '{template_id}' nenalezena.")
+
+    tpl = DocxTemplate(str(template_path))
+    context = _build_context(fields, template_id)
+    context["PODPIS_ZAMESTNANCE"] = _signature_or_placeholder(tpl, employee_signature_b64)
+    context["PODPIS_ZAMESTNAVATELE"] = _signature_or_placeholder(tpl, employer_signature_b64)
+    tpl.render(context)
+
+    safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
+    safe_first = _safe_filename_part(fields.get("first_name"))
+    unique = uuid.uuid4().hex
+    out_name = f"podepsano_{safe_last}_{safe_first}_{unique}.docx".strip("_")
+    out_path = (settings.GENERATED_DIR / out_name).resolve()
+
+    if settings.GENERATED_DIR.resolve() not in out_path.parents:
+        raise ValueError("Neplatná cesta k vygenerovanému souboru.")
+
+    tpl.save(str(out_path))
+    return out_path

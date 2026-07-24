@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   Upload, FileText, Check, AlertTriangle, X, Download,
   Printer, Loader2, ArrowRight, ArrowLeft, RotateCcw, ShieldCheck,
+  Link2, Copy,
 } from "lucide-react";
 
 import LoginForm from "./components/LoginForm";
@@ -13,7 +14,7 @@ import VisaExpiredWarningIcon from "./components/VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./components/StrpeniWarningIcon";
 import StatsWidget from "./components/StatsWidget";
 import BatchDocFiller from "./components/BatchDocFiller";
-import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE } from "./constants/fields";
+import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE, SIGNABLE_TEMPLATE_IDS } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { mergeRecognizedResults } from "./utils/recognizeMerge";
 import { isValidIco, isValidDic } from "./utils/validation";
@@ -65,6 +66,9 @@ export default function SimpleDocFiller() {
   const [loading, setLoading] = useState(false);
   const [downloadError, setDownloadError] = useState(null);
   const [zipDownloading, setZipDownloading] = useState(false);
+  const [signLink, setSignLink] = useState(null);
+  const [signLinkLoading, setSignLinkLoading] = useState(false);
+  const [signLinkError, setSignLinkError] = useState(null);
   // Bumped after each successful generation to tell StatsWidget to
   // re-fetch /api/stats — a plain counter prop rather than some shared
   // event bus, since this is the only place that ever needs to trigger
@@ -357,6 +361,40 @@ export default function SimpleDocFiller() {
     }
   };
 
+  // Sends the exact same fields already just submitted to /api/fill — the
+  // backend re-renders the contract from this same payload at every step
+  // of the signing flow (read, sign, download) rather than persisting a
+  // file anywhere, so there's nothing else for this to look up.
+  const handleCreateSignLink = async () => {
+    setSignLinkError(null);
+    setSignLinkLoading(true);
+    try {
+      const res = await apiFetch("/api/sign-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_id: templateId,
+          ...fields,
+          address: composeCzAddress(czAddressParts),
+          address_origin: composeOriginAddress(originCountry, originAddressParts),
+        }),
+      });
+      if (!res.ok) {
+        const err = new Error("server error");
+        err.status = res.status;
+        throw err;
+      }
+      const data = await res.json();
+      setSignLink(`${window.location.origin}/podepsat/${data.token}`);
+    } catch (e) {
+      if (e.status !== 401) {
+        setSignLinkError("Nepodařilo se vytvořit odkaz k podpisu.");
+      }
+    } finally {
+      setSignLinkLoading(false);
+    }
+  };
+
   const reset = () => {
     setStep(1);
     setFields({});
@@ -367,6 +405,8 @@ export default function SimpleDocFiller() {
     setResult(null);
     setError(null);
     setDownloadError(null);
+    setSignLink(null);
+    setSignLinkError(null);
     setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setPendingFiles([]);
@@ -1159,6 +1199,50 @@ export default function SimpleDocFiller() {
                     >
                       <RotateCcw size={15} /> Nový dokument
                     </button>
+                  </div>
+                )}
+
+                {/* Employee e-signature link — only for the four contract
+                    templates that actually have a signature line (see
+                    SIGNABLE_TEMPLATE_IDS's own comment). The admin copies
+                    this link out and sends it to the employee themselves
+                    (no SMS/email integration) — see SignPage.jsx for what
+                    they see when they open it. */}
+                {SIGNABLE_TEMPLATE_IDS.has(templateId) && (
+                  <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/60 p-4 text-left">
+                    {!signLink ? (
+                      <button
+                        type="button"
+                        onClick={handleCreateSignLink}
+                        disabled={signLinkLoading}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {signLinkLoading ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
+                        Vytvořit odkaz k podpisu
+                      </button>
+                    ) : (
+                      <>
+                        <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                          Odkaz k podpisu — pošlete jej zaměstnanci
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            readOnly
+                            value={signLink}
+                            onFocus={(e) => e.target.select()}
+                            className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12.5px] text-slate-700"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => navigator.clipboard?.writeText(signLink)}
+                            className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            <Copy size={13} /> Kopírovat
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {signLinkError && <p className="mt-1.5 text-[11.5px] text-red-600">{signLinkError}</p>}
                   </div>
                 )}
               </div>

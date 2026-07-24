@@ -76,16 +76,40 @@ order by company_name, document_count desc;
 -- no person to show a name or a toggle-able dot for, though those rows
 -- still count toward generation_stats' company-level document_count and
 -- all_signed above.
+--
+-- signed_download_token: the most recently signed sign_links row for
+-- this person, if any — lets StatsWidget.jsx offer a download button
+-- next to a green person's dot (GET /api/sign-links/{token}/download)
+-- without a separate round trip per row. Requires
+-- create_sign_links_table.sql to have been run first (this view reads
+-- from that table); re-run this CREATE OR REPLACE afterwards if the two
+-- were applied out of order.
 create or replace view generation_stats_by_person as
 select
-    coalesce(company_name, 'Bez firmy') as company_name,
-    employee_name,
-    count(*) as document_count,
-    bool_and(signed_at is not null) as all_signed
-from generation_log
-where employee_name is not null and trim(employee_name) <> ''
-group by coalesce(company_name, 'Bez firmy'), employee_name
-order by company_name, employee_name;
+    gl.company_name,
+    gl.employee_name,
+    gl.document_count,
+    gl.all_signed,
+    (
+        select sl.token
+        from sign_links sl
+        where coalesce(sl.company_name, 'Bez firmy') = gl.company_name
+          and sl.employee_name = gl.employee_name
+          and sl.signed_at is not null
+        order by sl.signed_at desc
+        limit 1
+    ) as signed_download_token
+from (
+    select
+        coalesce(company_name, 'Bez firmy') as company_name,
+        employee_name,
+        count(*) as document_count,
+        bool_and(signed_at is not null) as all_signed
+    from generation_log
+    where employee_name is not null and trim(employee_name) <> ''
+    group by coalesce(company_name, 'Bez firmy'), employee_name
+) gl
+order by gl.company_name, gl.employee_name;
 
 -- Same reasoning/assumption as create_companies_table.sql: the backend
 -- is the only intended caller (holds SUPABASE_KEY as a server-side

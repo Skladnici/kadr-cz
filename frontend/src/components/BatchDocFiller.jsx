@@ -71,6 +71,7 @@ function makePersonCard(file) {
       status: "idle", docxToken: null, pdfToken: null,
       gdprDocxToken: null, zdravotniDocxToken: null, poplatnikPdfToken: null,
       error: null,
+      signLink: null, signLinkLoading: false, signLinkError: null,
     },
   };
 }
@@ -677,6 +678,34 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
     };
   }, [templateId, sharedFields, sharedCompanyFields]);
 
+  // Same fields buildFillPayload already sends to /api/fill for this
+  // person — the sign-link endpoint accepts the identical shape, so
+  // there's nothing person-specific to look up beyond what's already on
+  // hand. Stored on person.generation alongside docxToken/pdfToken since
+  // it's the same kind of per-person, post-generation result.
+  const handleCreateSignLink = useCallback(async (person) => {
+    updatePerson(person.id, (p) => ({
+      ...p, generation: { ...p.generation, signLinkLoading: true, signLinkError: null },
+    }));
+    try {
+      const res = await apiFetch("/api/sign-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildFillPayload(person)),
+      });
+      if (!res.ok) throw new Error("server error");
+      const data = await res.json();
+      const link = `${window.location.origin}/podepsat/${data.token}`;
+      updatePerson(person.id, (p) => ({
+        ...p, generation: { ...p.generation, signLink: link, signLinkLoading: false },
+      }));
+    } catch {
+      updatePerson(person.id, (p) => ({
+        ...p, generation: { ...p.generation, signLinkLoading: false, signLinkError: "Nepodařilo se vytvořit odkaz." },
+      }));
+    }
+  }, [apiFetch, buildFillPayload, updatePerson]);
+
   const handleGenerateAll = useCallback(async () => {
     if (isGeneratingRef.current || !templateId || people.length === 0) return;
     isGeneratingRef.current = true;
@@ -937,6 +966,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                   : { ...p, templateOverrideEnabled: true, templateOverride: templateId }
               ))}
               onUpdateTemplateOverride={(value) => updatePerson(person.id, (p) => ({ ...p, templateOverride: value }))}
+              onCreateSignLink={() => handleCreateSignLink(person)}
             />
           ))}
         </div>

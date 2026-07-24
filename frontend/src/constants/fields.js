@@ -81,3 +81,9 @@ export const DEFAULT_SALARY_BY_TEMPLATE = {
   dpp_template: "11 999",
   hpp_template: "22 400",
 };
+
+// Mirrors backend/app/blank_service.py's SIGNABLE_TEMPLATE_IDS — only
+// these four templates got a {{PODPIS_ZAMESTNANCE}} tag added to their
+// .docx (see that file's own comment); vyplatni_paska has no signature
+// line at all, so "Vytvořit odkaz k podpisu" has nowhere to point for it.
+export const SIGNABLE_TEMPLATE_IDS = new Set(["dpp_template", "hpp_template", "dpc_template", "ukonceni_pracovniho_pomeru"]);

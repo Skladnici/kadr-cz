@@ -12,6 +12,7 @@ reused across contracts and visitors. Run:
     uvicorn app.main:app --reload --port 8000
 """
 import asyncio
+import base64
 import logging
 import secrets
 import time
@@ -32,7 +33,10 @@ from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.ocr_service import recognize_document
-from app.blank_service import list_templates, fill_blank, convert_to_pdf, _fill_bundle_docx
+from app.blank_service import (
+    list_templates, fill_blank, convert_to_pdf, _fill_bundle_docx,
+    render_signed_contract, SIGNABLE_TEMPLATE_IDS,
+)
 from app.pdf_fill import fill_poplatnik_pdf
 
 logging.basicConfig(
@@ -614,29 +618,26 @@ async def get_stats_by_person(request: Request):
     return resp.json()
 
 
-class SignIn(BaseModel):
-    company_name: str
-    employee_name: str
-    signed: bool
-
-
-@app.post("/api/stats/sign", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
-@limiter.limit("60/minute")
-async def set_signed_status(request: Request, payload: SignIn):
+async def _apply_signed_status(company_name: str, employee_name: str, signed: bool) -> None:
     """Marks/unmarks every generation_log row for one person at one
-    company as signed — StatsWidget.jsx's per-person dot always reflects
-    "all of this person's documents", so clicking it acts on that whole
-    set at once rather than one document at a time. company_name/
+    company as signed — the per-person dot (StatsWidget.jsx) always
+    reflects "all of this person's documents", so both callers below act
+    on that whole set at once rather than one document at a time:
+    the admin's manual toggle (POST /api/stats/sign) AND the employee's
+    own real signature (POST /api/podepsat/{token}/sign) go through this
+    same helper and the same signed_at column — an employee actually
+    signing and an admin manually overriding the dot are two ways of
+    setting the same fact, not two competing mechanisms. company_name/
     employee_name are matched against the same coalesce(...)'d values
     generation_stats_by_person returns, not necessarily the raw column
     (company_name can be NULL in the table but show up here as the
     'Bez firmy' bucket the frontend already displays)."""
-    params: dict = {"employee_name": f"eq.{payload.employee_name}"}
-    if payload.company_name == "Bez firmy":
-        params["or"] = f"(company_name.is.null,company_name.eq.{payload.company_name})"
+    params: dict = {"employee_name": f"eq.{employee_name}"}
+    if company_name == "Bez firmy":
+        params["or"] = f"(company_name.is.null,company_name.eq.{company_name})"
     else:
-        params["company_name"] = f"eq.{payload.company_name}"
-    body = {"signed_at": datetime.now(timezone.utc).isoformat() if payload.signed else None}
+        params["company_name"] = f"eq.{company_name}"
+    body = {"signed_at": datetime.now(timezone.utc).isoformat() if signed else None}
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.patch(
             f"{settings.SUPABASE_URL}/rest/v1/generation_log",
@@ -646,7 +647,229 @@ async def set_signed_status(request: Request, payload: SignIn):
         )
     if resp.status_code >= 400:
         raise HTTPException(502, f"Supabase chyba: {resp.text}")
+
+
+class SignIn(BaseModel):
+    company_name: str
+    employee_name: str
+    signed: bool
+
+
+@app.post("/api/stats/sign", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("60/minute")
+async def set_signed_status(request: Request, payload: SignIn):
+    await _apply_signed_status(payload.company_name, payload.employee_name, payload.signed)
     return {"ok": True}
+
+
+# --------------------------------------------------------- E-signature
+# One-time-link employee signing flow. sign_links (see
+# create_sign_links_table.sql) never stores a rendered file — only the
+# exact FillRequest `fields` snapshot and, once signed, the signature
+# image — so every one of these routes re-renders the contract on
+# demand via blank_service.render_signed_contract(). See that function's
+# own docstring for why.
+#
+# The /api/podepsat/* routes below are the one deliberate exception to
+# this file's "every route sits behind _require_site_auth" rule: an
+# employee has no site login, so the token itself (128 bits, see
+# create_sign_links_table.sql) is what stands in for auth. Each of them
+# calls _require_supabase() directly instead of via Depends(), precisely
+# so a stray copy-paste can't silently reattach a site-auth dependency.
+
+async def _fetch_sign_link(token: str) -> Optional[dict]:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"token": f"eq.{token}", "select": "*"},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    rows = resp.json()
+    return rows[0] if rows else None
+
+
+def _sign_link_is_usable(link: Optional[dict]) -> bool:
+    # Once the employee has downloaded their signed copy, the link is
+    # spent for them — every public route below treats a not-found and an
+    # already-downloaded token identically (a 404), so a stale link can't
+    # be used to distinguish "never existed" from "already used".
+    return link is not None and not link.get("employee_downloaded_at")
+
+
+@app.post("/api/sign-links", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("20/minute")
+async def create_sign_link(request: Request, payload: FillRequest):
+    """Called right after a successful /api/fill, with the exact same
+    payload — "Vytvořit odkaz k podpisu" in SimpleDocFiller/
+    BatchDocFiller already has these fields in hand, so there's no need
+    for the backend to look up or remember anything from that earlier
+    /api/fill call."""
+    if payload.template_id not in SIGNABLE_TEMPLATE_IDS:
+        raise HTTPException(400, "Tento typ dokumentu nelze podepsat odkazem.")
+    token = uuid.uuid4().hex
+    row = {
+        "token": token,
+        "template_id": payload.template_id,
+        "fields": payload.model_dump(),
+        "company_name": (payload.company_name or "").strip() or None,
+        "employee_name": f"{payload.first_name or ''} {payload.last_name or ''}".strip() or None,
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            json=row,
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return {"token": token}
+
+
+@app.get("/api/sign-links/{token}/download", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("30/minute")
+async def admin_download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
+    """The admin-facing re-download (e.g. the download icon next to a
+    green person's dot in StatsWidget.jsx). Deliberately a separate route
+    from /api/podepsat/{token}/download: this one never touches
+    employee_downloaded_at, so it can be called any number of times and
+    never interferes with — or is blocked by — the employee's own
+    one-time download."""
+    link = await _fetch_sign_link(token)
+    if link is None:
+        raise HTTPException(404, "Odkaz nenalezen.")
+    if not link.get("signed_at"):
+        raise HTTPException(400, "Dokument ještě není podepsán.")
+    docx_path = await asyncio.to_thread(
+        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
+    )
+    background_tasks.add_task(docx_path.unlink, missing_ok=True)
+    return FileResponse(
+        docx_path, filename=docx_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        background=background_tasks,
+    )
+
+
+@app.get("/api/podepsat/{token}")
+@limiter.limit("30/minute")
+async def get_sign_link_status(request: Request, token: str):
+    _require_supabase()
+    link = await _fetch_sign_link(token)
+    if not _sign_link_is_usable(link):
+        return {"valid": False}
+    return {
+        "valid": True,
+        "company_name": link.get("company_name"),
+        "employee_name": link.get("employee_name"),
+        "template_id": link.get("template_id"),
+        "signed": bool(link.get("signed_at")),
+    }
+
+
+@app.get("/api/podepsat/{token}/pdf")
+@limiter.limit("30/minute")
+async def get_sign_link_pdf(request: Request, token: str, background_tasks: BackgroundTasks):
+    """Powers both the "read before signing" preview and, after signing,
+    reviewing what was actually signed — same route either way, since
+    render_signed_contract() always reflects sign_links' current
+    signature_image (null beforehand, the real one afterwards)."""
+    _require_supabase()
+    link = await _fetch_sign_link(token)
+    if not _sign_link_is_usable(link):
+        raise HTTPException(404, "Odkaz nenalezen nebo již není platný.")
+    docx_path = await asyncio.to_thread(
+        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
+    )
+    pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
+    docx_path.unlink(missing_ok=True)
+    if pdf_path is None:
+        raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
+    background_tasks.add_task(pdf_path.unlink, missing_ok=True)
+    return FileResponse(
+        pdf_path, media_type="application/pdf",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        background=background_tasks,
+    )
+
+
+class SubmitSignatureIn(BaseModel):
+    signature_image: str  # base64 PNG, optionally with a data: URL prefix
+
+
+@app.post("/api/podepsat/{token}/sign")
+@limiter.limit("10/minute")
+async def submit_signature(request: Request, token: str, payload: SubmitSignatureIn):
+    _require_supabase()
+    link = await _fetch_sign_link(token)
+    if not _sign_link_is_usable(link):
+        raise HTTPException(404, "Odkaz nenalezen nebo již není platný.")
+
+    b64 = payload.signature_image.split(",", 1)[-1].strip()
+    try:
+        if not b64:
+            raise ValueError("empty signature")
+        base64.b64decode(b64, validate=True)
+    except Exception:
+        raise HTTPException(400, "Neplatný obrázek podpisu.")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"token": f"eq.{token}"},
+            json={"signature_image": b64, "signed_at": datetime.now(timezone.utc).isoformat()},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+
+    # Same field, same helper the admin's manual dot-click uses (see
+    # _apply_signed_status's own docstring) — an employee really signing
+    # is just another way of setting the fact "this person is signed",
+    # not a separate parallel status.
+    if link.get("company_name") and link.get("employee_name"):
+        await _apply_signed_status(link["company_name"], link["employee_name"], True)
+
+    return {"ok": True}
+
+
+async def _mark_employee_downloaded(token: str) -> None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.patch(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={"token": f"eq.{token}"},
+            json={"employee_downloaded_at": datetime.now(timezone.utc).isoformat()},
+        )
+
+
+@app.get("/api/podepsat/{token}/download")
+@limiter.limit("10/minute")
+async def download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
+    """The employee's own one-time download. employee_downloaded_at is
+    stamped as a background task — same pattern as /api/download's
+    delete-after-serve — so a connection that drops mid-transfer doesn't
+    burn the employee's one shot at a file they never actually received."""
+    _require_supabase()
+    link = await _fetch_sign_link(token)
+    if not _sign_link_is_usable(link):
+        raise HTTPException(404, "Odkaz nenalezen nebo již není platný.")
+    if not link.get("signed_at"):
+        raise HTTPException(400, "Dokument ještě není podepsán.")
+
+    docx_path = await asyncio.to_thread(
+        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
+    )
+    background_tasks.add_task(docx_path.unlink, missing_ok=True)
+    background_tasks.add_task(_mark_employee_downloaded, token)
+    return FileResponse(
+        docx_path, filename=docx_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        background=background_tasks,
+    )
 
 
 # ------------------------------------------------------------- Keep-alive
