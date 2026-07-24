@@ -13,6 +13,7 @@ import MinorWarningIcon from "./components/MinorWarningIcon";
 import VisaExpiredWarningIcon from "./components/VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./components/StrpeniWarningIcon";
 import StatsWidget from "./components/StatsWidget";
+import SignedDocsNotifier from "./components/SignedDocsNotifier";
 import BatchDocFiller from "./components/BatchDocFiller";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE, SIGNABLE_TEMPLATE_IDS } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
@@ -1270,6 +1271,7 @@ export default function SimpleDocFiller() {
       </div>
 
       <StatsWidget apiFetch={apiFetch} refreshSignal={statsRefreshSignal} />
+      <SignedDocsNotifier apiFetch={apiFetch} />
 
       {lightboxUrl && (
         <div

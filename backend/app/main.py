@@ -727,12 +727,42 @@ async def create_sign_link(request: Request, payload: FillRequest):
     return {"token": token}
 
 
+@app.get("/api/sign-links/recent", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
+@limiter.limit("30/minute")
+async def get_recent_signed_links(request: Request):
+    """Powers the corner "someone just signed" indicator (SignedDocsNotifier.jsx)
+    — every sign_links row that's actually been signed, newest first, so
+    the frontend can diff against what it already showed and light up on
+    a new one. Deliberately separate from /api/stats' all_signed flag:
+    that aggregate counts historical, pre-e-signature generation_log rows
+    as "signed" via a one-time backfill migration (see
+    create_generation_log_table.sql) — a reasonable default for a
+    company-level summary, but actively misleading for a notification
+    that's supposed to mean "a real person just signed via their link".
+    sign_links.signed_at is never backfilled — every row returned here
+    reflects an actual signature."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/sign_links",
+            headers=_supabase_headers(),
+            params={
+                "signed_at": "not.is.null",
+                "select": "token,company_name,employee_name,signed_at,template_id",
+                "order": "signed_at.desc",
+                "limit": "50",
+            },
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+    return resp.json()
+
+
 @app.get("/api/sign-links/{token}/download", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
 @limiter.limit("30/minute")
 async def admin_download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
-    """The admin-facing re-download (e.g. the download icon next to a
-    green person's dot in StatsWidget.jsx). Deliberately a separate route
-    from /api/podepsat/{token}/download: this one never touches
+    """The admin-facing re-download (e.g. the download button next to a
+    name in SignedDocsNotifier.jsx). Deliberately a separate route from
+    /api/podepsat/{token}/download: this one never touches
     employee_downloaded_at, so it can be called any number of times and
     never interferes with — or is blocked by — the employee's own
     one-time download."""

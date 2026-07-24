@@ -66,8 +66,19 @@ class FakeSignLinks:
         return raw[len("eq."):] if raw.startswith("eq.") else raw
 
     def select(self, params):
-        row = self.rows.get(self._token_from_params(params))
-        return 200, ([row] if row else [])
+        params = params or {}
+        if "token" in params:
+            row = self.rows.get(self._token_from_params(params))
+            return 200, ([row] if row else [])
+        # GET /api/sign-links/recent's query shape: signed_at=not.is.null,
+        # order=signed_at.desc, limit=... — mirrors main.py's own filter
+        # closely enough to prove it builds the right query, not a general
+        # PostgREST filter parser.
+        assert params.get("signed_at") == "not.is.null", params
+        rows = [r for r in self.rows.values() if r.get("signed_at")]
+        rows.sort(key=lambda r: r["signed_at"], reverse=True)
+        limit = int(params.get("limit", len(rows)))
+        return 200, rows[:limit]
 
     def patch(self, params, json_body):
         row = self.rows.get(self._token_from_params(params))
@@ -293,3 +304,60 @@ def test_podepsat_routes_503_when_supabase_is_unconfigured(monkeypatch):
     assert client.get("/api/podepsat/anything").status_code == 503
     assert client.post("/api/podepsat/anything/sign", json={"signature_image": TINY_PNG_B64}).status_code == 503
     assert client.get("/api/podepsat/anything/download").status_code == 503
+
+
+# --------------------------------------------- Recent signings (notifier)
+
+def test_recent_signed_links_start_empty(fake_supabase):
+    resp = client.get("/api/sign-links/recent", auth=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_recent_signed_links_excludes_unsigned_links(fake_supabase):
+    _create_link()  # never signed
+    resp = client.get("/api/sign-links/recent", auth=AUTH)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_recent_signed_links_includes_a_signed_one(fake_supabase):
+    token = _create_link(company_name="ACME s.r.o.", first_name="Jan", last_name="Novak").json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+
+    resp = client.get("/api/sign-links/recent", auth=AUTH)
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["token"] == token
+    assert rows[0]["company_name"] == "ACME s.r.o."
+    assert rows[0]["employee_name"] == "Jan Novak"
+    assert rows[0]["signed_at"] is not None
+
+
+def test_recent_signed_links_orders_newest_first(fake_supabase):
+    import time
+
+    token1 = _create_link(first_name="First", last_name="Person").json()["token"]
+    client.post(f"/api/podepsat/{token1}/sign", json={"signature_image": TINY_PNG_B64})
+    time.sleep(0.01)
+    token2 = _create_link(first_name="Second", last_name="Person").json()["token"]
+    client.post(f"/api/podepsat/{token2}/sign", json={"signature_image": TINY_PNG_B64})
+
+    rows = client.get("/api/sign-links/recent", auth=AUTH).json()
+    assert [r["token"] for r in rows] == [token2, token1]
+
+
+def test_recent_signed_links_requires_site_auth(fake_supabase):
+    resp = client.get("/api/sign-links/recent")
+    assert resp.status_code == 401
+
+
+def test_recent_signed_links_503s_when_supabase_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(settings, "SITE_USERNAME", "hr")
+    monkeypatch.setattr(settings, "SITE_PASSWORD", "test123")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "")
+    monkeypatch.setattr(settings, "SUPABASE_KEY", "")
+
+    resp = client.get("/api/sign-links/recent", auth=AUTH)
+    assert resp.status_code == 503

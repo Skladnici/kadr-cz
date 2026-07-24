@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { Building2, ChevronDown, ChevronUp, Download } from "lucide-react";
+import { Building2, ChevronDown, ChevronUp } from "lucide-react";
 
 // Czech noun declension for "document(s)" depends on the count: 1 =
 // dokument, 2-4 = dokumenty, 0 or 5+ = dokumentů.
@@ -18,16 +18,20 @@ function pluralizeDocs(n) {
 // SimpleDocFiller right after each successful generation so the count
 // updates without a page reload — see its own comment for why a plain
 // prop bump was used instead of some shared event bus.
+//
+// Signing status used to live here too (a "Podpisy" tab with per-company/
+// per-person dots) — pulled back out in favor of SignedDocsNotifier.jsx,
+// a separate bottom-right indicator. Two reasons: mixing "how many
+// documents per company/type" with "did someone just sign something" in
+// one widget made neither easy to read, and generation_log's all_signed
+// flag counts historical, pre-e-signature rows as "signed" via a one-time
+// backfill migration (see create_generation_log_table.sql) — a reasonable
+// default for an aggregate, but actively misleading for a notification
+// that's supposed to mean "a real person just signed via their link".
 export default function StatsWidget({ apiFetch, refreshSignal }) {
   const [stats, setStats] = useState(null); // null = hidden (not loaded yet, or unavailable)
   const [statsByType, setStatsByType] = useState([]);
-  const [statsByPerson, setStatsByPerson] = useState([]);
   const [expanded, setExpanded] = useState(false);
-  // "type" (Podle typu) and "signing" (Podpisy) are two independent views
-  // over the same company list — never rendered together, so a company
-  // row never shows both a document-type breakdown and signing dots at
-  // once. See the render below for how each tab's expanded detail differs.
-  const [activeTab, setActiveTab] = useState("type");
   // Set of company_name — which company rows have their per-document-type
   // breakdown open. A Set (not a single "which one" value) so several
   // companies can be expanded independently at once, each toggled on its
@@ -47,24 +51,15 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
       setStats(null);
     }
 
-    // The by-type/by-person breakdowns are supplementary detail, not the
-    // widget's core feature — a failure here just means expanded rows show
-    // no detail rather than hiding the whole widget the way a failed
-    // /api/stats does.
+    // The by-type breakdown is supplementary detail, not the widget's core
+    // feature — a failure here just means expanded rows show no detail
+    // rather than hiding the whole widget the way a failed /api/stats does.
     try {
       const res = await apiFetch("/api/stats/by-type");
       const data = res.ok ? await res.json() : [];
       setStatsByType(Array.isArray(data) ? data : []);
     } catch {
       setStatsByType([]);
-    }
-
-    try {
-      const res = await apiFetch("/api/stats/by-person");
-      const data = res.ok ? await res.json() : [];
-      setStatsByPerson(Array.isArray(data) ? data : []);
-    } catch {
-      setStatsByPerson([]);
     }
   }, [apiFetch]);
 
@@ -80,14 +75,6 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
     return map;
   }, [statsByType]);
 
-  const byPersonByCompany = useMemo(() => {
-    const map = {};
-    for (const row of statsByPerson) {
-      (map[row.company_name] ||= []).push(row);
-    }
-    return map;
-  }, [statsByPerson]);
-
   const toggleCompany = useCallback((companyName) => {
     setExpandedCompanies((prev) => {
       const next = new Set(prev);
@@ -96,47 +83,6 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
       return next;
     });
   }, []);
-
-  // Clicking a person's dot/row marks or unmarks every document logged for
-  // them at that company as signed (see /api/stats/sign's own docstring —
-  // the dot always reflects "all of this person's documents", so there's
-  // no finer-grained per-document toggle here). Best-effort like the rest
-  // of this widget: a failed request just leaves the dot showing its
-  // previous state instead of surfacing an error banner.
-  const toggleSigned = useCallback(async (companyName, employeeName, nextSigned) => {
-    try {
-      const res = await apiFetch("/api/stats/sign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ company_name: companyName, employee_name: employeeName, signed: nextSigned }),
-      });
-      if (res.ok) load();
-    } catch {
-      // ignored — best-effort, see comment above
-    }
-  }, [apiFetch, load]);
-
-  // Lets an admin grab the same signed file the employee already
-  // downloaded — signed_download_token comes from generation_stats_by_
-  // person's own correlated subquery (see create_generation_log_table.sql)
-  // and is only ever set once a person has at least one signed sign_link.
-  const downloadSignedDoc = useCallback(async (token) => {
-    try {
-      const res = await apiFetch(`/api/sign-links/${token}/download`);
-      if (!res.ok) return;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "smlouva_podepsana.docx";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      // ignored — best-effort, see toggleSigned's own comment above
-    }
-  }, [apiFetch]);
 
   if (stats === null) return null;
 
@@ -157,27 +103,6 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
 
       {expanded && (
         <div className="mt-1.5 w-64 max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.25)]">
-          <div className="flex items-center gap-1 mb-1.5 rounded-lg bg-slate-100 p-1">
-            <button
-              type="button"
-              onClick={() => setActiveTab("type")}
-              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                activeTab === "type" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
-              }`}
-            >
-              Podle typu
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("signing")}
-              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                activeTab === "signing" ? "bg-white text-[#0B1220] shadow-sm" : "text-slate-500 hover:text-[#0B1220]"
-              }`}
-            >
-              Podpisy
-            </button>
-          </div>
-
           {stats.length === 0 ? (
             <p className="px-1.5 py-1 text-[11.5px] text-slate-400">Zatím žádné dokumenty.</p>
           ) : (
@@ -185,7 +110,6 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
               {stats.map((s) => {
                 const isOpen = expandedCompanies.has(s.company_name);
                 const byType = byTypeByCompany[s.company_name] || [];
-                const byPerson = byPersonByCompany[s.company_name] || [];
                 return (
                   <li key={s.company_name}>
                     <button
@@ -194,16 +118,7 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                       aria-expanded={isOpen}
                       className="flex w-full items-center justify-between gap-2 rounded-lg px-1.5 py-1 text-[12px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                     >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        {activeTab === "signing" && (
-                          <span
-                            className={`status-dot ${s.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
-                            aria-hidden="true"
-                            title={s.all_signed ? "Vše podepsáno" : "Něco nepodepsáno"}
-                          />
-                        )}
-                        <span className="truncate">{s.company_name}</span>
-                      </span>
+                      <span className="truncate">{s.company_name}</span>
                       <span className="flex shrink-0 items-center gap-1">
                         <span className="font-semibold text-[#0B1220] tabular-nums">{s.document_count}</span>
                         {isOpen
@@ -211,50 +126,12 @@ export default function StatsWidget({ apiFetch, refreshSignal }) {
                           : <ChevronDown size={11} className="shrink-0 text-slate-400" />}
                       </span>
                     </button>
-
-                    {isOpen && activeTab === "type" && (
+                    {isOpen && (
                       <p className="px-1.5 pb-1.5 pt-0.5 text-[11px] text-slate-400">
                         {byType.length > 0
                           ? byType.map((t) => `${t.document_type}: ${t.document_count}`).join(" · ")
                           : "Žádná data podle typu."}
                       </p>
-                    )}
-
-                    {isOpen && activeTab === "signing" && (
-                      <div className="px-1.5 pb-1.5 pt-0.5">
-                        {byPerson.length > 0 ? (
-                          <ul className="space-y-0.5">
-                            {byPerson.map((p) => (
-                              <li key={p.employee_name} className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleSigned(s.company_name, p.employee_name, !p.all_signed)}
-                                  className="flex flex-1 min-w-0 items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[11.5px] text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-                                  title={p.all_signed ? "Označit jako nepodepsané" : "Označit jako podepsané"}
-                                >
-                                  <span className="truncate">{p.employee_name}</span>
-                                  <span
-                                    className={`status-dot ${p.all_signed ? "status-dot-signed" : "status-dot-unsigned"}`}
-                                    aria-hidden="true"
-                                  />
-                                </button>
-                                {p.signed_download_token && (
-                                  <button
-                                    type="button"
-                                    onClick={() => downloadSignedDoc(p.signed_download_token)}
-                                    title="Stáhnout podepsaný dokument"
-                                    className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-                                  >
-                                    <Download size={13} />
-                                  </button>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="text-[11px] text-slate-400">Žádná data o osobách.</p>
-                        )}
-                      </div>
                     )}
                   </li>
                 );

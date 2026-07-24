@@ -163,12 +163,10 @@ body {
   animation: welcomeTextIn .4s ease-out .3s both;
 }
 
-/* Signing-status dots (see StatsWidget.jsx) — a slow, soft breathe rather
-   than a sharp blink, since these sit in a corner widget that can stay on
-   screen indefinitely; a fast/high-contrast pulse would be distracting
-   over a whole work session. Same easing shape for both colors, just a
-   different glow tint, so green/red read as the same "alive" indicator
-   family rather than two different animations. */
+/* Signing-status dot (see SignedDocsNotifier.jsx) — a slow, soft breathe
+   rather than a sharp blink, since it sits in a corner indicator that can
+   stay on screen indefinitely; a fast/high-contrast pulse would be
+   distracting over a whole work session. */
 @keyframes statusDotPulse {
   0%, 100% { opacity: .55; box-shadow: 0 0 0 0 var(--status-dot-glow); }
   50%      { opacity: 1;   box-shadow: 0 0 5px 1.5px var(--status-dot-glow); }
@@ -191,4 +189,27 @@ body {
 .status-dot-unsigned {
   background: #ef4444;
   --status-dot-glow: rgba(239, 68, 68, .55);
+}
+
+/* SignedDocsNotifier.jsx's corner indicator — plays once whenever the
+   component mounts (nothing signed yet -> hidden entirely, so this is
+   genuinely a first appearance, not a repeated one). The glow on top of
+   it is separate and loops only while there's an unseen signing — see
+   .signed-docs-lit below. */
+@keyframes signedDocsAppear {
+  from { opacity: 0; transform: translateY(8px) scale(.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.signed-docs-notifier {
+  animation: signedDocsAppear .35s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@keyframes signedDocsGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .35); }
+  50%      { box-shadow: 0 0 10px 2px rgba(16, 185, 129, .35); }
+}
+
+.signed-docs-lit {
+  animation: signedDocsGlow 2s ease-in-out infinite;
 }
