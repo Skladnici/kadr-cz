@@ -23,6 +23,8 @@ import { calculateAge, isPastDate } from "./utils/age";
 import { isStrpeniVisaCode } from "./utils/visaStatus";
 import { API_BASE, describeRequestError, toBasicAuthHeader, uploadFileViaXHR, downloadGeneratedFile } from "./utils/api";
 import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "./utils/zipDownload";
+import useCopyFeedback from "./hooks/useCopyFeedback";
+import useSignedStatus from "./hooks/useSignedStatus";
 
 // NOTE: browser-side compression was removed here — it caused uploads to
 // hang indefinitely for certain files (observed with photos forwarded
@@ -137,6 +139,9 @@ export default function SimpleDocFiller() {
       return res;
     });
   }, [authHeader]);
+
+  const [linkCopied, copyLink] = useCopyFeedback();
+  const isSignedFn = useSignedStatus(apiFetch, !!authHeader);
 
   const handleLogin = async (username, password) => {
     setLoggingIn(true);
@@ -1223,9 +1228,22 @@ export default function SimpleDocFiller() {
                       </button>
                     ) : (
                       <>
-                        <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                          Odkaz k podpisu — pošlete jej zaměstnanci
-                        </p>
+                        <div className="mb-1.5 flex items-center gap-2">
+                          <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                            Odkaz k podpisu — pošlete jej zaměstnanci
+                          </p>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
+                              isSignedFn(fields.company_name, [fields.first_name, fields.last_name].filter(Boolean).join(" "))
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-slate-100 text-slate-500"
+                            }`}
+                          >
+                            {isSignedFn(fields.company_name, [fields.first_name, fields.last_name].filter(Boolean).join(" "))
+                              ? "Podepsáno"
+                              : "Čeká na podpis"}
+                          </span>
+                        </div>
                         <div className="flex items-center gap-2">
                           <input
                             readOnly
@@ -1235,10 +1253,15 @@ export default function SimpleDocFiller() {
                           />
                           <button
                             type="button"
-                            onClick={() => navigator.clipboard?.writeText(signLink)}
-                            className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-600 hover:bg-slate-50"
+                            onClick={() => copyLink(signLink)}
+                            className={`inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors ${
+                              linkCopied
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                            }`}
                           >
-                            <Copy size={13} /> Kopírovat
+                            {linkCopied ? <Check size={13} strokeWidth={3} /> : <Copy size={13} />}
+                            {linkCopied ? "Zkopírováno ✓" : "Kopírovat"}
                           </button>
                         </div>
                       </>

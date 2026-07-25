@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { PenLine, Download, ChevronDown, ChevronUp } from "lucide-react";
+import { Bell, Download, ChevronDown, ChevronUp } from "lucide-react";
+import { playSignChime } from "../utils/signSound";
 
 // localStorage key for the newest signed_at this admin has already seen —
 // a plain timestamp cutoff rather than a set of seen tokens, so it stays
@@ -65,7 +66,66 @@ export default function SignedDocsNotifier({ apiFetch }) {
   const downloadErrorRef = useRef(null);
   const [downloadError, setDownloadError] = useState(null);
 
+  // "New" here means "arrived since the last poll", tracked as a plain
+  // signed_at cutoff independent of lastSeenAt/localStorage above — that
+  // one is about the panel's own unread glow across sessions, this one
+  // is purely "did a live sign event just happen while this tab was
+  // open". undefined (not yet initialized) makes the very first load
+  // after mount establish the baseline silently instead of chiming for a
+  // whole backlog of pre-existing signatures.
+  const chimedUpToRef = useRef(undefined);
+  const flashTimeoutRef = useRef(null);
+  const pingTimeoutRef = useRef(null);
+  const newItemsTimeoutRef = useRef(null);
+  const [bellFlash, setBellFlash] = useState(false);
+  const [pingBadge, setPingBadge] = useState(false);
+  const [newlyArrivedTokens, setNewlyArrivedTokens] = useState(() => new Set());
+
+  const detectNewSignatures = useCallback((list) => {
+    // TEMP DEBUG — remove once the "no sound at all" report is confirmed
+    // fixed on a real deploy. Search "SIGN-SOUND-DEBUG" to find every
+    // line to strip (see also utils/signSound.js).
+    console.log("[SIGN-SOUND-DEBUG] detectNewSignatures called, list length:", list?.length, "chimedUpTo:", chimedUpToRef.current);
+    if (!list || list.length === 0) return;
+    const newest = list[0].signed_at;
+    if (chimedUpToRef.current === undefined) {
+      console.log("[SIGN-SOUND-DEBUG] first load ever — establishing baseline silently, no chime:", newest);
+      chimedUpToRef.current = newest;
+      return;
+    }
+    if (!(newest > chimedUpToRef.current)) {
+      console.log("[SIGN-SOUND-DEBUG] nothing newer than baseline — no chime. newest:", newest, "baseline:", chimedUpToRef.current);
+      return;
+    }
+    const freshTokens = list
+      .filter((d) => d.signed_at > chimedUpToRef.current)
+      .map((d) => d.token);
+    chimedUpToRef.current = newest;
+    console.log("[SIGN-SOUND-DEBUG] NEW signature(s) detected, tokens:", freshTokens, "-> calling playSignChime()");
+
+    playSignChime();
+
+    setBellFlash(true);
+    clearTimeout(flashTimeoutRef.current);
+    flashTimeoutRef.current = setTimeout(() => setBellFlash(false), 1100);
+
+    setPingBadge(true);
+    clearTimeout(pingTimeoutRef.current);
+    pingTimeoutRef.current = setTimeout(() => setPingBadge(false), 1000);
+
+    setNewlyArrivedTokens((prev) => new Set([...prev, ...freshTokens]));
+    clearTimeout(newItemsTimeoutRef.current);
+    newItemsTimeoutRef.current = setTimeout(() => {
+      setNewlyArrivedTokens((prev) => {
+        const next = new Set(prev);
+        freshTokens.forEach((t) => next.delete(t));
+        return next;
+      });
+    }, 1400);
+  }, []);
+
   const load = useCallback(async () => {
+    let list = null;
     try {
       const res = await apiFetch("/api/sign-links/recent");
       if (!res.ok) {
@@ -73,9 +133,20 @@ export default function SignedDocsNotifier({ apiFetch }) {
         return;
       }
       const data = await res.json();
-      setSignedDocs(Array.isArray(data) ? data : null);
+      list = Array.isArray(data) ? data : null;
+      setSignedDocs(list);
     } catch {
       setSignedDocs(null);
+    }
+
+    // Deliberately outside the fetch's own try/catch above — a problem in
+    // the chime/animation path (audio permissions, whatever) must never
+    // get swallowed together with a real network error, nor reset
+    // signedDocs back to null on its own.
+    try {
+      detectNewSignatures(list);
+    } catch (err) {
+      console.error("[SIGN-SOUND-DEBUG] detectNewSignatures threw:", err);
     }
 
     // Supplementary, same as StatsWidget's own by-type fetch — a failure
@@ -95,7 +166,7 @@ export default function SignedDocsNotifier({ apiFetch }) {
     } catch {
       // leave totals as whatever they already were
     }
-  }, [apiFetch]);
+  }, [apiFetch, detectNewSignatures]);
 
   useEffect(() => {
     load();
@@ -117,7 +188,12 @@ export default function SignedDocsNotifier({ apiFetch }) {
     };
   }, [load]);
 
-  useEffect(() => () => clearTimeout(closeTimeoutRef.current), []);
+  useEffect(() => () => {
+    clearTimeout(closeTimeoutRef.current);
+    clearTimeout(flashTimeoutRef.current);
+    clearTimeout(pingTimeoutRef.current);
+    clearTimeout(newItemsTimeoutRef.current);
+  }, []);
 
   const hasUnseen = (signedDocs || []).some((d) => !lastSeenAt || d.signed_at > lastSeenAt);
 
@@ -194,11 +270,17 @@ export default function SignedDocsNotifier({ apiFetch }) {
           ) : (
             <ul className="space-y-0.5">
               {signedDocs.map((d) => (
-                <li key={d.token} className="flex items-center gap-1">
+                <li
+                  key={d.token}
+                  className={`flex items-center gap-1 ${newlyArrivedTokens.has(d.token) ? "signed-doc-item-new" : ""}`}
+                >
                   <div className="flex-1 min-w-0 rounded-md px-1.5 py-1">
                     <div className="truncate text-[12px] text-slate-700">{d.employee_name || "—"}</div>
                     <div className="truncate text-[10.5px] text-slate-400">
                       {d.company_name || "Bez firmy"} · {formatSignedAt(d.signed_at)}
+                      {newlyArrivedTokens.has(d.token) && (
+                        <span className="ml-1.5 font-medium text-emerald-600">Podepsáno</span>
+                      )}
                     </div>
                   </div>
                   <button
@@ -221,14 +303,17 @@ export default function SignedDocsNotifier({ apiFetch }) {
         onClick={toggleExpanded}
         aria-expanded={expanded}
         title="Podepsané dokumenty"
-        className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11.5px] font-medium shadow-[0_1px_2px_rgba(11,18,32,0.04),0_8px_20px_-10px_rgba(11,18,32,0.35)] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 transition-colors ${
+        className={`relative flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11.5px] font-medium shadow-[0_1px_2px_rgba(11,18,32,0.04),0_8px_20px_-10px_rgba(11,18,32,0.35)] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 transition-colors ${bellFlash ? "signed-docs-bell-flash" : ""} ${
           hasUnseen
             ? "signed-docs-lit border-emerald-200 bg-emerald-50 text-emerald-700"
             : "border-slate-200 bg-white/95 text-slate-500 hover:border-slate-300"
         }`}
       >
         <span className={`status-dot ${hasUnseen ? "status-dot-signed" : ""}`} aria-hidden="true" style={!hasUnseen ? { background: "#94a3b8", animation: "none" } : undefined} />
-        <PenLine size={13} className="shrink-0" />
+        <span className="relative shrink-0">
+          <Bell size={13} />
+          {pingBadge && <span className="signed-docs-ping-badge" aria-hidden="true" />}
+        </span>
         {totals ? (
           <span className="tabular-nums whitespace-nowrap">{totals.generated} vygenerováno · {totals.signed} podepsáno</span>
         ) : (

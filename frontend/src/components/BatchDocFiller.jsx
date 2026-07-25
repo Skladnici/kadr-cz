@@ -10,6 +10,7 @@ import { mergeRecognizedResults } from "../utils/recognizeMerge";
 import { API_BASE, describeRequestError, uploadFileViaXHR, apiFetchWithTimeout, downloadGeneratedFile } from "../utils/api";
 import { paceRateLimit, runWithRetry, estimateSecondsRemaining } from "../utils/rateLimitQueue";
 import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "../utils/zipDownload";
+import useSignedStatus from "../hooks/useSignedStatus";
 
 // Same accent used by SimpleDocFiller/LoginForm's own primary buttons —
 // redefined locally rather than imported, matching how LoginForm.jsx
@@ -178,6 +179,7 @@ function buildCardFromRawResult(file, preview, rawResult) {
 }
 
 export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExpired }) {
+  const isSignedFn = useSignedStatus(apiFetch);
   const [people, setPeople] = useState([]);
   const [templateId, setTemplateId] = useState(null);
   const [sharedFields, setSharedFields] = useState({});
@@ -951,6 +953,10 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               sharedStartDate={sharedFields.start_date || ""}
               sharedEndDate={sharedFields.end_date || ""}
               sharedTemplateId={templateId}
+              signed={isSignedFn(
+                (person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields).name,
+                [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ")
+              )}
               onRemove={() => removePerson(person.id)}
               onSplit={() => splitPerson(person.id)}
               mergeCandidates={people.filter((p) => p.id !== person.id && p.status === "done")}

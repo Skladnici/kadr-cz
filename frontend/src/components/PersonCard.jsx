@@ -9,6 +9,7 @@ import StrpeniWarningIcon from "./StrpeniWarningIcon";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
 import { SIGNABLE_TEMPLATE_IDS } from "../constants/fields";
+import useCopyFeedback from "../hooks/useCopyFeedback";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -95,7 +96,10 @@ export default function PersonCard({
   onToggleTemplateOverride,
   onUpdateTemplateOverride,
   onCreateSignLink,
+  signed,
 }) {
+  const [headerCopied, copyHeaderLink] = useCopyFeedback();
+  const [detailCopied, copyDetailLink] = useCopyFeedback();
   // Starts closed every time the card itself is (re-)expanded — matches
   // "hidden by default, only opens on an explicit click" literally rather
   // than remembering whether it was open on a previous expand.
@@ -259,11 +263,13 @@ export default function PersonCard({
           person.generation.signLink ? (
             <button
               type="button"
-              onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
-              title={`Kopírovat odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-emerald-600 hover:bg-emerald-50 shrink-0"
+              onClick={() => copyHeaderLink(person.generation.signLink)}
+              title={headerCopied ? "Zkopírováno ✓" : `Kopírovat odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
+              className={`flex h-6 w-6 items-center justify-center rounded-full shrink-0 transition-colors ${
+                headerCopied ? "bg-emerald-100 text-emerald-700" : "text-emerald-600 hover:bg-emerald-50"
+              }`}
             >
-              <Copy size={13} />
+              {headerCopied ? <Check size={13} strokeWidth={3} /> : <Copy size={13} />}
             </button>
           ) : (
             <button
@@ -637,9 +643,18 @@ export default function PersonCard({
                           one, e.g. if this row gets screenshotted or
                           copy-pasted somewhere out of the card's own
                           context. */}
-                      <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-slate-400">
-                        Odkaz pro {displayName || `Osobu ${index + 1}`}
-                      </p>
+                      <div className="mb-1 flex items-center gap-2">
+                        <p className="text-[10.5px] font-medium uppercase tracking-wide text-slate-400">
+                          Odkaz pro {displayName || `Osobu ${index + 1}`}
+                        </p>
+                        <span
+                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium ${
+                            signed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {signed ? "Podepsáno" : "Čeká na podpis"}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-2">
                         <input
                           readOnly
@@ -649,10 +664,15 @@ export default function PersonCard({
                         />
                         <button
                           type="button"
-                          onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
-                          className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50"
+                          onClick={() => copyDetailLink(person.generation.signLink)}
+                          className={`inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-medium transition-colors ${
+                            detailCopied
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
                         >
-                          <Copy size={12} /> Kopírovat
+                          {detailCopied ? <Check size={12} strokeWidth={3} /> : <Copy size={12} />}
+                          {detailCopied ? "Zkopírováno ✓" : "Kopírovat"}
                         </button>
                       </div>
                     </div>
