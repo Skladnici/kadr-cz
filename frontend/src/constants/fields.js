@@ -87,3 +87,9 @@ export const DEFAULT_SALARY_BY_TEMPLATE = {
 // .docx (see that file's own comment); vyplatni_paska has no signature
 // line at all, so "Vytvořit odkaz k podpisu" has nowhere to point for it.
 export const SIGNABLE_TEMPLATE_IDS = new Set(["dpp_template", "hpp_template", "dpc_template", "ukonceni_pracovniho_pomeru"]);
+
+// Mirrors backend/app/blank_service.py's BUNDLE_TEMPLATE_IDS — which
+// sign_links get the full GDPR/health-declaration/tax-form packet
+// alongside their main contract (see main.py's /api/podepsat/{token}/pdf
+// ?doc= and SignPage.jsx's read-before-signing document tabs).
+export const BUNDLE_TEMPLATE_IDS = new Set(["dpp_template", "hpp_template", "dpc_template"]);

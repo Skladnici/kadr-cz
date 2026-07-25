@@ -1,8 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Download, FileText, Loader2, PenLine, RotateCcw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, Download, FileText, Loader2, Lock, PenLine, RotateCcw, ShieldCheck } from "lucide-react";
 import { API_BASE } from "../utils/api";
+import { BUNDLE_TEMPLATE_IDS } from "../constants/fields";
 
 const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
+
+// Which documents to show for reading before signing — always the main
+// contract; the GDPR/health-declaration/tax-form bundle too for a
+// DPP/DPČ/HPP link (see BUNDLE_TEMPLATE_IDS), since a person can only
+// meaningfully consent to a document they were actually shown, not just
+// the one of five they happened to be handed by default.
+function docTabsFor(templateId) {
+  const tabs = [{ key: "contract", label: "Smlouva" }];
+  if (BUNDLE_TEMPLATE_IDS.has(templateId)) {
+    tabs.push(
+      { key: "gdpr", label: "GDPR souhlas" },
+      { key: "zdravotni", label: "Zdravotní prohlášení" },
+      { key: "poplatnik", label: "Prohlášení poplatníka" },
+    );
+  }
+  return tabs;
+}
 
 // The public, no-login page an employee opens from a /podepsat/{token}
 // link (see SimpleDocFiller/PersonCard's "Vytvořit odkaz k podpisu").
@@ -20,9 +38,13 @@ export default function SignPage({ token }) {
   const [info, setInfo] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [hasSignature, setHasSignature] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState(null);
-  const [pdfError, setPdfError] = useState(false);
-  const [pdfRetryCount, setPdfRetryCount] = useState(0);
+  // One entry per document tab (see docTabsFor) — { url, error } once
+  // settled, absent while still loading/retrying. Keyed by doc key
+  // ("contract"/"gdpr"/"zdravotni"/"poplatnik") rather than a single
+  // pdfUrl/pdfError pair now that there's more than one document to read.
+  const [docState, setDocState] = useState({});
+  const [docTabs, setDocTabs] = useState([]);
+  const [activeDoc, setActiveDoc] = useState("contract");
   // True once the first status-check attempt has failed and a retry is
   // pending — lets the "loading" screen explain *why* it's taking a
   // while (see the retry loop below) instead of leaving a bare spinner
@@ -85,31 +107,48 @@ export default function SignPage({ token }) {
   }, [token, statusRetryCount]);
 
   // Fetched as a blob (not used directly as an <iframe src>) so the "open
-  // the contract" link below works as a plain same-origin blob URL —
-  // opening it in a new tab is what actually renders a PDF reliably on
-  // every device, including in-app browsers (WhatsApp/Telegram, etc.)
-  // that frequently show nothing at all for an embedded cross-origin PDF
+  // to read" link below works as a plain same-origin blob URL — opening
+  // it in a new tab is what actually renders a PDF reliably on every
+  // device, including in-app browsers (WhatsApp/Telegram, etc.) that
+  // frequently show nothing at all for an embedded cross-origin PDF
   // iframe, which is what a blank-screen report on a real phone almost
   // always turns out to be.
-  useEffect(() => {
-    if (phase !== "reading") return;
-    let cancelled = false;
-    setPdfError(false);
-    setPdfUrl(null);
-    fetch(`${API_BASE}/api/podepsat/${token}/pdf`)
+  const fetchDoc = useCallback((key) => {
+    setDocState((s) => {
+      const next = { ...s };
+      delete next[key]; // back to "loading" (absence = loading, see render below)
+      return next;
+    });
+    fetch(`${API_BASE}/api/podepsat/${token}/pdf?doc=${key}`)
       .then((res) => {
         if (!res.ok) throw new Error("pdf failed");
         return res.blob();
       })
       .then((blob) => {
-        if (cancelled) return;
-        setPdfUrl(URL.createObjectURL(blob));
+        setDocState((s) => ({ ...s, [key]: { url: URL.createObjectURL(blob), error: false } }));
       })
       .catch(() => {
-        if (!cancelled) setPdfError(true);
+        setDocState((s) => ({ ...s, [key]: { url: null, error: true } }));
       });
-    return () => { cancelled = true; };
-  }, [phase, token, pdfRetryCount]);
+  }, [token]);
+
+  // Fetches every applicable document (not just the contract — see
+  // docTabsFor) in parallel as soon as the link's info is known, so
+  // switching tabs never makes the person wait again for one already
+  // fetched, and "Přečteno, pokračovat" (gated on all of them below) is
+  // enabled as soon as it realistically can be rather than only once
+  // each tab has been clicked into by hand.
+  useEffect(() => {
+    if (phase !== "reading" || !info) return;
+    const tabs = docTabsFor(info.template_id);
+    setDocTabs(tabs);
+    setActiveDoc("contract");
+    setDocState({});
+    tabs.forEach(({ key }) => fetchDoc(key));
+  }, [phase, info, fetchDoc]);
+
+  const allDocsLoaded = docTabs.length > 0 && docTabs.every((t) => docState[t.key]?.url);
+  const activeDocState = docState[activeDoc];
 
   // Sized once when the signing canvas mounts — devicePixelRatio-scaled
   // so the drawn line stays crisp on retina screens instead of blurry.
@@ -309,11 +348,46 @@ export default function SignPage({ token }) {
           <>
             {info?.employee_name && (
               <p className="mb-3 text-[13px] text-slate-500">
-                Dobrý den, <strong className="text-[#0B1220]">{info.employee_name}</strong> — přečtěte si prosím dokument níže a poté jej podepište.
+                Dobrý den, <strong className="text-[#0B1220]">{info.employee_name}</strong> — přečtěte si prosím všechny dokumenty níže a poté je podepište.
               </p>
             )}
 
-            {pdfError ? (
+            {/* Explicit, persistent confirmation that nothing below can be
+                edited — these are read-only previews of the exact same
+                documents the signature will apply to, not an editable
+                copy of the form the employee originally filled in. */}
+            <div className="mb-3 flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11.5px] text-slate-500">
+              <Lock size={12} className="shrink-0" />
+              Dokumenty jsou pouze pro čtení — nic v nich nelze upravovat.
+            </div>
+
+            {docTabs.length > 1 && (
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                {docTabs.map((tab) => {
+                  const state = docState[tab.key];
+                  const isActive = tab.key === activeDoc;
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setActiveDoc(tab.key)}
+                      className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors ${
+                        isActive
+                          ? "bg-[#0B1220] text-white"
+                          : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                      }`}
+                    >
+                      {tab.label}
+                      {state?.url && <Check size={11} className={isActive ? "text-emerald-300" : "text-emerald-600"} />}
+                      {state?.error && <AlertTriangle size={11} className={isActive ? "text-red-300" : "text-red-500"} />}
+                      {!state && <Loader2 size={11} className="animate-spin" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {activeDocState?.error ? (
               <div className="rounded-xl bg-red-50 p-4 text-[13px] text-red-700">
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -321,13 +395,13 @@ export default function SignPage({ token }) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setPdfRetryCount((n) => n + 1)}
+                  onClick={() => fetchDoc(activeDoc)}
                   className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-[12.5px] font-medium text-red-700 hover:bg-red-50"
                 >
                   <RotateCcw size={13} /> Zkusit znovu
                 </button>
               </div>
-            ) : !pdfUrl ? (
+            ) : !activeDocState?.url ? (
               <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-10 text-[13px] text-slate-500">
                 <Loader2 size={16} className="animate-spin" /> Načítám dokument…
               </div>
@@ -338,12 +412,12 @@ export default function SignPage({ token }) {
                     navigation, which every mobile browser (and in-app
                     browser) knows how to hand off to its own PDF viewer. */}
                 <a
-                  href={pdfUrl}
+                  href={activeDocState.url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
                 >
-                  <FileText size={15} /> Otevřít smlouvu k přečtení
+                  <FileText size={15} /> Otevřít k přečtení ({docTabs.find((t) => t.key === activeDoc)?.label})
                 </a>
                 {/* Inline preview — a bonus on wider screens where an
                     embedded PDF reliably renders; deliberately not shown
@@ -355,15 +429,21 @@ export default function SignPage({ token }) {
                   className="mt-3 hidden md:block rounded-xl border border-slate-200 overflow-hidden bg-slate-50"
                   style={{ height: "50vh", minHeight: 320 }}
                 >
-                  <iframe title="Náhled dokumentu k podpisu" src={pdfUrl} className="w-full h-full" />
+                  <iframe title="Náhled dokumentu k podpisu" src={activeDocState.url} className="w-full h-full" />
                 </div>
               </>
+            )}
+
+            {!allDocsLoaded && docTabs.length > 1 && (
+              <p className="mt-2 text-[11.5px] text-slate-400">
+                Načítání dokumentů: {docTabs.filter((t) => docState[t.key]?.url).length}/{docTabs.length}
+              </p>
             )}
 
             <button
               type="button"
               onClick={() => setPhase("signing")}
-              disabled={!pdfUrl}
+              disabled={!allDocsLoaded}
               style={PRIMARY_GRADIENT}
               className="mt-5 w-full inline-flex items-center justify-center gap-1.5 rounded-xl px-5 py-3 text-[14px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
             >
