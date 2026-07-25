@@ -240,6 +240,15 @@ def _render_and_save(template_path: Path, fields: dict, out_prefix: str) -> Path
 # podpisu" for it wouldn't have anywhere in the document to put one.
 SIGNABLE_TEMPLATE_IDS = {"dpp_template", "hpp_template", "dpc_template", "ukonceni_pracovniho_pomeru"}
 
+# DPP/DPČ/HPP are the three "employment onboarding" contract types that
+# get the standard bundle (GDPR consent + health declaration + tax
+# declaration, alongside the main contract) — the ukončení/výplatní
+# paska blanks are standalone documents, not part of a new-hire packet.
+# Single source of truth for both /api/fill's unsigned bundle (main.py)
+# and render_signed_bundle()'s signed one below, so the two can never
+# drift on which template_ids get bundle docs.
+BUNDLE_TEMPLATE_IDS = {"dpp_template", "dpc_template", "hpp_template"}
+
 
 def fill_blank(template_id: str, fields: dict) -> Path:
     """
@@ -384,3 +393,71 @@ def render_signed_contract(
 
     tpl.save(str(out_path))
     return out_path
+
+
+# GDPR consent and the health declaration both got a {{PODPIS_ZAMESTNANCE}}
+# tag added to their .docx (replacing what used to be a plain dotted/
+# underscore line meant for a wet signature) specifically so the e-sign
+# flow below can fill them in too — a signed packet with only the main
+# contract signed and the other bundle docs still showing a blank line
+# was confusing admins into thinking the employee hadn't actually signed
+# everything. vyplatni_paska has no such tag (see SIGNABLE_TEMPLATE_IDS'
+# own docstring) and poplatnik.pdf isn't a docxtpl document at all — its
+# signature is overlaid separately, in pdf_fill.py's fill_poplatnik_pdf.
+BUNDLE_SIGNABLE_DOCX = {"gdpr_template", "zdravotni_template"}
+
+
+def _render_signed_bundle_docx(name: str, fields: dict, employee_signature_b64: Optional[str]) -> Optional[Path]:
+    """Same idea as render_signed_contract(), for one bundle document
+    instead of the main contract. Returns None (never raises) on any
+    problem, same as _fill_bundle_docx's own best-effort contract — one
+    bad bundle doc must never take down the whole signed packet."""
+    template_path = BUNDLE_TEMPLATES_DIR / f"{name}.docx"
+    if not template_path.exists():
+        logger.warning("bundle template not found on disk: %s", template_path)
+        return None
+    try:
+        tpl = DocxTemplate(str(template_path))
+        context = _build_context(fields, name)
+        context["PODPIS_ZAMESTNANCE"] = _signature_or_placeholder(tpl, employee_signature_b64)
+        tpl.render(context)
+
+        safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
+        safe_first = _safe_filename_part(fields.get("first_name"))
+        unique = uuid.uuid4().hex
+        out_name = f"podepsano_{name}_{safe_last}_{safe_first}_{unique}.docx".strip("_")
+        out_path = (settings.GENERATED_DIR / out_name).resolve()
+        if settings.GENERATED_DIR.resolve() not in out_path.parents:
+            raise ValueError("Neplatná cesta k vygenerovanému souboru.")
+
+        tpl.save(str(out_path))
+        return out_path
+    except Exception:
+        logger.exception("failed to render signed bundle document %r", name)
+        return None
+
+
+def render_signed_bundle(
+    template_id: str, fields: dict, employee_signature_b64: Optional[str] = None,
+) -> list[tuple[str, Path]]:
+    """Re-renders the *whole* signable packet for one sign_links row —
+    the main contract plus, for a DPP/DPČ/HPP link (see
+    BUNDLE_TEMPLATE_IDS), the GDPR consent and health declaration — each
+    with the employee's signature dropped in wherever that document has
+    a spot for one. Returns [(zip entry name, rendered path), ...],
+    using the exact same entry names as the unsigned bundle's own zip
+    (see frontend/src/utils/zipDownload.js's BUNDLE_FILE_SPECS) so a
+    signed download looks the same shape as an unsigned one to whoever
+    opens it. poplatnik.pdf is deliberately not produced here — it isn't
+    a docxtpl document, so its signed version is rendered separately by
+    the caller via pdf_fill.fill_poplatnik_pdf and appended to the same
+    list (see main.py's _build_signed_zip_entries)."""
+    entries: list[tuple[str, Path]] = [
+        ("smlouva.docx", render_signed_contract(template_id, fields, employee_signature_b64)),
+    ]
+    if template_id in BUNDLE_TEMPLATE_IDS:
+        for name, zip_name in (("gdpr_template", "souhlas_gdpr.docx"), ("zdravotni_template", "prohlaseni_zdravotni.docx")):
+            path = _render_signed_bundle_docx(name, fields, employee_signature_b64)
+            if path is not None:
+                entries.append((zip_name, path))
+    return entries

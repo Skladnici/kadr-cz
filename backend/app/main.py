@@ -17,6 +17,7 @@ import logging
 import secrets
 import time
 import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -35,7 +36,7 @@ from app.config import settings
 from app.ocr_service import recognize_document
 from app.blank_service import (
     list_templates, fill_blank, convert_to_pdf, _fill_bundle_docx,
-    render_signed_contract, SIGNABLE_TEMPLATE_IDS,
+    render_signed_contract, render_signed_bundle, SIGNABLE_TEMPLATE_IDS, BUNDLE_TEMPLATE_IDS,
 )
 from app.pdf_fill import fill_poplatnik_pdf
 
@@ -329,13 +330,6 @@ class FillRequest(BaseModel):
     net_salary: Optional[str] = None
 
 
-# DPP/DPČ/HPP are the three "employment onboarding" contract types that
-# get the standard 4-document packet (see BUNDLE_DOCS below) — the
-# ukončení/výplatní páska blanks are standalone documents, not part of
-# a new-hire packet, so they're deliberately left out.
-_BUNDLE_TEMPLATE_IDS = {"dpp_template", "dpc_template", "hpp_template"}
-
-
 @app.post("/api/fill", dependencies=[Depends(_require_site_auth)])
 @limiter.limit("10/minute")
 async def fill(request: Request, payload: FillRequest):
@@ -370,7 +364,7 @@ async def fill(request: Request, payload: FillRequest):
         "pdf_token": pdf_path.name if pdf_path else None,
     }
 
-    if payload.template_id in _BUNDLE_TEMPLATE_IDS:
+    if payload.template_id in BUNDLE_TEMPLATE_IDS:
         # Offloaded the same way as convert_to_pdf() above — three more
         # synchronous document renders otherwise run back-to-back on this
         # request's own thread, which (unlike the single-document path
@@ -841,6 +835,34 @@ async def get_recent_signed_links(request: Request):
     return resp.json()
 
 
+def _build_signed_zip(link: dict) -> Path:
+    """Renders the full signed packet for a sign_links row — the main
+    contract plus, for a DPP/DPČ/HPP link, the GDPR consent, health
+    declaration, and tax declaration (see render_signed_bundle and
+    fill_poplatnik_pdf) — each with the employee's signature dropped in,
+    and zips them together. Same entry-name shape as the unsigned
+    bundle's own zip (see zipDownload.js's BUNDLE_FILE_SPECS), so a
+    signed download looks the same to whoever opens it. Runs entirely
+    synchronously (LibreOffice-free — these are docxtpl/fitz renders,
+    no PDF conversion) — callers offload it via asyncio.to_thread the
+    same way render_signed_contract's own callers used to."""
+    signature = link.get("signature_image")
+    entries = render_signed_bundle(link["template_id"], link["fields"], signature)
+    if link["template_id"] in BUNDLE_TEMPLATE_IDS:
+        poplatnik_path = fill_poplatnik_pdf(link["fields"], signature)
+        if poplatnik_path is not None:
+            entries.append(("prohlaseni_poplatnika.pdf", poplatnik_path))
+
+    zip_path = (settings.GENERATED_DIR / f"podepsane_dokumenty_{uuid.uuid4().hex}.zip").resolve()
+    if settings.GENERATED_DIR.resolve() not in zip_path.parents:
+        raise ValueError("Neplatná cesta k vygenerovanému souboru.")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for entry_name, path in entries:
+            zf.write(path, arcname=entry_name)
+            path.unlink(missing_ok=True)
+    return zip_path
+
+
 @app.get("/api/sign-links/{token}/download", dependencies=[Depends(_require_site_auth), Depends(_require_supabase)])
 @limiter.limit("30/minute")
 async def admin_download_signed_contract(request: Request, token: str, background_tasks: BackgroundTasks):
@@ -849,20 +871,21 @@ async def admin_download_signed_contract(request: Request, token: str, backgroun
     they have their copy, the whole sign_links row is deleted (as a
     background task, same delete-after-serve pattern as
     /api/download's own file cleanup, so a dropped connection mid-transfer
-    doesn't destroy a row whose file the admin never actually received)."""
+    doesn't destroy a row whose file the admin never actually received).
+    Returns the whole signed packet as one zip (see _build_signed_zip),
+    not just the main contract — every bundle document that had a spot
+    for the employee's signature now got one filled in too."""
     link = await _fetch_sign_link(token)
     if link is None:
         raise HTTPException(404, "Odkaz nenalezen.")
     if not link.get("signed_at"):
         raise HTTPException(400, "Dokument ještě není podepsán.")
-    docx_path = await asyncio.to_thread(
-        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
-    )
-    background_tasks.add_task(docx_path.unlink, missing_ok=True)
+    zip_path = await asyncio.to_thread(_build_signed_zip, link)
+    background_tasks.add_task(zip_path.unlink, missing_ok=True)
     background_tasks.add_task(_delete_sign_link, token)
     return FileResponse(
-        docx_path, filename=docx_path.name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        zip_path, filename=zip_path.name,
+        media_type="application/zip",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         background=background_tasks,
     )
@@ -981,7 +1004,8 @@ async def download_signed_contract(request: Request, token: str, background_task
     _sign_link_is_expired), since a phone dying or a browser closing
     mid-download shouldn't cost them their only copy. What actually ends
     the link is that 24h TTL, or the admin grabbing their own copy
-    (which deletes the row outright — see admin_download_signed_contract)."""
+    (which deletes the row outright — see admin_download_signed_contract).
+    Returns the whole signed packet as one zip — see _build_signed_zip."""
     _require_supabase()
     link = await _fetch_sign_link(token)
     if not _sign_link_is_usable(link):
@@ -989,14 +1013,12 @@ async def download_signed_contract(request: Request, token: str, background_task
     if not link.get("signed_at"):
         raise HTTPException(400, "Dokument ještě není podepsán.")
 
-    docx_path = await asyncio.to_thread(
-        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
-    )
-    background_tasks.add_task(docx_path.unlink, missing_ok=True)
+    zip_path = await asyncio.to_thread(_build_signed_zip, link)
+    background_tasks.add_task(zip_path.unlink, missing_ok=True)
     background_tasks.add_task(_mark_employee_downloaded, token)
     return FileResponse(
-        docx_path, filename=docx_path.name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        zip_path, filename=zip_path.name,
+        media_type="application/zip",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         background=background_tasks,
     )

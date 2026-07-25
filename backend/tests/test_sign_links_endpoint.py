@@ -266,9 +266,7 @@ def test_employee_can_download_multiple_times_after_signing(fake_supabase):
 
     first = client.get(f"/api/podepsat/{token}/download")
     assert first.status_code == 200
-    assert first.headers["content-type"].startswith(
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    assert first.headers["content-type"].startswith("application/zip")
     assert len(first.content) > 0
 
     # Not one-time for the employee anymore — a phone dying or a browser

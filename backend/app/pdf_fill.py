@@ -35,6 +35,7 @@ have installed) — see app/fonts/DejaVuSans-LICENSE.txt.
 from datetime import date
 from pathlib import Path
 from typing import Optional
+import base64
 import logging
 import uuid
 
@@ -88,6 +89,15 @@ _FIELDS = [
 _CELL_FIELDS_PAGE2 = [
     ("OVERENI_DATUM", "Na uvedené zdaňovací období", "Ověření plátcem daně"),
 ]
+
+# Same "Na uvedené zdaňovací období" row as OVERENI_DATUM above, but the
+# *other* column: "Prokazatelně učiněné prohlášení poplatníkem" — the
+# taxpayer's (employee's) own declaration, left blank for a wet
+# signature until now. This is where the e-signature flow's signature
+# image goes; OVERENI_DATUM's column ("Ověření plátcem daně" — verified
+# by the payer/employer) is a separate cell and unaffected.
+_EMPLOYEE_SIGNATURE_ROW_LABEL = "Na uvedené zdaňovací období"
+_EMPLOYEE_SIGNATURE_COL_LABEL = "učiněné prohlášení poplatníkem"
 
 
 def _rightmost_edge_per_line(rects: list) -> list:
@@ -177,12 +187,37 @@ def _build_overlay_context(fields: dict) -> dict:
     }
 
 
-def fill_poplatnik_pdf(fields: dict) -> Optional[Path]:
+def _insert_employee_signature(page2, image_bytes: bytes) -> None:
+    """Overlays the employee's signature image into the "Prokazatelně
+    učiněné prohlášení poplatníkem" cell (see
+    _EMPLOYEE_SIGNATURE_ROW_LABEL/_COL_LABEL) — the same row OVERENI_DATUM
+    already targets, in fitz's page-relative point coordinates.
+    Silently does nothing if either label isn't found (form layout
+    changed) rather than guessing a position — same "skip rather than
+    guess" rule the text overlay above follows."""
+    row_rects = page2.search_for(_EMPLOYEE_SIGNATURE_ROW_LABEL)
+    col_rects = _rightmost_edge_per_line(page2.search_for(_EMPLOYEE_SIGNATURE_COL_LABEL))
+    if not row_rects or not col_rects:
+        return
+    row_r = row_rects[0]
+    col_r = col_rects[0]
+    x0 = col_r.x0 + _X_GAP
+    rect = fitz.Rect(x0, row_r.y1 - 11, x0 + 90, row_r.y1 - 1)
+    page2.insert_image(rect, stream=image_bytes, keep_proportion=True)
+
+
+def fill_poplatnik_pdf(fields: dict, employee_signature_b64: Optional[str] = None) -> Optional[Path]:
     """Returns the path to a filled copy of the tax declaration PDF, or
     None if the source form is missing (best-effort, same as
     convert_to_pdf() — a bundle-doc problem must never fail the whole
     /api/fill request). Both failure paths are logged rather than
-    silently swallowed — see _fill_bundle_docx's docstring for why."""
+    silently swallowed — see _fill_bundle_docx's docstring for why.
+
+    employee_signature_b64 (only ever passed by the signed-download
+    routes in main.py — /api/fill's own unsigned generation never has a
+    signature yet) drops the employee's signature into the one cell on
+    page 2 that's otherwise left blank for a wet signature — see
+    _insert_employee_signature."""
     if not POPLATNIK_SOURCE.exists():
         logger.warning("poplatnik source PDF not found on disk: %s", POPLATNIK_SOURCE)
         return None
@@ -235,6 +270,13 @@ def fill_poplatnik_pdf(fields: dict) -> Optional[Path]:
                 page2.insert_text(
                     (col_r.x0 + _X_GAP, row_r.y1 - _Y_NUDGE), value, fontsize=_FONT_SIZE, fontname=OVERLAY_FONT_NAME
                 )
+
+            if employee_signature_b64:
+                try:
+                    image_bytes = base64.b64decode(employee_signature_b64, validate=True)
+                    _insert_employee_signature(page2, image_bytes)
+                except Exception:
+                    logger.warning("employee_signature_b64 failed to decode/insert for poplatnik", exc_info=True)
 
         safe_last = _safe_filename_part(fields.get("last_name"), "dokument")
         safe_first = _safe_filename_part(fields.get("first_name"))

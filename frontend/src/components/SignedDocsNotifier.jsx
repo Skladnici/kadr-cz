@@ -103,7 +103,7 @@ export default function SignedDocsNotifier({ apiFetch }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "smlouva_podepsana.docx";
+      a.download = "podepsane_dokumenty.zip";
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -137,7 +137,7 @@ export default function SignedDocsNotifier({ apiFetch }) {
                 <button
                   type="button"
                   onClick={() => downloadSignedDoc(d.token)}
-                  title="Stáhnout podepsaný dokument"
+                  title="Stáhnout podepsané dokumenty"
                   className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
                 >
                   <Download size={13} />
