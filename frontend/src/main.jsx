@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import SimpleDocFiller from "./SimpleDocFiller.jsx";
 import SignPage from "./components/SignPage.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import "./index.css";
 
 // No router dependency for just one extra route — /podepsat/{token} is
@@ -11,8 +12,14 @@ import "./index.css";
 // static-hosting 404.
 const signMatch = window.location.pathname.match(/^\/podepsat\/([^/]+)\/?$/);
 
+// ErrorBoundary matters most here for /podepsat — an employee hitting a
+// crash there has no console and no login/relogin escape hatch the way
+// the admin app does, so an uncaught error must never just unmount to a
+// blank white screen (React 18's default with no boundary in place).
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    {signMatch ? <SignPage token={signMatch[1]} /> : <SimpleDocFiller />}
+    <ErrorBoundary>
+      {signMatch ? <SignPage token={signMatch[1]} /> : <SimpleDocFiller />}
+    </ErrorBoundary>
   </React.StrictMode>
 );
