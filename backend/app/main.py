@@ -36,7 +36,8 @@ from app.config import settings
 from app.ocr_service import recognize_document
 from app.blank_service import (
     list_templates, fill_blank, convert_to_pdf, _fill_bundle_docx,
-    render_signed_contract, render_signed_bundle, SIGNABLE_TEMPLATE_IDS, BUNDLE_TEMPLATE_IDS,
+    render_signed_contract, render_signed_bundle, _render_signed_bundle_docx,
+    SIGNABLE_TEMPLATE_IDS, BUNDLE_TEMPLATE_IDS,
 )
 from app.pdf_fill import fill_poplatnik_pdf
 
@@ -907,30 +908,61 @@ async def get_sign_link_status(request: Request, token: str):
     }
 
 
+_PODEPSAT_DOC_KEYS = {"contract", "gdpr", "zdravotni", "poplatnik"}
+
+
 @app.get("/api/podepsat/{token}/pdf")
 @limiter.limit("30/minute")
-async def get_sign_link_pdf(request: Request, token: str, background_tasks: BackgroundTasks):
+async def get_sign_link_pdf(request: Request, token: str, background_tasks: BackgroundTasks, doc: str = "contract"):
     """Powers both the "read before signing" preview and, after signing,
     reviewing what was actually signed — same route either way, since
-    render_signed_contract() always reflects sign_links' current
-    signature_image (null beforehand, the real one afterwards)."""
+    every renderer here always reflects sign_links' current
+    signature_image (null beforehand, the real one afterwards).
+
+    `doc` selects which document in the packet to preview: "contract"
+    (default — the main DPP/DPČ/HPP/ukončení contract) or, for a
+    DPP/DPČ/HPP link only (see BUNDLE_TEMPLATE_IDS), "gdpr"/"zdravotni"/
+    "poplatnik" — SignPage.jsx now shows the whole packet, not just the
+    contract, before letting the employee sign (a real report: signing
+    something you were only shown one fifth of isn't informed consent)."""
     _require_supabase()
+    if doc not in _PODEPSAT_DOC_KEYS:
+        raise HTTPException(404, "Neznámý dokument.")
     link = await _fetch_sign_link(token)
     if not _sign_link_is_usable(link):
         raise HTTPException(404, "Odkaz nenalezen nebo již není platný.")
-    docx_path = await asyncio.to_thread(
-        render_signed_contract, link["template_id"], link["fields"], link.get("signature_image"),
-    )
+    if doc != "contract" and link["template_id"] not in BUNDLE_TEMPLATE_IDS:
+        raise HTTPException(404, "Tento dokument není součástí balíčku pro tento typ smlouvy.")
+
+    signature = link.get("signature_image")
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+
+    if doc == "poplatnik":
+        # Already a PDF — no docx->PDF conversion step needed, unlike
+        # the other three (see fill_poplatnik_pdf's own docstring: it
+        # overlays text/the signature directly onto the real form).
+        pdf_path = await asyncio.to_thread(fill_poplatnik_pdf, link["fields"], signature)
+        if pdf_path is None:
+            raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
+        background_tasks.add_task(pdf_path.unlink, missing_ok=True)
+        return FileResponse(pdf_path, media_type="application/pdf", headers=headers, background=background_tasks)
+
+    if doc == "contract":
+        docx_path = await asyncio.to_thread(
+            render_signed_contract, link["template_id"], link["fields"], signature,
+        )
+    else:
+        template_name = "gdpr_template" if doc == "gdpr" else "zdravotni_template"
+        docx_path = await asyncio.to_thread(_render_signed_bundle_docx, template_name, link["fields"], signature)
+        if docx_path is None:
+            raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
+
     pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
     docx_path.unlink(missing_ok=True)
     if pdf_path is None:
         raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
     background_tasks.add_task(pdf_path.unlink, missing_ok=True)
-    return FileResponse(
-        pdf_path, media_type="application/pdf",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
-        background=background_tasks,
-    )
+    return FileResponse(pdf_path, media_type="application/pdf", headers=headers, background=background_tasks)
 
 
 class SubmitSignatureIn(BaseModel):

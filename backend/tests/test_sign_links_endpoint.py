@@ -502,3 +502,29 @@ def test_creating_a_link_sweeps_an_expired_unsigned_one(fake_supabase):
     _create_link(first_name="Fresh", last_name="One")  # triggers the sweep as a side effect
 
     assert stale_token not in fake_supabase["sign_links"].rows
+
+
+def test_pdf_preview_rejects_unknown_doc_key(fake_supabase):
+    token = _create_link().json()["token"]
+    resp = client.get(f"/api/podepsat/{token}/pdf?doc=nonsense")
+    assert resp.status_code == 404
+
+
+def test_pdf_preview_rejects_bundle_doc_for_non_bundle_template(fake_supabase):
+    # ukonceni_pracovniho_pomeru is signable (has its own contract
+    # signature line) but never gets the GDPR/health/tax bundle — see
+    # BUNDLE_TEMPLATE_IDS.
+    token = _create_link(template_id="ukonceni_pracovniho_pomeru").json()["token"]
+    resp = client.get(f"/api/podepsat/{token}/pdf?doc=gdpr")
+    assert resp.status_code == 404
+
+
+def test_pdf_preview_poplatnik_works_for_a_bundle_template(fake_supabase):
+    # poplatnik doesn't need LibreOffice (fitz overlays directly onto the
+    # source PDF — see pdf_fill.py), so unlike contract/gdpr/zdravotni
+    # this is testable end-to-end even without LibreOffice installed.
+    token = _create_link().json()["token"]
+    resp = client.get(f"/api/podepsat/{token}/pdf?doc=poplatnik")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/pdf")
+    assert resp.content.startswith(b"%PDF")
