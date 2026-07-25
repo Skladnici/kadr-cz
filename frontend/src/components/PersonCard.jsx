@@ -126,6 +126,13 @@ export default function PersonCard({
     () => isStrpeniVisaCode(person.fields.visa_type_code),
     [person.fields.visa_type_code]
   );
+  // Whether this card can offer an e-signature link at all — same check
+  // the expanded detail view uses (see below), lifted up here so the
+  // collapsed header row (which never renders that detail view) can show
+  // its own compact link button/copy control without duplicating the
+  // condition.
+  const isSignable = person.generation?.status === "done"
+    && SIGNABLE_TEMPLATE_IDS.has(person.templateOverrideEnabled ? person.templateOverride : sharedTemplateId);
 
   // Binds this card's id once via useCallback so AddressBuilder sees a
   // stable setCzPart/setOriginPart/setOriginCountry reference across
@@ -234,6 +241,37 @@ export default function PersonCard({
             className={`shrink-0 text-slate-400 transition-transform ${person.expanded ? "rotate-180" : ""}`}
           />
         </button>
+        {/* Right next to this person's own name — not buried in the
+            expanded detail view below (which still has the full
+            link+"Kopírovat" row for reference) — precisely so an admin
+            working through a whole batch can create/copy each person's
+            link without expanding every card, and without the "whose
+            link was that again?" mix-up a shared/bulk control would
+            invite once several people's links exist side by side. */}
+        {isSignable && (
+          person.generation.signLink ? (
+            <button
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
+              title={`Kopírovat odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
+              className="flex h-6 w-6 items-center justify-center rounded-full text-emerald-600 hover:bg-emerald-50 shrink-0"
+            >
+              <Copy size={13} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onCreateSignLink}
+              disabled={person.generation.signLinkLoading}
+              title={`Vytvořit odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
+              className="flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 shrink-0 disabled:opacity-40"
+            >
+              {person.generation.signLinkLoading
+                ? <Loader2 size={13} className="animate-spin" />
+                : <Link2 size={13} />}
+            </button>
+          )
+        )}
         <button
           type="button"
           onClick={handleRemoveClick}
@@ -570,7 +608,7 @@ export default function PersonCard({
               <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
                 <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
               </div>
-              {SIGNABLE_TEMPLATE_IDS.has(person.templateOverrideEnabled ? person.templateOverride : sharedTemplateId) && (
+              {isSignable && (
                 <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
                   {!person.generation.signLink ? (
                     <button
