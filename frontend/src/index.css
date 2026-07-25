@@ -205,6 +205,29 @@ body {
   animation: signedDocsAppear .35s cubic-bezier(.16, 1, .3, 1) both;
 }
 
+/* The dropdown list itself (open/close on click) — same easing curve as
+   WelcomeToast's own entrance (welcomeToastIn) and signedDocsAppear above,
+   so every "fade + slight motion" moment in the app reads as one system.
+   .signed-docs-panel-out's duration must match CLOSE_ANIM_MS in
+   SignedDocsNotifier.jsx, which keeps the panel mounted just long enough
+   for this to finish before removing it. */
+@keyframes signedDocsPanelIn {
+  from { opacity: 0; transform: translateY(6px) scale(.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes signedDocsPanelOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(6px) scale(.97); }
+}
+.signed-docs-panel-in {
+  transform-origin: bottom right;
+  animation: signedDocsPanelIn .22s cubic-bezier(.16, 1, .3, 1) both;
+}
+.signed-docs-panel-out {
+  transform-origin: bottom right;
+  animation: signedDocsPanelOut .18s cubic-bezier(.4, 0, 1, 1) both;
+}
+
 @keyframes signedDocsGlow {
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .35); }
   50%      { box-shadow: 0 0 10px 2px rgba(16, 185, 129, .35); }

@@ -9,6 +9,12 @@ const LAST_SEEN_KEY = "kadr_signed_docs_last_seen";
 
 const POLL_INTERVAL_MS = 30_000;
 
+// How long the collapse animation runs before the panel actually unmounts
+// (see closeTimeoutRef below) — matches signedDocsPanelOut's own duration
+// in index.css so the DOM node disappears right as the fade-out finishes,
+// same "unmount timer kept in sync with the CSS" pattern WelcomeToast uses.
+const CLOSE_ANIM_MS = 180;
+
 function formatSignedAt(iso) {
   try {
     return new Date(iso).toLocaleString("cs-CZ", {
@@ -36,7 +42,19 @@ function formatSignedAt(iso) {
 // concept to hang that off of.
 export default function SignedDocsNotifier({ apiFetch }) {
   const [signedDocs, setSignedDocs] = useState(null); // null = not loaded / unavailable
+  // { generated, signed } document totals — separate from signedDocs
+  // (which is only the last 24h of not-yet-downloaded signatures, see
+  // get_recent_signed_links's own docstring) since this is meant to read
+  // as an overall "how much work, how much of it done" summary, visible
+  // before ever opening the panel.
+  const [totals, setTotals] = useState(null);
   const [expanded, setExpanded] = useState(false);
+  // True only for the ~180ms the collapse animation is playing — the
+  // panel stays mounted (with the "out" animation class) until then, see
+  // closeTimeoutRef below. Without this the list just vanished instantly
+  // on click, no matter how the open animation looked.
+  const [closing, setClosing] = useState(false);
+  const closeTimeoutRef = useRef(null);
   const [lastSeenAt, setLastSeenAt] = useState(() => {
     try {
       return localStorage.getItem(LAST_SEEN_KEY);
@@ -59,35 +77,75 @@ export default function SignedDocsNotifier({ apiFetch }) {
     } catch {
       setSignedDocs(null);
     }
+
+    // Supplementary, same as StatsWidget's own by-type fetch — a failure
+    // here just means the summary line doesn't show, not that the whole
+    // notifier disappears. generation_stats_by_person's all_signed is the
+    // same per-person "this person's whole document set is signed" flag
+    // StatsWidget's own dots already use, summed here into one number
+    // instead of shown per row.
+    try {
+      const res = await apiFetch("/api/stats/by-person");
+      const data = res.ok ? await res.json() : [];
+      if (Array.isArray(data)) {
+        const generated = data.reduce((sum, row) => sum + (row.document_count || 0), 0);
+        const signed = data.reduce((sum, row) => sum + (row.all_signed ? (row.document_count || 0) : 0), 0);
+        setTotals({ generated, signed });
+      }
+    } catch {
+      // leave totals as whatever they already were
+    }
   }, [apiFetch]);
 
   useEffect(() => {
     load();
     const id = setInterval(load, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
+    // A background/inactive tab is exactly the common real case here — an
+    // admin creates a link, switches away to send it (WhatsApp, email,
+    // whatever), and only comes back after the employee has signed.
+    // Browsers throttle (sometimes near-freeze) setInterval in a
+    // backgrounded tab, so the 30s poll alone can leave a real signature
+    // sitting unreflected for a long time — a real "the indicator didn't
+    // update" report traced back to exactly this. Forcing one fresh load
+    // the moment the tab becomes visible again closes that gap without
+    // needing to poll any more aggressively while it's in the foreground.
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
+
+  useEffect(() => () => clearTimeout(closeTimeoutRef.current), []);
 
   const hasUnseen = (signedDocs || []).some((d) => !lastSeenAt || d.signed_at > lastSeenAt);
 
   const toggleExpanded = () => {
-    setExpanded((v) => {
-      const next = !v;
-      if (next) {
-        // Opening the panel is what "acknowledges" everything currently
-        // in the list — the newest signed_at becomes the new cutoff, so
-        // the glow only comes back once something NEWER arrives.
-        const newest = (signedDocs || [])[0]?.signed_at;
-        if (newest) {
-          try {
-            localStorage.setItem(LAST_SEEN_KEY, newest);
-          } catch {
-            // ignored — worst case the glow reappears next load, harmless
-          }
-          setLastSeenAt(newest);
-        }
+    if (expanded) {
+      // Play the "out" animation, then actually unmount — see
+      // CLOSE_ANIM_MS/.signed-docs-panel-out.
+      clearTimeout(closeTimeoutRef.current);
+      setClosing(true);
+      closeTimeoutRef.current = setTimeout(() => {
+        setExpanded(false);
+        setClosing(false);
+      }, CLOSE_ANIM_MS);
+      return;
+    }
+    setExpanded(true);
+    // Opening the panel is what "acknowledges" everything currently
+    // in the list — the newest signed_at becomes the new cutoff, so
+    // the glow only comes back once something NEWER arrives.
+    const newest = (signedDocs || [])[0]?.signed_at;
+    if (newest) {
+      try {
+        localStorage.setItem(LAST_SEEN_KEY, newest);
+      } catch {
+        // ignored — worst case the glow reappears next load, harmless
       }
-      return next;
-    });
+      setLastSeenAt(newest);
+    }
   };
 
   const downloadSignedDoc = useCallback(async (token) => {
@@ -113,38 +171,48 @@ export default function SignedDocsNotifier({ apiFetch }) {
     }
   }, [apiFetch]);
 
-  if (!signedDocs || signedDocs.length === 0) return null;
+  // Hidden only when there's truly nothing to report at all — previously
+  // gated on signedDocs.length alone, which hid the whole widget (totals
+  // summary included) as soon as every recent signature had already been
+  // downloaded/expired out of the 24h window, even with a long history of
+  // generated/signed documents still worth showing at a glance.
+  const hasAnyHistory = (signedDocs && signedDocs.length > 0) || (totals && totals.generated > 0);
+  if (!hasAnyHistory) return null;
 
   return (
     <div className="signed-docs-notifier fixed bottom-4 right-4 z-30 text-left">
-      {expanded && (
-        <div className="mb-1.5 w-72 max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.25)]">
+      {(expanded || closing) && (
+        <div className={`mb-1.5 w-72 max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-[0_1px_2px_rgba(11,18,32,0.04),0_12px_32px_-16px_rgba(11,18,32,0.25)] ${closing ? "signed-docs-panel-out" : "signed-docs-panel-in"}`}>
           <p className="px-1.5 pb-1.5 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">
             Nedávno podepsáno
           </p>
           {downloadError && (
             <p className="px-1.5 pb-1.5 text-[11px] text-red-600">{downloadError}</p>
           )}
-          <ul className="space-y-0.5">
-            {signedDocs.map((d) => (
-              <li key={d.token} className="flex items-center gap-1">
-                <div className="flex-1 min-w-0 rounded-md px-1.5 py-1">
-                  <div className="truncate text-[12px] text-slate-700">{d.employee_name || "—"}</div>
-                  <div className="truncate text-[10.5px] text-slate-400">
-                    {d.company_name || "Bez firmy"} · {formatSignedAt(d.signed_at)}
+          {(!signedDocs || signedDocs.length === 0) ? (
+            <p className="px-1.5 pb-1 text-[11.5px] text-slate-400">Zatím nic nečeká na stažení.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {signedDocs.map((d) => (
+                <li key={d.token} className="flex items-center gap-1">
+                  <div className="flex-1 min-w-0 rounded-md px-1.5 py-1">
+                    <div className="truncate text-[12px] text-slate-700">{d.employee_name || "—"}</div>
+                    <div className="truncate text-[10.5px] text-slate-400">
+                      {d.company_name || "Bez firmy"} · {formatSignedAt(d.signed_at)}
+                    </div>
                   </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => downloadSignedDoc(d.token)}
-                  title="Stáhnout podepsané dokumenty"
-                  className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
-                >
-                  <Download size={13} />
-                </button>
-              </li>
-            ))}
-          </ul>
+                  <button
+                    type="button"
+                    onClick={() => downloadSignedDoc(d.token)}
+                    title="Stáhnout podepsané dokumenty"
+                    className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10"
+                  >
+                    <Download size={13} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -153,7 +221,7 @@ export default function SignedDocsNotifier({ apiFetch }) {
         onClick={toggleExpanded}
         aria-expanded={expanded}
         title="Podepsané dokumenty"
-        className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11.5px] font-medium shadow-[0_1px_2px_rgba(11,18,32,0.04),0_8px_20px_-10px_rgba(11,18,32,0.35)] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 transition-colors ${
+        className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11.5px] font-medium shadow-[0_1px_2px_rgba(11,18,32,0.04),0_8px_20px_-10px_rgba(11,18,32,0.35)] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 transition-colors ${
           hasUnseen
             ? "signed-docs-lit border-emerald-200 bg-emerald-50 text-emerald-700"
             : "border-slate-200 bg-white/95 text-slate-500 hover:border-slate-300"
@@ -161,7 +229,11 @@ export default function SignedDocsNotifier({ apiFetch }) {
       >
         <span className={`status-dot ${hasUnseen ? "status-dot-signed" : ""}`} aria-hidden="true" style={!hasUnseen ? { background: "#94a3b8", animation: "none" } : undefined} />
         <PenLine size={13} className="shrink-0" />
-        <span className="tabular-nums">{signedDocs.length}</span>
+        {totals ? (
+          <span className="tabular-nums whitespace-nowrap">{totals.generated} vygenerováno · {totals.signed} podepsáno</span>
+        ) : (
+          <span className="tabular-nums">{(signedDocs || []).length}</span>
+        )}
         {expanded ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
       </button>
     </div>
