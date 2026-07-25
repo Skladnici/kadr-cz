@@ -633,11 +633,19 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   }, [apiFetch, people]);
 
   // ---------------------------------------------------------------- generate all
-  const buildFillPayload = useCallback((person) => {
+  // `templateIdOverride`, when given, wins over both the per-person
+  // override and the shared dropdown — used by handleCreateSignLink
+  // below to build a sign link against the template a person's
+  // documents were *actually* generated with (see person.generation's
+  // own templateId), not whatever the shared dropdown or that person's
+  // override happens to say *now*. Left unset for the generation call
+  // itself, which is exactly the moment "now" is the right answer.
+  const buildFillPayload = useCallback((person, templateIdOverride) => {
     const company = person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields;
     const startDate = person.startDateOverrideEnabled ? person.startDateOverride : (sharedFields.start_date || "");
     const endDate = person.endDateOverrideEnabled ? person.endDateOverride : (sharedFields.end_date || "");
-    const effectiveTemplateId = person.templateOverrideEnabled ? person.templateOverride : templateId;
+    const effectiveTemplateId = templateIdOverride
+      ?? (person.templateOverrideEnabled ? person.templateOverride : templateId);
     return {
       template_id: effectiveTemplateId,
       first_name: person.fields.first_name,
@@ -688,10 +696,15 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       ...p, generation: { ...p.generation, signLinkLoading: true, signLinkError: null },
     }));
     try {
+      // Explicitly pinned to the template this person's documents were
+      // actually generated with (see buildFillPayload's own comment) —
+      // not the shared dropdown/override, which may have moved on to a
+      // different template since generating without this person's cards
+      // being regenerated to match.
       const res = await apiFetch("/api/sign-links", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildFillPayload(person)),
+        body: JSON.stringify(buildFillPayload(person, person.generation?.templateId)),
       });
       if (!res.ok) throw new Error("server error");
       const data = await res.json();
@@ -743,6 +756,13 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
           // mid-run, there's nothing to submit; the stats update below
           // still fires either way so the progress bar never gets stuck
           // short of its own total.)
+          // Captured once, outside the payload, so it can be recorded
+          // into person.generation below — see buildFillPayload's own
+          // comment on why relying on the live templateId/override again
+          // later (e.g. from the sign-link button) would silently drift
+          // from what this specific person's documents were actually
+          // generated with.
+          const fillPayload = buildFillPayload(person);
           try {
             const data = await runWithRetry(async () => {
               // A bare fetch() has no timeout of its own — see
@@ -756,7 +776,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               const res = await apiFetchWithTimeout(apiFetch, "/api/fill", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(buildFillPayload(person)),
+                body: JSON.stringify(fillPayload),
               }, 60000);
               if (!res.ok) {
                 const err = new Error("server error");
@@ -789,6 +809,14 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                 gdprDocxToken: data.gdpr_docx_token ?? null,
                 zdravotniDocxToken: data.zdravotni_docx_token ?? null,
                 poplatnikPdfToken: data.poplatnik_pdf_token ?? null,
+                // The template this specific generation actually used —
+                // see buildFillPayload/handleCreateSignLink's own
+                // comments on why PersonCard's sign-link button and
+                // handleCreateSignLink itself read this instead of the
+                // shared dropdown/per-person override, which can (and in
+                // a real batch session routinely does) change after the
+                // fact without this person's documents being regenerated.
+                templateId: fillPayload.template_id,
                 error: null,
               },
             }));

@@ -130,9 +130,16 @@ export default function PersonCard({
   // the expanded detail view uses (see below), lifted up here so the
   // collapsed header row (which never renders that detail view) can show
   // its own compact link button/copy control without duplicating the
-  // condition.
+  // condition. Reads person.generation.templateId — the template this
+  // person's documents were *actually* generated with (recorded by
+  // BatchDocFiller's handleGenerateAll) — rather than the live shared
+  // dropdown/override: a real report of "generated fine, but the sign-
+  // link button never appeared" traced back to exactly this reading the
+  // *current* selection instead, which had since moved on to a
+  // different (non-signable) template without this card being
+  // regenerated to match.
   const isSignable = person.generation?.status === "done"
-    && SIGNABLE_TEMPLATE_IDS.has(person.templateOverrideEnabled ? person.templateOverride : sharedTemplateId);
+    && SIGNABLE_TEMPLATE_IDS.has(person.generation?.templateId);
 
   // Binds this card's id once via useCallback so AddressBuilder sees a
   // stable setCzPart/setOriginPart/setOriginCountry reference across
@@ -623,20 +630,31 @@ export default function PersonCard({
                       Vytvořit odkaz k podpisu
                     </button>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <input
-                        readOnly
-                        value={person.generation.signLink}
-                        onFocus={(e) => e.target.select()}
-                        className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11.5px] text-slate-700"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
-                        className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50"
-                      >
-                        <Copy size={12} /> Kopírovat
-                      </button>
+                    <div>
+                      {/* Explicit "whose link is this" label — cheap
+                          insurance against mixing up several people's
+                          links once more than one card in the batch has
+                          one, e.g. if this row gets screenshotted or
+                          copy-pasted somewhere out of the card's own
+                          context. */}
+                      <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-slate-400">
+                        Odkaz pro {displayName || `Osobu ${index + 1}`}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <input
+                          readOnly
+                          value={person.generation.signLink}
+                          onFocus={(e) => e.target.select()}
+                          className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11.5px] text-slate-700"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => navigator.clipboard?.writeText(person.generation.signLink)}
+                          className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          <Copy size={12} /> Kopírovat
+                        </button>
+                      </div>
                     </div>
                   )}
                   {person.generation.signLinkError && (
