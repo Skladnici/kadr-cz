@@ -55,6 +55,23 @@ Render je bezplatná služba, která spustí server nastálo, na vlastní adrese
 > Pro plynulý provoz bez čekání stačí přejít na placený plán (cca 7 USD/měsíc)
 > v nastavení služby — tlačítko "Upgrade".
 
+7. Pokud chcete i sdílené firmy, statistiky a e-signaturu dokumentů
+   (funkce, které ukládají data do Supabase): v Render → záložka
+   **Environment** → přidejte `SUPABASE_URL` a `SUPABASE_KEY`.
+   - `SUPABASE_URL` je adresa vašeho Supabase projektu
+     (`https://xxxxx.supabase.co`).
+   - `SUPABASE_KEY` musí být **secret** klíč (Supabase Dashboard →
+     Project Settings → **API Keys** → klíč začínající `sb_secret_...`,
+     případně starší `service_role`), **ne** publishable/anon klíč.
+     Databázové tabulky mají od zabezpečení přes Row Level Security
+     (viz `create_*.sql` v kořeni repozitáře) nastaveno, že k nim smí
+     přistupovat jen `service_role` — s publishable klíčem backend
+     dostane chybu oprávnění a tyto funkce nebudou fungovat.
+   - Po uložení proměnných spusťte v Supabase SQL editoru soubory
+     `create_companies_table.sql`, `create_sign_links_table.sql` a
+     `create_generation_log_table.sql` (v tomto pořadí) — vytvoří
+     tabulky i jejich zabezpečení.
+
 ---
 
 ## Krok 3 — Vložit adresu backendu a nasadit frontend (webovou stránku) na Vercel (10 min)
@@ -95,6 +112,15 @@ Můžete si ho uložit jako záložku nebo poslat kolegům.
   → v Render, v nastavení služby → záložka **Environment** → přidejte
   proměnnou `GOOGLE_VISION_API_KEY` s hodnotou vašeho klíče (návod na
   jeho získání je v hlavním `README.md`) → Render se sám restartuje.
+- **Statistiky, sdílené firmy nebo e-signatura hlásí chybu ("Supabase
+  chyba", oprávnění, permission denied)** → `SUPABASE_KEY` v Render
+  (krok 2, bod 7) je pravděpodobně publishable/anon klíč místo
+  **secret** klíče. Od zavedení Row Level Security mají tabulky
+  (`companies`, `generation_log`, `sign_links`) povolený přístup
+  výhradně roli `service_role`, kterou reprezentuje jen secret klíč —
+  publishable klíč dostane k těmto datům nulová práva, i kdyby ho měl
+  kdokoliv jiný. Opravte v Supabase Dashboard → Project Settings →
+  API Keys.
 
 ---
 
