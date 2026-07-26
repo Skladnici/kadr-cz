@@ -72,7 +72,14 @@ export default function SignPage({ token }) {
     setPhase("loading");
     setWakingUp(false);
 
-    const delays = [0, 3000, 6000, 10000, 15000, 20000]; // ~54s of backoff across 6 attempts
+    // ~109s of backoff across 8 attempts — widened from the original 6/
+    // ~54s after a real report of a cold link landing on the error
+    // screen and needing a manual F5 to recover: Render's own docs say
+    // 30-60s for a free-tier cold start, and that's before this page's
+    // own (much heavier, LibreOffice-backed) document fetches below even
+    // get a chance to run, so the status check alone needs real margin
+    // past the documented worst case, not just up to it.
+    const delays = [0, 3000, 6000, 10000, 15000, 20000, 25000, 30000];
     let attempt = 0;
 
     const tryFetch = () => {
@@ -106,6 +113,25 @@ export default function SignPage({ token }) {
     return () => { cancelled = true; };
   }, [token, statusRetryCount]);
 
+  // Retry/backoff for a single document's own fetch — separate from (and
+  // shorter than) the status check's own delays above, since each
+  // attempt here can itself already take a while: this hits
+  // /api/podepsat/{token}/pdf, which renders the docx (docxtpl) and then
+  // shells out to LibreOffice to convert it, not a cheap Supabase read.
+  // A real report traced back to exactly this having NO retry at all —
+  // the status check above (light — one Supabase query) could succeed
+  // on a barely-woken Render instance while these heavier, LibreOffice-
+  // backed fetches, launched right after, still failed outright with no
+  // second attempt, landing the reader on a dead-end error box that only
+  // a manual page reload (by which point the backend had finished
+  // waking up) fixed.
+  const DOC_RETRY_DELAYS = [0, 2000, 4000, 7000, 12000, 18000, 25000];
+  // Per-doc generation counter — lets a fresh fetchDoc(key) call (the
+  // manual "Zkusit znovu" button) cleanly supersede an auto-retry chain
+  // already in flight for that same key, instead of the two racing to
+  // set docState last.
+  const docFetchGenerationRef = useRef({});
+
   // Fetched as a blob (not used directly as an <iframe src>) so the "open
   // to read" link below works as a plain same-origin blob URL — opening
   // it in a new tab is what actually renders a PDF reliably on every
@@ -114,37 +140,76 @@ export default function SignPage({ token }) {
   // iframe, which is what a blank-screen report on a real phone almost
   // always turns out to be.
   const fetchDoc = useCallback((key) => {
+    const generation = (docFetchGenerationRef.current[key] || 0) + 1;
+    docFetchGenerationRef.current[key] = generation;
+    const stillCurrent = () => docFetchGenerationRef.current[key] === generation;
+
     setDocState((s) => {
       const next = { ...s };
       delete next[key]; // back to "loading" (absence = loading, see render below)
       return next;
     });
-    fetch(`${API_BASE}/api/podepsat/${token}/pdf?doc=${key}`)
-      .then((res) => {
-        if (!res.ok) throw new Error("pdf failed");
-        return res.blob();
-      })
-      .then((blob) => {
-        setDocState((s) => ({ ...s, [key]: { url: URL.createObjectURL(blob), error: false } }));
-      })
-      .catch(() => {
-        setDocState((s) => ({ ...s, [key]: { url: null, error: true } }));
-      });
+
+    let attempt = 0;
+    const attemptFetch = () => {
+      if (!stillCurrent()) return;
+      // A single request hanging (Render's connection accepted but the
+      // app not actually serving yet, mid-wake) shouldn't stall the
+      // whole retry schedule indefinitely — 45s is generous for even a
+      // slow LibreOffice conversion, well past what a healthy request
+      // ever needs, but still bounded.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      fetch(`${API_BASE}/api/podepsat/${token}/pdf?doc=${key}`, { signal: controller.signal })
+        .then((res) => {
+          clearTimeout(timeoutId);
+          if (!res.ok) throw new Error("pdf failed");
+          return res.blob();
+        })
+        .then((blob) => {
+          if (!stillCurrent()) return;
+          setDocState((s) => ({ ...s, [key]: { url: URL.createObjectURL(blob), error: false } }));
+        })
+        .catch(() => {
+          clearTimeout(timeoutId);
+          if (!stillCurrent()) return;
+          attempt += 1;
+          if (attempt >= DOC_RETRY_DELAYS.length) {
+            setDocState((s) => ({ ...s, [key]: { url: null, error: true } }));
+            return;
+          }
+          setTimeout(attemptFetch, DOC_RETRY_DELAYS[attempt]);
+        });
+    };
+    attemptFetch();
   }, [token]);
 
   // Fetches every applicable document (not just the contract — see
-  // docTabsFor) in parallel as soon as the link's info is known, so
-  // switching tabs never makes the person wait again for one already
-  // fetched, and "Přečteno, pokračovat" (gated on all of them below) is
-  // enabled as soon as it realistically can be rather than only once
-  // each tab has been clicked into by hand.
+  // docTabsFor) as soon as the link's info is known, so switching tabs
+  // never makes the person wait again for one already fetched, and
+  // "Přečteno, pokračovat" (gated on all of them below) is enabled as
+  // soon as it realistically can be rather than only once each tab has
+  // been clicked into by hand.
+  //
+  // Staggered rather than all launched in the same instant — four
+  // simultaneous LibreOffice conversions is real load even on a warm
+  // backend, and on a Render instance that's just barely finished
+  // waking up (right after the status check above finally succeeded) a
+  // burst like that is a large part of why these were failing outright.
+  // The default "contract" tab still starts immediately since that's
+  // the one thing on screen right away; the rest trail in a few hundred
+  // ms apart.
   useEffect(() => {
     if (phase !== "reading" || !info) return;
     const tabs = docTabsFor(info.template_id);
     setDocTabs(tabs);
     setActiveDoc("contract");
     setDocState({});
-    tabs.forEach(({ key }) => fetchDoc(key));
+    let cancelled = false;
+    tabs.forEach(({ key }, i) => {
+      setTimeout(() => { if (!cancelled) fetchDoc(key); }, i * 400);
+    });
+    return () => { cancelled = true; };
   }, [phase, info, fetchDoc]);
 
   const allDocsLoaded = docTabs.length > 0 && docTabs.every((t) => docState[t.key]?.url);
