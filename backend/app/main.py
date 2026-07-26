@@ -677,20 +677,36 @@ async def set_signed_status(request: Request, payload: SignIn):
 #      the row right after serving the file).
 #   2. SIGN_LINK_TTL_HOURS (24h) since signed_at, once signed.
 #   3. SIGN_LINK_TTL_HOURS (24h) since created_at, if never signed.
-#   4. MAX_POST_SIGN_ACCESS_COUNT (3) visits to the already-signed link
-#      via GET /api/podepsat/{token} — independent of #2, not a
-#      replacement for it; whichever of the two the employee hits first
-#      is what ends it. Only counts entries *after* signing (see
-#      _register_post_sign_access) — reading/signing itself is
-#      unrestricted, this caps how many times the employee can come back
-#      to view/re-download their already-signed copy.
+#   4. MAX_LINK_ACCESS_COUNT (3) visits to the link via GET
+#      /api/podepsat/{token} — independent of #2/#3, not a replacement
+#      for them; whichever limit the employee hits first is what ends
+#      it. Counts from the very first visit, signed or not (see
+#      _register_link_access/_link_admits_new_visit) — an unsigned link
+#      left lying around (forwarded, bookmarked, ...) shouldn't be
+#      re-readable an unlimited number of times either, not just an
+#      already-signed one.
+#
+#      Only GET /api/podepsat/{token} (the page-load status check
+#      SignPage.jsx's mount effect hits) is gated by AND increments this
+#      counter — deliberately NOT the /pdf preview, POST .../sign, or
+#      GET .../download routes a browser fires *after* that same GET
+#      already succeeded. Re-checking the same evolving counter there
+#      would retroactively break the very visit that GET just admitted:
+#      e.g. two prior read-only visits (count=2) followed by a third
+#      visit where the employee finally reads and signs — that third
+#      visit's own GET is what brings count to 3 (still allowed, since
+#      it was checked against the pre-increment value of 2), and the
+#      sign+download that follow *within that same visit* must still be
+#      able to complete, not be refused for having "already" reached the
+#      cap their own admitting GET just set. A 4th, separate visit's GET
+#      is what actually gets refused (checked against 3, already at cap).
 # Checked lazily in _fetch_sign_link on whatever request happens to touch
 # a given token next, plus an opportunistic sweep (_cleanup_expired_sign_
 # links) piggybacked on link creation and the notifier's own frequent
 # polling — no separate scheduler/cron for this.
 
 SIGN_LINK_TTL_HOURS = 24
-MAX_POST_SIGN_ACCESS_COUNT = 3
+MAX_LINK_ACCESS_COUNT = 3
 
 
 def _parse_supabase_timestamp(value: str) -> datetime:
@@ -768,31 +784,37 @@ async def _fetch_sign_link(token: str) -> Optional[dict]:
 
 
 def _sign_link_is_usable(link: Optional[dict]) -> bool:
-    if link is None:
-        return False
-    # Post-sign visit cap — see _register_post_sign_access for where
-    # access_count actually increments. Deliberately gated on signed_at
-    # being set: before signing, a person can open/re-open the reading
-    # flow as many times as they need (retries on a cold backend, a
-    # dropped connection, switching devices, ...) without ever touching
-    # this budget — it only starts counting once there's something to
-    # limit repeat access TO.
-    if link.get("signed_at") and (link.get("access_count") or 0) >= MAX_POST_SIGN_ACCESS_COUNT:
-        return False
-    return True
+    """The base "does this token still work at all" check every
+    /api/podepsat/* route applies — link exists (and, via
+    _fetch_sign_link, hasn't hit its TTL). Deliberately does NOT enforce
+    MAX_LINK_ACCESS_COUNT — see _link_admits_new_visit for that, and its
+    own docstring for why the two have to stay separate rather than
+    folding the visit cap in here for every route uniformly."""
+    return link is not None
 
 
-async def _register_post_sign_access(token: str, link: dict) -> None:
-    """Counts one more post-signing visit — called only from
-    get_sign_link_status (GET /api/podepsat/{token}), the route every
-    page load of an already-signed link hits first. A no-op before
-    signing (see _sign_link_is_usable's own comment on why). Only ever
-    called once _sign_link_is_usable has already confirmed this visit is
-    still within budget, so it's always recording a real, allowed
-    access — never pushing an already-refused link further past the
-    limit."""
-    if not link.get("signed_at"):
-        return
+def _link_admits_new_visit(link: dict) -> bool:
+    """Whether GET /api/podepsat/{token} — the one place a person
+    "opens" this link (SignPage.jsx's own mount effect) — may proceed as
+    another counted visit, capped at MAX_LINK_ACCESS_COUNT (3) over the
+    link's whole lifetime, signed or not. Only this one route checks (and
+    _register_link_access increments) this counter: the /pdf preview,
+    POST .../sign, and GET .../download routes a page fires *after* this
+    same GET already succeeded deliberately do NOT re-check it — doing
+    so would retroactively break whichever visit was just admitted the
+    moment its own GET happened to be the 3rd and last one (see the
+    module-level "Row lifetime" comment above for the full reasoning)."""
+    return (link.get("access_count") or 0) < MAX_LINK_ACCESS_COUNT
+
+
+async def _register_link_access(token: str, link: dict) -> None:
+    """Counts one more visit to this link — called only from
+    get_sign_link_status (GET /api/podepsat/{token}), and only once
+    _link_admits_new_visit has already confirmed this visit is still
+    within budget, so it's always recording a real, allowed access —
+    never pushing an already-refused link further past the limit. Counts
+    from the very first visit now, not just post-signing reopens (see
+    the module-level "Row lifetime" comment)."""
     new_count = (link.get("access_count") or 0) + 1
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.patch(
@@ -805,9 +827,9 @@ async def _register_post_sign_access(token: str, link: dict) -> None:
         # Silent failure here would be worse than most other best-effort
         # PATCHes in this file: if access_count never actually persists
         # (e.g. the column is missing because create_sign_links_table.sql
-        # wasn't re-run after this feature was added), the post-sign
-        # visit cap silently never engages — every visit reads back 0
-        # forever, looking "fixed" right up until someone checks.
+        # wasn't re-run after this feature was added), the visit cap
+        # silently never engages — every visit reads back 0 forever,
+        # looking "fixed" right up until someone checks.
         logging.getLogger(__name__).warning(
             "sign_links access_count PATCH failed (%s): %s", resp.status_code, resp.text
         )
@@ -947,13 +969,14 @@ async def admin_download_signed_contract(request: Request, token: str, backgroun
 async def get_sign_link_status(request: Request, token: str):
     _require_supabase()
     link = await _fetch_sign_link(token)
-    if not _sign_link_is_usable(link):
+    if not _sign_link_is_usable(link) or not _link_admits_new_visit(link):
         return {"valid": False}
-    # Every page load of an already-signed link starts here (SignPage.jsx's
-    # own status check on mount) — the one place that sees "an employee
-    # just opened their already-signed link again" as a distinct event,
-    # so this is where the post-sign visit counter actually increments.
-    await _register_post_sign_access(token, link)
+    # Every page load starts here (SignPage.jsx's own status check on
+    # mount) — the one place that sees "an employee just opened this
+    # link" as a distinct, countable visit, so this is where the counter
+    # actually increments (see _link_admits_new_visit's own docstring for
+    # why the /pdf, sign, and download routes below deliberately don't).
+    await _register_link_access(token, link)
     return {
         "valid": True,
         "company_name": link.get("company_name"),
@@ -1071,12 +1094,12 @@ async def submit_signature(request: Request, token: str, payload: SubmitSignatur
 async def _mark_employee_downloaded(token: str) -> None:
     # This timestamp itself is still informational only — nothing gates
     # on employee_downloaded_at specifically. The link's lifetime is
-    # bounded by _sign_link_is_expired (24h from signed_at), by
-    # access_count via _register_post_sign_access (3 post-sign visits,
-    # see _sign_link_is_usable), and by the admin's own download deleting
-    # the row outright — not by whether the employee has downloaded
-    # before, only by how many times they've come back and how long ago
-    # they signed.
+    # bounded by _sign_link_is_expired (24h from signed_at/created_at)
+    # and by the admin's own download deleting the row outright — NOT by
+    # MAX_LINK_ACCESS_COUNT, which only gates GET /api/podepsat/{token}
+    # itself (see _link_admits_new_visit); this route stays reachable as
+    # many times as the employee likes within that 24h window, same as
+    # before this counter existed.
     async with httpx.AsyncClient(timeout=15) as client:
         await client.patch(
             f"{settings.SUPABASE_URL}/rest/v1/sign_links",

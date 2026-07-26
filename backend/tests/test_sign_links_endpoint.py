@@ -17,14 +17,19 @@ What actually matters here, beyond "the routes return 200":
    main.py's own comment on why that's intentional, not a duplicate
    mechanism) — GET /api/stats must reflect it.
 3. A signed link is re-downloadable by the employee — /download itself
-   has no separate call-count limit — but re-*opening* the link (GET
-   /api/podepsat/{token}, what SignPage.jsx polls on every page load) is
-   capped at MAX_POST_SIGN_ACCESS_COUNT (3) visits post-signing (see
-   _sign_link_is_usable/_register_post_sign_access), independent of and
-   in addition to the 24h TTL (_sign_link_is_expired) or the admin's own
-   download, which deletes the row outright. Pre-sign visits never count
-   against this budget. Signing itself IS one-time: a second
-   POST .../sign 400s and never overwrites the first signature.
+   has no separate call-count limit — but *opening* the link (GET
+   /api/podepsat/{token}, what SignPage.jsx hits on every page load) is
+   capped at MAX_LINK_ACCESS_COUNT (3) visits over the link's whole
+   life, signed or not (see _link_admits_new_visit/_register_link_access),
+   independent of and in addition to the 24h TTL (_sign_link_is_expired)
+   or the admin's own download, which deletes the row outright. Only
+   that one GET route is gated by/increments this counter — the /pdf
+   preview, POST .../sign, and GET .../download routes a page fires
+   *after* that same GET already succeeded are deliberately not, so the
+   visit whose own GET happens to be the 3rd and last one can still read,
+   sign, and download within itself; only a 4th, separate visit's GET is
+   refused. Signing itself IS one-time: a second POST .../sign 400s and
+   never overwrites the first signature.
 4. vyplatni_paska (no signature line in that template) can't get a link.
 5. Expiry (_sign_link_is_expired) is checked lazily, in _fetch_sign_link,
    on whatever request happens to touch a given token — there's no
@@ -41,7 +46,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app, limiter, MAX_POST_SIGN_ACCESS_COUNT
+from app.main import app, limiter, MAX_LINK_ACCESS_COUNT
 
 client = TestClient(app)
 
@@ -516,65 +521,140 @@ def test_creating_a_link_sweeps_an_expired_unsigned_one(fake_supabase):
     assert stale_token not in fake_supabase["sign_links"].rows
 
 
-# ------------------------------------------- post-sign access count cap
-# See _sign_link_is_usable/_register_post_sign_access in main.py — a
-# second, independent cap alongside the 24h TTL above: at most
-# MAX_POST_SIGN_ACCESS_COUNT (3) re-opens of an already-signed link via
-# GET /api/podepsat/{token}, whichever of the two limits the employee
-# hits first. Added after a real gap was found manually testing this
-# feature: the PATCH that increments access_count wasn't checked for
-# failure, so a missing column (schema not yet migrated) failed silently
-# and the counter always read back 0 — looking "fixed" indefinitely.
-# These tests exist so a future regression in either direction (the cap
-# never engaging, or engaging too early / before signing) fails loudly
-# in CI instead of needing another manual production test to notice.
+# ------------------------------------------------- link visit count cap
+# See _sign_link_is_usable/_link_admits_new_visit/_register_link_access
+# in main.py — a second, independent cap alongside the 24h TTL above: at
+# most MAX_LINK_ACCESS_COUNT (3) visits to GET /api/podepsat/{token} over
+# the link's whole life, signed or not — an unsigned link left lying
+# around shouldn't be re-readable an unlimited number of times either,
+# not just an already-signed one. Only that one route is gated by/
+# increments the counter; /pdf, POST .../sign, and GET .../download are
+# deliberately not, so the visit whose own GET happens to be the 3rd and
+# last one can still read, sign, and download within itself.
+# Added after a real gap was found manually testing the original
+# (post-sign-only) version of this feature: the PATCH that increments
+# access_count wasn't checked for failure, so a missing column (schema
+# not yet migrated) failed silently and the counter always read back 0 —
+# looking "fixed" indefinitely. These tests exist so a future regression
+# in any direction (the cap never engaging, engaging too early within a
+# single still-valid visit, or not engaging early enough pre-sign) fails
+# loudly in CI instead of needing another manual production test to
+# notice.
 
-def test_pre_sign_status_checks_never_count_toward_the_post_sign_limit(fake_supabase):
+def test_pre_sign_visits_count_toward_the_same_cap(fake_supabase):
+    # The core behavior change from this feature's original version:
+    # opening the link to read never-signed documents now spends the
+    # same budget signing/reopening always did.
     token = _create_link().json()["token"]
-    for _ in range(MAX_POST_SIGN_ACCESS_COUNT + 5):
-        assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
-
-    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
-    # All budget still available — the pre-sign loop above shouldn't have
-    # spent any of it.
-    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
-        assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
-
-
-def test_post_sign_visits_allowed_up_to_the_cap_then_refused(fake_supabase):
-    token = _create_link().json()["token"]
-    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
-
-    for i in range(MAX_POST_SIGN_ACCESS_COUNT):
+    for i in range(MAX_LINK_ACCESS_COUNT):
         resp = client.get(f"/api/podepsat/{token}").json()
         assert resp["valid"] is True, f"visit {i + 1} should still be within budget"
 
     refused = client.get(f"/api/podepsat/{token}").json()
     assert refused == {"valid": False}
-    assert fake_supabase["sign_links"].rows[token]["access_count"] == MAX_POST_SIGN_ACCESS_COUNT
+    assert fake_supabase["sign_links"].rows[token]["access_count"] == MAX_LINK_ACCESS_COUNT
+
+    # Never signed in this test at all — confirms the cap is hit purely
+    # from pre-sign reads, not from anything sign-related.
+    assert fake_supabase["sign_links"].rows[token]["signed_at"] is None
 
 
-def test_pdf_and_download_are_also_refused_once_post_sign_cap_is_hit(fake_supabase):
+def test_post_sign_visits_count_toward_the_same_total_cap(fake_supabase):
+    # Signing itself doesn't spend a visit (see
+    # test_signing_and_downloading_work_within_the_visit_that_hits_the_cap
+    # below) — but re-opening the link afterwards still draws from the
+    # exact same MAX_LINK_ACCESS_COUNT budget as any pre-sign visit would.
     token = _create_link().json()["token"]
     client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
-    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
+
+    for i in range(MAX_LINK_ACCESS_COUNT):
+        resp = client.get(f"/api/podepsat/{token}").json()
+        assert resp["valid"] is True, f"visit {i + 1} should still be within budget"
+
+    refused = client.get(f"/api/podepsat/{token}").json()
+    assert refused == {"valid": False}
+    assert fake_supabase["sign_links"].rows[token]["access_count"] == MAX_LINK_ACCESS_COUNT
+
+
+def test_mixed_pre_and_post_sign_visits_share_one_budget(fake_supabase):
+    # Two read-only visits before ever signing, then signing on a third
+    # visit, then one more re-open afterward — 4 total GETs against a
+    # budget of 3 — must refuse the 4th regardless of when signing
+    # happened in between.
+    token = _create_link().json()["token"]
+    assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
+    assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
+
+    sign_resp = client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    assert sign_resp.status_code == 200
+
+    assert client.get(f"/api/podepsat/{token}").json()["valid"] is True  # 3rd visit — still allowed
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}  # 4th — refused
+
+
+def test_signing_and_downloading_work_within_the_visit_that_hits_the_cap(fake_supabase):
+    # The scenario the whole "only GET status increments/is gated"
+    # design exists for: two prior read-only visits (budget now at
+    # 2/3), then a third visit where the employee actually reads, signs,
+    # and downloads — that visit's own opening GET is what brings the
+    # counter to the cap (3/3), and everything that follows *within that
+    # same visit* (pdf preview, sign, download) must still work. Only a
+    # later, separate 4th visit gets refused.
+    token = _create_link().json()["token"]
+    client.get(f"/api/podepsat/{token}")
+    client.get(f"/api/podepsat/{token}")
+
+    third_visit = client.get(f"/api/podepsat/{token}").json()
+    assert third_visit["valid"] is True
+    assert fake_supabase["sign_links"].rows[token]["access_count"] == MAX_LINK_ACCESS_COUNT
+
+    # doc=poplatnik rather than the default "contract" — fitz-only, no
+    # LibreOffice dependency (see test_pdf_preview_poplatnik_works_for_a_
+    # bundle_template's own comment), so this assertion is about the
+    # visit cap, not about whether LibreOffice happens to be installed.
+    preview = client.get(f"/api/podepsat/{token}/pdf?doc=poplatnik")
+    assert preview.status_code == 200
+
+    sign_resp = client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    assert sign_resp.status_code == 200
+
+    download = client.get(f"/api/podepsat/{token}/download")
+    assert download.status_code == 200
+
+    # A later, genuinely new (4th) visit is still refused.
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+
+
+def test_pdf_sign_and_download_are_not_directly_gated_by_the_visit_cap(fake_supabase):
+    # Deliberate consequence of the design above: once the cap is
+    # exhausted, reloading the actual page (GET status) is what a real
+    # employee sees and gets refused with "Tento odkaz již není platný" —
+    # but /pdf, sign, and download themselves don't re-check the same
+    # counter (see _link_admits_new_visit's docstring for why re-checking
+    # it there would break the last legitimate visit), so hitting them
+    # directly, bypassing the status route, still works as long as the
+    # link itself hasn't expired. Documented here so a future change
+    # doesn't accidentally "fix" this into a regression.
+    token = _create_link().json()["token"]
+    for _ in range(MAX_LINK_ACCESS_COUNT):
         client.get(f"/api/podepsat/{token}")
     assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
 
-    # Same refusal, every route that shares _sign_link_is_usable — not
-    # just the status check itself.
-    assert client.get(f"/api/podepsat/{token}/pdf?doc=contract").status_code == 404
-    assert client.get(f"/api/podepsat/{token}/download").status_code == 404
+    # doc=poplatnik — see the sibling test above for why not "contract".
+    assert client.get(f"/api/podepsat/{token}/pdf?doc=poplatnik").status_code == 200
+    sign_resp = client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    assert sign_resp.status_code == 200
+    assert client.get(f"/api/podepsat/{token}/download").status_code == 200
 
 
-def test_admin_download_is_unaffected_by_the_employees_post_sign_cap(fake_supabase):
-    # Deliberate scope boundary: the cap is on the EMPLOYEE re-opening
+def test_admin_download_is_unaffected_by_the_employees_visit_cap(fake_supabase):
+    # Deliberate scope boundary: the cap is on the EMPLOYEE opening
     # their own link, not on the admin's separate, already one-time-only
     # download route — an employee burning through their 3 visits must
     # never lock the admin out of the copy they're entitled to pull.
     token = _create_link().json()["token"]
     client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
-    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
+    for _ in range(MAX_LINK_ACCESS_COUNT):
         client.get(f"/api/podepsat/{token}")
     assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
 
