@@ -16,16 +16,22 @@ What actually matters here, beyond "the routes return 200":
    _apply_signed_status() helper the admin's manual dot-click uses (see
    main.py's own comment on why that's intentional, not a duplicate
    mechanism) — GET /api/stats must reflect it.
-3. A signed link is re-downloadable by the employee any number of times
-   (not one-time) — what actually ends its life is the 24h TTL
-   (_sign_link_is_expired) or the admin's own download, which deletes the
-   row outright. Signing itself, though, IS one-time: a second
+3. A signed link is re-downloadable by the employee — /download itself
+   has no separate call-count limit — but re-*opening* the link (GET
+   /api/podepsat/{token}, what SignPage.jsx polls on every page load) is
+   capped at MAX_POST_SIGN_ACCESS_COUNT (3) visits post-signing (see
+   _sign_link_is_usable/_register_post_sign_access), independent of and
+   in addition to the 24h TTL (_sign_link_is_expired) or the admin's own
+   download, which deletes the row outright. Pre-sign visits never count
+   against this budget. Signing itself IS one-time: a second
    POST .../sign 400s and never overwrites the first signature.
 4. vyplatni_paska (no signature line in that template) can't get a link.
 5. Expiry (_sign_link_is_expired) is checked lazily, in _fetch_sign_link,
    on whatever request happens to touch a given token — there's no
    separate scheduler, just that check plus the opportunistic sweep
-   piggybacked on link creation and GET /api/sign-links/recent.
+   piggybacked on link creation and GET /api/sign-links/recent. The
+   post-sign visit cap (#3) has no sweep at all — it's a plain read-time
+   comparison, nothing to lazily delete on a timer.
 """
 import base64
 from datetime import datetime, timedelta, timezone
@@ -35,7 +41,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app, limiter
+from app.main import app, limiter, MAX_POST_SIGN_ACCESS_COUNT
 
 client = TestClient(app)
 
@@ -269,11 +275,17 @@ def test_employee_can_download_multiple_times_after_signing(fake_supabase):
     assert first.headers["content-type"].startswith("application/zip")
     assert len(first.content) > 0
 
-    # Not one-time for the employee anymore — a phone dying or a browser
-    # closing mid-download shouldn't cost them their only copy. What
-    # actually ends the link is the 24h TTL or the admin's own download.
-    second = client.get(f"/api/podepsat/{token}/download")
-    assert second.status_code == 200
+    # /download itself carries no separate counter — a phone dying or a
+    # browser closing mid-download shouldn't cost the employee their only
+    # copy. Calling it repeatedly, on its own, never trips the post-sign
+    # visit cap (see the dedicated "post-sign access count cap" section
+    # below) — only re-opening the link via GET /api/podepsat/{token}
+    # does. Three more downloads here (well past MAX_POST_SIGN_ACCESS_
+    # COUNT) all still succeed, proving that's a real distinction and not
+    # just an untested assumption.
+    for _ in range(3):
+        again = client.get(f"/api/podepsat/{token}/download")
+        assert again.status_code == 200
     assert client.get(f"/api/podepsat/{token}").json()["signed"] is True
 
 
@@ -502,6 +514,84 @@ def test_creating_a_link_sweeps_an_expired_unsigned_one(fake_supabase):
     _create_link(first_name="Fresh", last_name="One")  # triggers the sweep as a side effect
 
     assert stale_token not in fake_supabase["sign_links"].rows
+
+
+# ------------------------------------------- post-sign access count cap
+# See _sign_link_is_usable/_register_post_sign_access in main.py — a
+# second, independent cap alongside the 24h TTL above: at most
+# MAX_POST_SIGN_ACCESS_COUNT (3) re-opens of an already-signed link via
+# GET /api/podepsat/{token}, whichever of the two limits the employee
+# hits first. Added after a real gap was found manually testing this
+# feature: the PATCH that increments access_count wasn't checked for
+# failure, so a missing column (schema not yet migrated) failed silently
+# and the counter always read back 0 — looking "fixed" indefinitely.
+# These tests exist so a future regression in either direction (the cap
+# never engaging, or engaging too early / before signing) fails loudly
+# in CI instead of needing another manual production test to notice.
+
+def test_pre_sign_status_checks_never_count_toward_the_post_sign_limit(fake_supabase):
+    token = _create_link().json()["token"]
+    for _ in range(MAX_POST_SIGN_ACCESS_COUNT + 5):
+        assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
+
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    # All budget still available — the pre-sign loop above shouldn't have
+    # spent any of it.
+    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
+        assert client.get(f"/api/podepsat/{token}").json()["valid"] is True
+
+
+def test_post_sign_visits_allowed_up_to_the_cap_then_refused(fake_supabase):
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+
+    for i in range(MAX_POST_SIGN_ACCESS_COUNT):
+        resp = client.get(f"/api/podepsat/{token}").json()
+        assert resp["valid"] is True, f"visit {i + 1} should still be within budget"
+
+    refused = client.get(f"/api/podepsat/{token}").json()
+    assert refused == {"valid": False}
+    assert fake_supabase["sign_links"].rows[token]["access_count"] == MAX_POST_SIGN_ACCESS_COUNT
+
+
+def test_pdf_and_download_are_also_refused_once_post_sign_cap_is_hit(fake_supabase):
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
+        client.get(f"/api/podepsat/{token}")
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+
+    # Same refusal, every route that shares _sign_link_is_usable — not
+    # just the status check itself.
+    assert client.get(f"/api/podepsat/{token}/pdf?doc=contract").status_code == 404
+    assert client.get(f"/api/podepsat/{token}/download").status_code == 404
+
+
+def test_admin_download_is_unaffected_by_the_employees_post_sign_cap(fake_supabase):
+    # Deliberate scope boundary: the cap is on the EMPLOYEE re-opening
+    # their own link, not on the admin's separate, already one-time-only
+    # download route — an employee burning through their 3 visits must
+    # never lock the admin out of the copy they're entitled to pull.
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    for _ in range(MAX_POST_SIGN_ACCESS_COUNT):
+        client.get(f"/api/podepsat/{token}")
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
+
+    admin = client.get(f"/api/sign-links/{token}/download", auth=AUTH)
+    assert admin.status_code == 200
+
+
+def test_access_count_cap_and_24h_ttl_are_independent(fake_supabase):
+    # A link can die from either limit alone, regardless of the other —
+    # this one is expired by time with access_count still at its default
+    # (never even touched, since no post-sign visit happened yet).
+    token = _create_link().json()["token"]
+    client.post(f"/api/podepsat/{token}/sign", json={"signature_image": TINY_PNG_B64})
+    _age_field(fake_supabase, token, "signed_at", 25)
+
+    assert fake_supabase["sign_links"].rows[token].get("access_count", 0) == 0
+    assert client.get(f"/api/podepsat/{token}").json() == {"valid": False}
 
 
 def test_pdf_preview_rejects_unknown_doc_key(fake_supabase):
