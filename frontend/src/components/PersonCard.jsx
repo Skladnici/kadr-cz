@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  AlertTriangle, Check, ChevronDown, Copy, FileText, Link2, Loader2, Scissors, X,
+  AlertTriangle, Check, ChevronDown, FileText, Link2, Loader2, Scissors, X,
 } from "lucide-react";
 import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
@@ -8,8 +8,6 @@ import VisaExpiredWarningIcon from "./VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./StrpeniWarningIcon";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
-import { SIGNABLE_TEMPLATE_IDS } from "../constants/fields";
-import useCopyFeedback from "../hooks/useCopyFeedback";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -95,11 +93,7 @@ export default function PersonCard({
   onUpdateEndDateOverride,
   onToggleTemplateOverride,
   onUpdateTemplateOverride,
-  onCreateSignLink,
-  signed,
 }) {
-  const [headerCopied, copyHeaderLink] = useCopyFeedback();
-  const [detailCopied, copyDetailLink] = useCopyFeedback();
   // Starts closed every time the card itself is (re-)expanded — matches
   // "hidden by default, only opens on an explicit click" literally rather
   // than remembering whether it was open on a previous expand.
@@ -129,29 +123,6 @@ export default function PersonCard({
   const isStrpeniWarning = useMemo(
     () => isStrpeniVisaCode(person.fields.visa_type_code),
     [person.fields.visa_type_code]
-  );
-  // Whether this card can offer an e-signature link at all — same check
-  // the expanded detail view uses (see below), lifted up here so the
-  // collapsed header row (which never renders that detail view) can show
-  // its own compact link button/copy control without duplicating the
-  // condition. Reads person.generation.templateId — the template this
-  // person's documents were *actually* generated with (recorded by
-  // BatchDocFiller's handleGenerateAll) — rather than the live shared
-  // dropdown/override: a real report of "generated fine, but the sign-
-  // link button never appeared" traced back to exactly this reading the
-  // *current* selection instead, which had since moved on to a
-  // different (non-signable) template without this card being
-  // regenerated to match.
-  const isSignable = person.generation?.status === "done"
-    && SIGNABLE_TEMPLATE_IDS.has(person.generation?.templateId);
-  // TEMP DEBUG — remove once the "sign-link button missing in a real
-  // batch" report is confirmed fixed. Search "SIGNLINK-DEBUG" to find
-  // every line to strip.
-  console.log(
-    "[SIGNLINK-DEBUG]", displayName || `Osoba ${index + 1}`,
-    "status:", person.generation?.status,
-    "templateId:", person.generation?.templateId,
-    "isSignable:", isSignable,
   );
 
   // Binds this card's id once via useCallback so AddressBuilder sees a
@@ -261,39 +232,6 @@ export default function PersonCard({
             className={`shrink-0 text-slate-400 transition-transform ${person.expanded ? "rotate-180" : ""}`}
           />
         </button>
-        {/* Right next to this person's own name — not buried in the
-            expanded detail view below (which still has the full
-            link+"Kopírovat" row for reference) — precisely so an admin
-            working through a whole batch can create/copy each person's
-            link without expanding every card, and without the "whose
-            link was that again?" mix-up a shared/bulk control would
-            invite once several people's links exist side by side. */}
-        {isSignable && (
-          person.generation.signLink ? (
-            <button
-              type="button"
-              onClick={() => copyHeaderLink(person.generation.signLink)}
-              title={headerCopied ? "Zkopírováno ✓" : `Kopírovat odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
-              className={`flex h-6 w-6 items-center justify-center rounded-full shrink-0 transition-colors ${
-                headerCopied ? "bg-emerald-100 text-emerald-700" : "text-emerald-600 hover:bg-emerald-50"
-              }`}
-            >
-              {headerCopied ? <Check size={13} strokeWidth={3} /> : <Copy size={13} />}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onCreateSignLink}
-              disabled={person.generation.signLinkLoading}
-              title={`Vytvořit odkaz k podpisu — ${displayName || `Osoba ${index + 1}`}`}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-600 shrink-0 disabled:opacity-40"
-            >
-              {person.generation.signLinkLoading
-                ? <Loader2 size={13} className="animate-spin" />
-                : <Link2 size={13} />}
-            </button>
-          )
-        )}
         <button
           type="button"
           onClick={handleRemoveClick}
@@ -622,75 +560,13 @@ export default function PersonCard({
               contract at a time defeated the point of batch mode.
               Download/print for everyone lives once, at the bottom of
               the batch, as "Stáhnout všechny"/"Otevřít / Tisk všechny".
-              The e-signature link IS per-card, unlike that bulk download —
-              each person needs their own distinct token/link, so there's
-              no equivalent "create links for everyone" bulk action. */}
+              The e-signature link is also handled once for the whole
+              batch, in the "Odkazy k podpisu" list at the bottom (see
+              BatchDocFiller) — not per-card, so it doesn't depend on a
+              small icon buried in each person's own card. */}
           {person.generation?.status === "done" && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
-                <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
-              </div>
-              {isSignable && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
-                  {!person.generation.signLink ? (
-                    <button
-                      type="button"
-                      onClick={onCreateSignLink}
-                      disabled={person.generation.signLinkLoading}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {person.generation.signLinkLoading
-                        ? <Loader2 size={13} className="animate-spin" />
-                        : <Link2 size={13} />}
-                      Vytvořit odkaz k podpisu
-                    </button>
-                  ) : (
-                    <div>
-                      {/* Explicit "whose link is this" label — cheap
-                          insurance against mixing up several people's
-                          links once more than one card in the batch has
-                          one, e.g. if this row gets screenshotted or
-                          copy-pasted somewhere out of the card's own
-                          context. */}
-                      <div className="mb-1 flex items-center gap-2">
-                        <p className="text-[10.5px] font-medium uppercase tracking-wide text-slate-400">
-                          Odkaz pro {displayName || `Osobu ${index + 1}`}
-                        </p>
-                        <span
-                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9.5px] font-medium ${
-                            signed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
-                          }`}
-                        >
-                          {signed ? "Podepsáno" : "Čeká na podpis"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          readOnly
-                          value={person.generation.signLink}
-                          onFocus={(e) => e.target.select()}
-                          className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11.5px] text-slate-700"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => copyDetailLink(person.generation.signLink)}
-                          className={`inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-medium transition-colors ${
-                            detailCopied
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          {detailCopied ? <Check size={12} strokeWidth={3} /> : <Copy size={12} />}
-                          {detailCopied ? "Zkopírováno ✓" : "Kopírovat"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {person.generation.signLinkError && (
-                    <p className="mt-1 text-[11px] text-red-600">{person.generation.signLinkError}</p>
-                  )}
-                </div>
-              )}
+            <div className="flex items-center gap-1.5 text-[12px] text-emerald-700">
+              <Check size={13} strokeWidth={3} /> Dokument vygenerován — stáhněte pomocí tlačítek pod seznamem osob.
             </div>
           )}
         </div>

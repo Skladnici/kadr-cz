@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Download, FileText, Loader2, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, FileText, Link2, Loader2, Upload, X } from "lucide-react";
 import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
 import {
   FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE,
+  SIGNABLE_TEMPLATE_IDS,
 } from "../constants/fields";
 import { composeCzAddress, composeOriginAddress } from "../utils/address";
 import { mergeRecognizedResults } from "../utils/recognizeMerge";
@@ -11,6 +12,71 @@ import { API_BASE, describeRequestError, uploadFileViaXHR, apiFetchWithTimeout, 
 import { paceRateLimit, runWithRetry, estimateSecondsRemaining } from "../utils/rateLimitQueue";
 import { nameFolderPart, BUNDLE_FILE_SPECS, zipFolderedDownload } from "../utils/zipDownload";
 import useSignedStatus from "../hooks/useSignedStatus";
+import useCopyFeedback from "../hooks/useCopyFeedback";
+
+// One explicit row per signable person, listed together at the bottom of
+// batch mode rather than a control living inside each person's own card
+// (see BatchDocFiller's render below) — a real report confirmed the old
+// per-card icon-only button visually blended into the card's own "remove"
+// button and went unnoticed in a multi-person batch. Mirrors the exact
+// "Vytvořit odkaz" button / link+copy row SimpleDocFiller's single-mode
+// signature section already uses, just once per person instead of once
+// for the whole page. Its own component (not inlined in the .map below)
+// so each row's copy-feedback state (useCopyFeedback) is independent per
+// person rather than shared across the whole list.
+function SignLinkRow({ person, displayName, signed, onCreateSignLink }) {
+  const [copied, copyLink] = useCopyFeedback();
+  const gen = person.generation;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[14.5px] font-medium text-[#0B1220] truncate">{displayName}</span>
+          {gen.signLink && (
+            <span
+              className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium ${
+                signed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              {signed ? "Podepsáno" : "Čeká na podpis"}
+            </span>
+          )}
+        </div>
+        {!gen.signLink ? (
+          <button
+            type="button"
+            onClick={onCreateSignLink}
+            disabled={gen.signLinkLoading}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-[13px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {gen.signLinkLoading ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
+            Vytvořit odkaz
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-[380px] sm:flex-none">
+            <input
+              readOnly
+              value={gen.signLink}
+              onFocus={(e) => e.target.select()}
+              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[12px] text-slate-700"
+            />
+            <button
+              type="button"
+              onClick={() => copyLink(gen.signLink)}
+              className={`inline-flex shrink-0 items-center justify-center gap-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition-colors ${
+                copied ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {copied ? <Check size={13} strokeWidth={3} /> : <Copy size={13} />}
+              {copied ? "Zkopírováno ✓" : "Kopírovat"}
+            </button>
+          </div>
+        )}
+      </div>
+      {gen.signLinkError && <p className="mt-1.5 text-[11.5px] text-red-600">{gen.signLinkError}</p>}
+    </div>
+  );
+}
 
 // Same accent used by SimpleDocFiller/LoginForm's own primary buttons —
 // redefined locally rather than imported, matching how LoginForm.jsx
@@ -859,6 +925,13 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
   const recognizeRemaining = recognizeStats.total - recognizeStats.done;
   const generateRemaining = generateStats.total - generateStats.done;
   const generatedCount = useMemo(() => people.filter((p) => p.generation?.status === "done").length, [people]);
+  // Same eligibility check PersonCard used to gate its own (now-removed)
+  // per-card sign-link control — unchanged, only where it's rendered has
+  // moved.
+  const signablePeople = useMemo(
+    () => people.filter((p) => p.generation?.status === "done" && SIGNABLE_TEMPLATE_IDS.has(p.generation?.templateId)),
+    [people]
+  );
 
   return (
     <div className="p-7 md:p-9">
@@ -953,10 +1026,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
               sharedStartDate={sharedFields.start_date || ""}
               sharedEndDate={sharedFields.end_date || ""}
               sharedTemplateId={templateId}
-              signed={isSignedFn(
-                (person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields).name,
-                [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ")
-              )}
               onRemove={() => removePerson(person.id)}
               onSplit={() => splitPerson(person.id)}
               mergeCandidates={people.filter((p) => p.id !== person.id && p.status === "done")}
@@ -1000,7 +1069,6 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                   : { ...p, templateOverrideEnabled: true, templateOverride: templateId }
               ))}
               onUpdateTemplateOverride={(value) => updatePerson(person.id, (p) => ({ ...p, templateOverride: value }))}
-              onCreateSignLink={() => handleCreateSignLink(person)}
             />
           ))}
         </div>
@@ -1091,6 +1159,31 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
                 {bulkDownloadBuilding ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
                 {bulkDownloadBuilding ? "Balím do ZIP…" : `Stáhnout všechny (${generatedCount}) jako ZIP`}
               </button>
+            </div>
+          )}
+
+          {/* Sign links — one explicit row per signable person, listed
+              here instead of a small per-card icon (see SignLinkRow's own
+              comment above for why). Only people whose documents are done
+              AND were generated against a signable template appear here —
+              same isSignable gate PersonCard used to apply per-card. */}
+          {signablePeople.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-[13px] font-medium text-[#0B1220] mb-2">Odkazy k podpisu</h3>
+              <div className="space-y-2">
+                {signablePeople.map((person) => (
+                  <SignLinkRow
+                    key={person.id}
+                    person={person}
+                    displayName={[person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ") || "Osoba bez jména"}
+                    signed={isSignedFn(
+                      (person.companyOverrideEnabled ? person.companyOverride : sharedCompanyFields).name,
+                      [person.fields.first_name, person.fields.last_name].filter(Boolean).join(" ")
+                    )}
+                    onCreateSignLink={() => handleCreateSignLink(person)}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
