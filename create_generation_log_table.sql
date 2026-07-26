@@ -111,11 +111,34 @@ from (
 ) gl
 order by gl.company_name, gl.employee_name;
 
--- Same reasoning/assumption as create_companies_table.sql: the backend
--- is the only intended caller (holds SUPABASE_KEY as a server-side
--- secret, gates every request behind its own site-wide login before
--- ever reaching Supabase), so RLS is left disabled here.
--- alter table generation_log enable row level security;
+-- RLS: enabled, service_role only (see create_companies_table.sql's own
+-- RLS section for the full "why both a secret key and this policy"
+-- reasoning — this table is the more sensitive of the two, since
+-- employee_name is real personal data). service_role already bypasses
+-- RLS at the Postgres role level regardless of policy, so what this
+-- actually enforces is denying anon/authenticated (a leaked publishable
+-- key) the moment RLS is on, with no policy matching them — the policy
+-- itself mainly documents that on purpose rather than by omission.
+alter table generation_log enable row level security;
+
+drop policy if exists "service_role_only" on generation_log;
+create policy "service_role_only" on generation_log
+    for all
+    to service_role
+    using (true)
+    with check (true);
+
+-- Views run as their OWNER's privileges by default (Postgres' classic
+-- "security definer"-like view behavior), which would silently bypass
+-- the RLS policy above — the owner (whichever role ran this script,
+-- typically one with BYPASSRLS) would still see every row even when
+-- queried through a since-locked-down anon/authenticated connection.
+-- security_invoker (Postgres 15+, which Supabase runs) makes each view
+-- instead evaluate as the CALLING role, so RLS on generation_log/
+-- sign_links is enforced through them too, not just on direct table access.
+alter view generation_stats set (security_invoker = true);
+alter view generation_stats_by_type set (security_invoker = true);
+alter view generation_stats_by_person set (security_invoker = true);
 
 -- A table/view created via raw SQL (unlike Supabase's Table Editor UI,
 -- which grants this automatically) has no privileges for the
@@ -123,17 +146,24 @@ order by gl.company_name, gl.employee_name;
 -- without this, PostgREST's schema-cache introspection silently omits
 -- the object entirely, so /api/stats and the /api/fill logging fail
 -- with "Could not find the table ... in the schema cache" (PGRST205)
--- even though the table/view genuinely exists and RLS is disabled.
--- update, not just select/insert: /api/stats/sign PATCHes signed_at on
--- the underlying rows when someone clicks a person's status dot.
-grant select, insert, update on generation_log to anon, authenticated, service_role;
-grant select on generation_stats to anon, authenticated, service_role;
-grant select on generation_stats_by_type to anon, authenticated, service_role;
-grant select on generation_stats_by_person to anon, authenticated, service_role;
+-- even though the table/view genuinely exists. update, not just
+-- select/insert: /api/stats/sign PATCHes signed_at on the underlying
+-- rows when someone clicks a person's status dot.
+--
+-- revoke first — belt-and-suspenders against whatever broader grant
+-- might already exist on the live project (e.g. from before this file
+-- was tightened, or from Table Editor UI defaults) that this script
+-- alone wouldn't otherwise know to remove.
+revoke all on generation_log, generation_stats, generation_stats_by_type, generation_stats_by_person
+    from anon, authenticated;
+grant select, insert, update on generation_log to service_role;
+grant select on generation_stats to service_role;
+grant select on generation_stats_by_type to service_role;
+grant select on generation_stats_by_person to service_role;
 
 -- Run after any of the above changes schema-cache-visible state
--- (CREATE/GRANT) — Supabase's Dashboard SQL editor usually fires this
--- automatically, but it doesn't hurt to be explicit, and it's required
--- if these statements are ever run through a direct psql connection
--- instead.
+-- (CREATE/GRANT/REVOKE/policy) — Supabase's Dashboard SQL editor
+-- usually fires this automatically, but it doesn't hurt to be explicit,
+-- and it's required if these statements are ever run through a direct
+-- psql connection instead.
 NOTIFY pgrst, 'reload schema';
