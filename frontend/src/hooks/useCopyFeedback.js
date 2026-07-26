@@ -24,11 +24,29 @@ async function copyWithFallback(text) {
   try {
     const textarea = document.createElement("textarea");
     textarea.value = text;
+    // iOS Safari's execCommand('copy') is picky about the source element
+    // in ways desktop browsers aren't: a zero-size or display:none node
+    // (opacity:0 alone isn't enough) can silently fail to select, and
+    // plain .select() on an off-screen textarea doesn't reliably select
+    // its full contents on iOS — setSelectionRange below is the
+    // well-documented workaround. Sized/positioned off-screen (not
+    // display:none/width:0) rather than fully hidden, and font-size 16px
+    // to stop iOS auto-zooming the page when it briefly gains focus.
     textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
+    textarea.style.top = "0";
+    textarea.style.left = "0";
+    textarea.style.width = "2em";
+    textarea.style.height = "2em";
+    textarea.style.padding = "0";
+    textarea.style.border = "none";
+    textarea.style.outline = "none";
+    textarea.style.boxShadow = "none";
+    textarea.style.background = "transparent";
+    textarea.style.fontSize = "16px";
     document.body.appendChild(textarea);
     textarea.focus();
     textarea.select();
+    textarea.setSelectionRange(0, text.length);
     const ok = document.execCommand("copy");
     textarea.remove();
     console.log("[COPY-DEBUG] execCommand('copy') returned:", ok);
