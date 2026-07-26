@@ -144,6 +144,15 @@ export default function PersonCard({
   // regenerated to match.
   const isSignable = person.generation?.status === "done"
     && SIGNABLE_TEMPLATE_IDS.has(person.generation?.templateId);
+  // TEMP DEBUG — remove once the "sign-link button missing in a real
+  // batch" report is confirmed fixed. Search "SIGNLINK-DEBUG" to find
+  // every line to strip.
+  console.log(
+    "[SIGNLINK-DEBUG]", displayName || `Osoba ${index + 1}`,
+    "status:", person.generation?.status,
+    "templateId:", person.generation?.templateId,
+    "isSignable:", isSignable,
+  );
 
   // Binds this card's id once via useCallback so AddressBuilder sees a
   // stable setCzPart/setOriginPart/setOriginCountry reference across

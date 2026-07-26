@@ -7,19 +7,13 @@ const FEEDBACK_MS = 1800;
 // document.execCommand('copy') via a throwaway textarea is the fallback
 // for exactly that case.
 async function copyWithFallback(text) {
-  // TEMP DEBUG — remove once the "button text never changes" report is
-  // confirmed fixed on a real deploy. Search "COPY-DEBUG" to find every
-  // line to strip.
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
-      console.log("[COPY-DEBUG] navigator.clipboard.writeText succeeded");
       return true;
-    } catch (err) {
-      console.error("[COPY-DEBUG] navigator.clipboard.writeText threw, falling back to execCommand:", err);
+    } catch {
+      // fall through to execCommand below
     }
-  } else {
-    console.log("[COPY-DEBUG] navigator.clipboard.writeText not available (no HTTPS/localhost, or unsupported) — using execCommand fallback");
   }
   try {
     const textarea = document.createElement("textarea");
@@ -49,10 +43,8 @@ async function copyWithFallback(text) {
     textarea.setSelectionRange(0, text.length);
     const ok = document.execCommand("copy");
     textarea.remove();
-    console.log("[COPY-DEBUG] execCommand('copy') returned:", ok);
     return ok;
-  } catch (err) {
-    console.error("[COPY-DEBUG] execCommand('copy') threw:", err);
+  } catch {
     return false;
   }
 }
@@ -72,7 +64,6 @@ export default function useCopyFeedback() {
 
   const copy = useCallback(async (text) => {
     const ok = await copyWithFallback(text);
-    console.log("[COPY-DEBUG] copyWithFallback returned:", ok, "— will setCopied(true)?", ok);
     if (!ok) return;
     setCopied(true);
     clearTimeout(timeoutRef.current);

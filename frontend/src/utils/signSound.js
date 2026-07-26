@@ -22,12 +22,7 @@ function getContext() {
 function keepPrimed() {
   const c = getContext();
   if (!c || c.state !== "suspended") return;
-  // TEMP DEBUG — see playSignChime's own note; search "SIGN-SOUND-DEBUG".
-  console.log("[SIGN-SOUND-DEBUG] gesture seen while context suspended, resuming. state:", c.state);
-  c.resume().then(
-    () => console.log("[SIGN-SOUND-DEBUG] gesture-triggered resume() resolved, state now:", c.state),
-    (err) => console.error("[SIGN-SOUND-DEBUG] gesture-triggered resume() rejected:", err)
-  );
+  c.resume().catch(() => {});
 }
 
 // NOT { once: true } — mobile browsers (iOS Safari especially) can
@@ -70,28 +65,14 @@ function playTone(c, freq, startAt, duration, peakGain) {
 // first so they overlap slightly instead of reading as two separate
 // blips.
 export function playSignChime() {
-  // TEMP DEBUG — remove once the "no sound at all" report is confirmed
-  // fixed on a real deploy. Search "SIGN-SOUND-DEBUG" to find every line
-  // to strip.
   const c = getContext();
-  console.log("[SIGN-SOUND-DEBUG] playSignChime called, context:", c && { state: c.state, currentTime: c.currentTime });
-  if (!c) {
-    console.log("[SIGN-SOUND-DEBUG] no AudioContext available (window.AudioContext/webkitAudioContext missing)");
-    return;
-  }
-  if (c.state === "suspended") {
-    console.log("[SIGN-SOUND-DEBUG] context suspended, calling resume()");
-    c.resume().then(
-      () => console.log("[SIGN-SOUND-DEBUG] resume() resolved, state now:", c.state),
-      (err) => console.error("[SIGN-SOUND-DEBUG] resume() rejected:", err)
-    );
-  }
+  if (!c) return;
+  if (c.state === "suspended") c.resume().catch(() => {});
   try {
     const now = c.currentTime;
     playTone(c, 880, now, 0.18, 0.35);
     playTone(c, 1318.5, now + 0.07, 0.26, 0.28);
-    console.log("[SIGN-SOUND-DEBUG] both tones scheduled at currentTime =", now, "state =", c.state);
-  } catch (err) {
-    console.error("[SIGN-SOUND-DEBUG] playTone threw:", err);
+  } catch {
+    // best-effort — a missed chime is not worth surfacing to the admin
   }
 }

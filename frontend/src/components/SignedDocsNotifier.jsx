@@ -82,26 +82,17 @@ export default function SignedDocsNotifier({ apiFetch }) {
   const [newlyArrivedTokens, setNewlyArrivedTokens] = useState(() => new Set());
 
   const detectNewSignatures = useCallback((list) => {
-    // TEMP DEBUG — remove once the "no sound at all" report is confirmed
-    // fixed on a real deploy. Search "SIGN-SOUND-DEBUG" to find every
-    // line to strip (see also utils/signSound.js).
-    console.log("[SIGN-SOUND-DEBUG] detectNewSignatures called, list length:", list?.length, "chimedUpTo:", chimedUpToRef.current);
     if (!list || list.length === 0) return;
     const newest = list[0].signed_at;
     if (chimedUpToRef.current === undefined) {
-      console.log("[SIGN-SOUND-DEBUG] first load ever — establishing baseline silently, no chime:", newest);
       chimedUpToRef.current = newest;
       return;
     }
-    if (!(newest > chimedUpToRef.current)) {
-      console.log("[SIGN-SOUND-DEBUG] nothing newer than baseline — no chime. newest:", newest, "baseline:", chimedUpToRef.current);
-      return;
-    }
+    if (!(newest > chimedUpToRef.current)) return;
     const freshTokens = list
       .filter((d) => d.signed_at > chimedUpToRef.current)
       .map((d) => d.token);
     chimedUpToRef.current = newest;
-    console.log("[SIGN-SOUND-DEBUG] NEW signature(s) detected, tokens:", freshTokens, "-> calling playSignChime()");
 
     playSignChime();
 
@@ -146,7 +137,7 @@ export default function SignedDocsNotifier({ apiFetch }) {
     try {
       detectNewSignatures(list);
     } catch (err) {
-      console.error("[SIGN-SOUND-DEBUG] detectNewSignatures threw:", err);
+      console.error("sign chime/animation failed:", err);
     }
 
     // Supplementary, same as StatsWidget's own by-type fetch — a failure
