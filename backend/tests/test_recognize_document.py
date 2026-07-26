@@ -15,7 +15,7 @@ would come back as the generic mock fallback instead.
 import time
 
 from app.config import settings
-from app.ocr_service import recognize_document
+from app.ocr_service import recognize_document, _looks_like_garbage_name
 
 # Smallest possible valid JPEG (1x1 pixel) — content doesn't matter, only
 # that recognize_document() gets far enough to call the OCR step.
@@ -158,6 +158,39 @@ async def test_recognize_document_retries_once_on_invalid_mrz_checksum(tmp_path,
     assert calls["count"] == 2, "expected exactly one retry"
     assert result["doc_number"] == "L898902C3"
     assert result["doc_number_verified"] is True
+
+
+async def test_recognize_document_applies_a_partially_fixed_retry(tmp_path, monkeypatch):
+    # Real batch-mode report: a badly-blurred visa MRZ line corrupted both
+    # its name ("Kk Kk Kkk") and its birth_date on the first read (no
+    # number line at all here — nothing for _extract_passport_number_
+    # from_mrz to find, so birth_date/doc_number both come back empty).
+    # The retry recovers a valid, checksummed number line (fixing
+    # birth_date and doc_number) but the name line is unchanged — still
+    # just as garbled. The two problems must be judged independently: the
+    # recovered birth_date has to survive even though the name never got
+    # fixed, since that's exactly what BatchDocFiller.jsx's canAutoMerge
+    # needs to match this card against its passport.
+    monkeypatch.setattr(settings, "OCR_MODE", "ocrspace")
+    stub, calls = _counting_ocr_stub([
+        _GARBLED_NAME_LINE,
+        f"{_GARBLED_NAME_LINE}\n{_GOOD_NUMBER_LINE}",
+    ])
+    monkeypatch.setattr("app.ocr_service._ocr_space_ocr", stub)
+
+    file_path = tmp_path / "test.jpg"
+    file_path.write_bytes(_TINY_JPEG)
+    result = await recognize_document(file_path, "test.jpg")
+
+    assert calls["count"] == 2, "expected exactly one retry"
+    # The fix that DID land — must not be thrown away just because the
+    # name problem didn't also get resolved by the same retry.
+    assert result["birth_date"] == "12.08.1974"
+    assert result["doc_number"] == "L898902C3"
+    assert result["doc_number_verified"] is True
+    # The fix that DIDN'T land — name stays whatever the first read had,
+    # never silently swapped in from a retry that didn't actually fix it.
+    assert _looks_like_garbage_name(result["first_name"]) or _looks_like_garbage_name(result["last_name"])
 
 
 async def test_recognize_document_does_not_retry_twice_for_multiple_bad_signals(tmp_path, monkeypatch):

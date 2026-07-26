@@ -1313,13 +1313,40 @@ async def recognize_document(file_path: Path, original_filename: str) -> dict:
                 retry_mrz_doc_number, retry_verified, _, _, _ = _extract_passport_number_from_mrz(retry_text)
                 checksum_fixed = bool(retry_mrz_doc_number and retry_verified)
 
-                if (
-                    (not name_garbled or name_fixed)
-                    and (not missing_field or missing_field_fixed)
-                    and (not checksum_failed or checksum_fixed)
-                ):
-                    fields = retry_fields
-                    logger.info("retry produced a better read - using it")
+                # Applied per-problem, not as one all-or-nothing swap of the
+                # whole dict — real batch-mode report: a badly-blurred visa
+                # MRZ line corrupted both its name ("Kk Kk Kkk") and its
+                # birth_date on the first read; the retry recovered a valid
+                # birth_date but still misread the name. The previous rule
+                # ("only replace fields if EVERY flagged problem got fixed
+                # together") threw the recovered birth_date away right along
+                # with the still-bad name, leaving batch mode's auto-merge
+                # (BatchDocFiller.jsx's canAutoMerge, which only ever
+                # compares birth_date) with nothing to match against even
+                # though the retry genuinely had the answer. Each
+                # independently-resolved signal is now taken on its own
+                # merits; one that didn't get fixed just leaves that piece
+                # of the original read in place, same as before.
+                if name_garbled and name_fixed:
+                    fields["first_name"] = retry_first
+                    fields["last_name"] = retry_last
+                if missing_field and missing_field_fixed:
+                    if not fields.get("birth_date") and retry_fields.get("birth_date"):
+                        fields["birth_date"] = retry_fields["birth_date"]
+                    if fields.get("doc_type") == "Vízum":
+                        if not fields.get("visa_number") and retry_fields.get("visa_number"):
+                            fields["visa_number"] = retry_fields["visa_number"]
+                    elif not fields.get("doc_number") and retry_fields.get("doc_number"):
+                        fields["doc_number"] = retry_fields["doc_number"]
+                        fields["doc_number_verified"] = retry_fields["doc_number_verified"]
+                if checksum_failed and checksum_fixed:
+                    fields["doc_number"] = retry_mrz_doc_number
+                    fields["doc_number_verified"] = True
+                if name_fixed or missing_field_fixed or checksum_fixed:
+                    logger.info(
+                        "retry applied per-signal (name_fixed=%s, missing_field_fixed=%s, checksum_fixed=%s)",
+                        name_fixed, missing_field_fixed, checksum_fixed,
+                    )
 
         logger.info("TOTAL: %.1fs", time.time() - t0)
         return fields
