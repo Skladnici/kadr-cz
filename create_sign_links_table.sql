@@ -27,9 +27,15 @@
 --   1. The admin downloads it — deleted right after serving the file.
 --   2. 24h since signed_at, once signed.
 --   3. 24h since created_at, if never signed.
+--   4. MAX_POST_SIGN_ACCESS_COUNT (3) visits to the already-signed link
+--      (access_count below) — independent of #2, whichever the employee
+--      hits first ends it. Only counts entries after signing; reading/
+--      signing itself is never limited by this.
 -- No separate scheduler for #2/#3 — checked lazily whenever a token is
 -- looked up, plus an opportunistic sweep on link creation and on every
--- poll of the corner "recently signed" notifier.
+-- poll of the corner "recently signed" notifier. #4 has no sweep at all
+-- (it's not a time-based expiry) — it's just a plain read-time check in
+-- _sign_link_is_usable against the counter below.
 
 create table if not exists sign_links (
     token text primary key,
@@ -39,9 +45,14 @@ create table if not exists sign_links (
     employee_name text,
     signature_image text,                -- base64 PNG; set once, when the employee signs
     signed_at timestamptz,               -- null until signed
-    employee_downloaded_at timestamptz,  -- informational only (see main.py) — does not gate access; the employee can re-download until the row itself expires or the admin downloads it
+    employee_downloaded_at timestamptz,  -- informational only (see main.py) — does not gate access itself; access_count below is what does
+    access_count integer not null default 0,  -- post-sign visits via GET /api/podepsat/{token} (see _register_post_sign_access) — capped at MAX_POST_SIGN_ACCESS_COUNT (3); never incremented before signing
     created_at timestamptz not null default now()
 );
+
+-- Additive migration for rows/databases created before access_count
+-- existed — safe to re-run, and a no-op once already applied.
+alter table sign_links add column if not exists access_count integer not null default 0;
 
 create index if not exists sign_links_company_employee_idx on sign_links (company_name, employee_name);
 
