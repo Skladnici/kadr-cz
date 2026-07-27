@@ -16,6 +16,7 @@ import StrpeniWarningIcon from "./components/StrpeniWarningIcon";
 import StatsWidget from "./components/StatsWidget";
 import SignedDocsNotifier from "./components/SignedDocsNotifier";
 import BatchDocFiller from "./components/BatchDocFiller";
+import FileScanThumbnails from "./components/FileScanThumbnails";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE, SIGNABLE_TEMPLATE_IDS } from "./constants/fields";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { mergeRecognizedResults } from "./utils/recognizeMerge";
@@ -109,7 +110,16 @@ export default function SimpleDocFiller() {
   // Synthetic (not the real backend OCR progress, which isn't exposed) —
   // eases up toward 90% while step 2 is showing, then jumps to 100% right
   // before handing off to the form once recognition actually finishes.
+  // Resets per-file (see scanningFileIndex below), not just once for the
+  // whole step, so each file in a multi-file upload gets its own visible
+  // climb rather than one shared bar that only means something for the
+  // first file.
   const [ocrProgress, setOcrProgress] = useState(0);
+  // Which file in pendingFiles handleConfirmUpload's sequential upload
+  // loop is currently on — drives FileScanThumbnails' scan-line (see
+  // that component) so several uploaded files show as separate compact
+  // thumbnails scanning one at a time, not one shared preview.
+  const [scanningFileIndex, setScanningFileIndex] = useState(0);
   // Only true when step 3 was just reached via applyRecognizedResults (a
   // real OCR/paste result) — NOT via skipUpload's blank manual entry —
   // since the staggered reveal + green flash below is meant to read as
@@ -174,10 +184,11 @@ export default function SimpleDocFiller() {
   }, [authHeader]);
 
   // Synthetic OCR progress (see ocrProgress's own comment above) — eases
-  // toward 90% while step 2 is on screen, resets the moment it isn't.
-  // handleConfirmUpload pushes it the rest of the way to 100% itself once
-  // the real request actually resolves, rather than this timer ever
-  // guessing at 100% on its own.
+  // toward 90% while step 2 is on screen, resets the moment it isn't OR
+  // whenever handleConfirmUpload's loop moves on to the next file (see
+  // scanningFileIndex). handleConfirmUpload pushes it the rest of the way
+  // to 100% itself once the real request for the LAST file actually
+  // resolves, rather than this timer ever guessing at 100% on its own.
   useEffect(() => {
     if (step !== 2) {
       setOcrProgress(0);
@@ -188,7 +199,7 @@ export default function SimpleDocFiller() {
       setOcrProgress((p) => (p >= 90 ? p : p + Math.max(1, Math.round((90 - p) * 0.12))));
     }, 180);
     return () => clearInterval(id);
-  }, [step]);
+  }, [step, scanningFileIndex]);
 
   useEffect(() => () => clearTimeout(dropResetTimerRef.current), []);
 
@@ -352,10 +363,12 @@ export default function SimpleDocFiller() {
     if (pendingFiles.length === 0 && !pastedText.trim()) return;
     setStep(2);
     setError(null);
+    setScanningFileIndex(0);
     try {
       const results = [];
-      for (const file of pendingFiles) {
-        const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, file, authHeader);
+      for (let i = 0; i < pendingFiles.length; i++) {
+        setScanningFileIndex(i);
+        const data = await uploadFileViaXHR(`${API_BASE}/api/recognize`, pendingFiles[i], authHeader);
         results.push(data);
       }
       if (pastedText.trim()) {
@@ -912,25 +925,27 @@ export default function SimpleDocFiller() {
             </div>
           )}
 
-          {/* Step 2: scanning — sweeps a scan line down the actual uploaded
-              photo (previewUrls[0]), not a generic icon box, so it reads
-              as "reading this document" rather than a plain spinner. */}
+          {/* Step 2: scanning — one compact thumbnail per uploaded file
+              (see FileScanThumbnails), each animating the scan line in
+              turn as handleConfirmUpload's upload loop works through
+              them — a passport + visa show as two small thumbnails
+              scanning one after another, not one shared preview that
+              only ever reflected the first file. */}
           {step === 2 && (
             <div className="p-7 md:p-9">
               <div className="flex flex-col items-center justify-center gap-4 py-10">
-                <div className="relative mx-auto h-44 w-full max-w-[200px] overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-                  {previewUrls[0]?.url ? (
-                    <img src={previewUrls[0].url} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center">
-                      <FileText size={28} className="text-slate-300" />
-                    </div>
-                  )}
-                  <div className="ocr-scan-line" aria-hidden="true" />
-                </div>
+                {previewUrls.length > 0 ? (
+                  <FileScanThumbnails files={previewUrls} activeIndex={scanningFileIndex} />
+                ) : (
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-300">
+                    <FileText size={24} />
+                  </div>
+                )}
                 <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220] tabular-nums">
                   <Loader2 size={14} className="animate-spin text-slate-400" />
-                  Rozpoznávání… {ocrProgress}%
+                  {previewUrls.length > 1
+                    ? `Soubor ${Math.min(scanningFileIndex + 1, previewUrls.length)} z ${previewUrls.length} · ${ocrProgress}%`
+                    : `Rozpoznávání… ${ocrProgress}%`}
                 </div>
               </div>
             </div>

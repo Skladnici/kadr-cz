@@ -6,6 +6,7 @@ import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
 import VisaExpiredWarningIcon from "./VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./StrpeniWarningIcon";
+import FileScanThumbnails from "./FileScanThumbnails";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
 
@@ -241,6 +242,21 @@ export default function PersonCard({
           <X size={13} />
         </button>
       </div>
+
+      {/* Same compact scanning thumbnail single mode's own step 2 uses
+          (see FileScanThumbnails) — a card only ever holds exactly one
+          file while it's still "recognizing" here (auto-merge into a
+          multi-file card only happens afterward, once birth dates agree
+          — see BatchDocFiller's own canAutoMerge comment), so
+          activeIndex is always 0. Its own sub-row rather than living
+          inside the expanded detail section below, so it's visible
+          without needing to click the card open, and disappears again
+          (no layout to leave behind) the moment recognition finishes. */}
+      {person.status === "recognizing" && (
+        <div className="border-t border-slate-100 px-3.5 py-2.5 md:px-5">
+          <FileScanThumbnails files={person.previews} activeIndex={0} />
+        </div>
+      )}
 
       {person.expanded && (
         <div className="px-3.5 pb-4 md:px-5 space-y-4 border-t border-slate-100 pt-4">
