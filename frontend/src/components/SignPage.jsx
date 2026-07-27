@@ -312,55 +312,80 @@ export default function SignPage({ token }) {
     return cropCanvas.toDataURL("image/png");
   };
 
+  // Neither of these two actions had ANY retry until now — every other
+  // network call on this page (the status check and the per-document PDF
+  // fetch above) backs off and retries several times, specifically
+  // because a real employee hitting this page on a flaky mobile
+  // connection is an already-documented recurring problem here. A bare
+  // single-attempt fetch for the two actions that matter most — actually
+  // submitting the signature, and getting the signed copy afterward —
+  // was the one gap that wasn't hardened the same way, and a real
+  // incident traced a "page just breaks" report back to exactly that.
+  const SIGN_ACTION_RETRY_DELAYS = [0, 1500, 3000, 6000];
+
   const submitSignature = async () => {
     setActionError(null);
     setPhase("submitting");
-    try {
-      const dataUrl = croppedSignatureDataUrl();
-      const res = await fetch(`${API_BASE}/api/podepsat/${token}/sign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signature_image: dataUrl }),
-      });
-      if (!res.ok) {
-        // A 400 here can mean "already signed" (e.g. another tab/device
-        // beat this one to it, or a double-submit) rather than a real
-        // failure — the document IS signed either way, just not by this
-        // exact request, so check before showing a scary error that
-        // retrying would only repeat.
-        if (res.status === 400) {
-          const check = await fetch(`${API_BASE}/api/podepsat/${token}`).then((r) => r.json()).catch(() => null);
-          if (check?.signed) {
-            setPhase("done");
-            return;
+    const dataUrl = croppedSignatureDataUrl();
+
+    for (let attempt = 0; attempt < SIGN_ACTION_RETRY_DELAYS.length; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, SIGN_ACTION_RETRY_DELAYS[attempt]));
+      try {
+        const res = await fetch(`${API_BASE}/api/podepsat/${token}/sign`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ signature_image: dataUrl }),
+        });
+        if (!res.ok) {
+          // A 400 here can mean "already signed" — another tab/device
+          // beat this one to it, a double-submit, OR (now that this
+          // retries) an earlier attempt's request actually landed but its
+          // response never made it back — the document IS signed either
+          // way, just not necessarily by THIS attempt, so check before
+          // treating it as something another retry would fix.
+          if (res.status === 400) {
+            const check = await fetch(`${API_BASE}/api/podepsat/${token}`).then((r) => r.json()).catch(() => null);
+            if (check?.signed) {
+              setPhase("done");
+              return;
+            }
           }
+          throw new Error("sign failed");
         }
-        throw new Error("sign failed");
+        setPhase("done");
+        return;
+      } catch {
+        if (attempt === SIGN_ACTION_RETRY_DELAYS.length - 1) {
+          setActionError("Nepodařilo se uložit podpis. Zkuste to prosím znovu.");
+          setPhase("signing");
+        }
       }
-      setPhase("done");
-    } catch {
-      setActionError("Nepodařilo se uložit podpis. Zkuste to prosím znovu.");
-      setPhase("signing");
     }
   };
 
   const downloadSigned = async () => {
     setActionError(null);
-    try {
-      const res = await fetch(`${API_BASE}/api/podepsat/${token}/download`);
-      if (!res.ok) throw new Error("download failed");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "podepsane_dokumenty.zip";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setPhase("downloaded");
-    } catch {
-      setActionError("Stažení se nezdařilo. Zkuste to prosím znovu.");
+    for (let attempt = 0; attempt < SIGN_ACTION_RETRY_DELAYS.length; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, SIGN_ACTION_RETRY_DELAYS[attempt]));
+      try {
+        const res = await fetch(`${API_BASE}/api/podepsat/${token}/download`);
+        if (!res.ok) throw new Error("download failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "podepsane_dokumenty.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setPhase("downloaded");
+        return;
+      } catch {
+        if (attempt === SIGN_ACTION_RETRY_DELAYS.length - 1) {
+          setActionError("Stažení se nezdařilo. Zkuste to prosím znovu.");
+        }
+      }
     }
   };
 
