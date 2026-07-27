@@ -305,16 +305,21 @@ export default function SignedDocsNotifier({ apiFetch }) {
           <Bell size={13} />
           {pingBadge && <span className="signed-docs-ping-badge" aria-hidden="true" />}
         </span>
-        {totals ? (
-          // Signed count only — totals.generated is still fetched (it
-          // gates hasAnyHistory above) but isn't shown here anymore:
-          // that's StatsWidget's own metric already, and showing it
-          // again in this corner made it look like two different
-          // "generated" counts rather than one shared number.
-          <span className="tabular-nums whitespace-nowrap">{totals.signed} podepsáno</span>
-        ) : (
-          <span className="tabular-nums">{(signedDocs || []).length}</span>
-        )}
+        {/* Always signedDocs.length — the exact same array that drives
+            the glow/list above — never totals.signed. A real incident:
+            totals.signed comes from /api/stats/by-person's all_signed,
+            which depends on _apply_signed_status finding a generation_log
+            row with a matching company_name/employee_name after the
+            employee signs (see that function's own docstring) — a
+            mismatch there (formatting, timing, a row that was never
+            there to match) silently updates zero rows, no error, and
+            this showed "0 podepsáno" for a signature that had, in fact,
+            just genuinely happened — exactly what get_recent_signed_
+            links' own docstring already warned this second metric would
+            be "actively misleading" for. signedDocs came from
+            /api/sign-links/recent, sign_links.signed_at only, no
+            secondary join to go stale. */}
+        <span className="tabular-nums whitespace-nowrap">{(signedDocs || []).length} podepsáno</span>
         {expanded ? <ChevronUp size={12} className="shrink-0" /> : <ChevronDown size={12} className="shrink-0" />}
       </button>
     </div>
