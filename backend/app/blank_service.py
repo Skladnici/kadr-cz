@@ -29,6 +29,7 @@ from typing import Optional
 from docx import Document as DocxDocument
 from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage
+from PIL import Image as PILImage
 
 from app.config import settings
 
@@ -363,6 +364,24 @@ def convert_to_pdf(docx_path: Path, timeout: int = 20) -> Optional[Path]:
 # the cost of one extra LibreOffice conversion per view/download.
 
 
+# Fixed footprint for the signature on the printed line, in millimeters.
+# A *height* cap is needed alongside the width one now that the frontend
+# crops the signature tightly to just the drawn ink (see SignPage.jsx's
+# croppedSignatureDataUrl) rather than exporting the whole signing
+# canvas — that canvas was always a wide, mostly-empty rectangle, so a
+# width-only size used to be enough; a tightly-cropped stroke can come
+# out narrow-and-tall instead (a quick vertical mark, a stylized
+# initial, ...), and a real report found exactly that: signing produced
+# a signature rendered many times taller than the line it was meant to
+# sit on, because width alone doesn't bound height when the image's
+# native aspect ratio is left free to scale it. Rather than assume how
+# wide vs. tall any given signature will be, both dimensions are capped
+# and the image is scaled (up OR down) to fit inside that box while
+# keeping its own aspect ratio — the tighter of the two axes wins.
+SIGNATURE_MAX_WIDTH_MM = 35
+SIGNATURE_MAX_HEIGHT_MM = 15
+
+
 def _signature_or_placeholder(tpl: DocxTemplate, signature_b64: Optional[str]):
     """Returns an InlineImage for a base64-encoded signature PNG, or the
     same dotted-line placeholder fill_blank()'s unsigned contracts show,
@@ -371,7 +390,20 @@ def _signature_or_placeholder(tpl: DocxTemplate, signature_b64: Optional[str]):
         return SIGNATURE_PLACEHOLDER
     try:
         image_bytes = base64.b64decode(signature_b64, validate=True)
-        return InlineImage(tpl, BytesIO(image_bytes), width=Mm(35))
+        width_mm, height_mm = SIGNATURE_MAX_WIDTH_MM, SIGNATURE_MAX_HEIGHT_MM
+        try:
+            with PILImage.open(BytesIO(image_bytes)) as img:
+                px_w, px_h = img.size
+            if px_w > 0 and px_h > 0:
+                scale = min(SIGNATURE_MAX_WIDTH_MM / px_w, SIGNATURE_MAX_HEIGHT_MM / px_h)
+                width_mm = px_w * scale
+                height_mm = px_h * scale
+        except Exception:
+            # Can't introspect this image's pixel size for some reason —
+            # fall back to the fixed box above rather than let a sizing
+            # hiccup turn into a failed generation.
+            logger.warning("could not read signature image dimensions — using fixed box", exc_info=True)
+        return InlineImage(tpl, BytesIO(image_bytes), width=Mm(width_mm), height=Mm(height_mm))
     except Exception:
         logger.warning("signature_image failed to decode — falling back to placeholder", exc_info=True)
         return SIGNATURE_PLACEHOLDER
