@@ -377,3 +377,14 @@ body {
 .toast-out {
   animation: toastOut .25s ease-in both;
 }
+
+/* Read-before-signing PDF preview (PdfReader.jsx / SignPage.jsx) — pages
+   are plain <canvas> elements, not an <img>, so browsers don't offer a
+   native "Save image as" on right-click in the first place; user-select/
+   drag are disabled too as a small extra layer against a quick drag-out
+   or text-selection-based copy attempt, on top of that (not instead of
+   it — see PdfReader.jsx's own docstring for the actual fix). */
+.pdf-reader-page {
+  user-select: none;
+  -webkit-user-drag: none;
+}

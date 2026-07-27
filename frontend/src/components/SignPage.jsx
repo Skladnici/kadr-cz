@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Download, FileText, Loader2, Lock, PenLine, RotateCcw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, Download, Loader2, Lock, PenLine, RotateCcw, ShieldCheck } from "lucide-react";
 import { API_BASE } from "../utils/api";
 import { BUNDLE_TEMPLATE_IDS } from "../constants/fields";
+import PdfReader from "./PdfReader";
 
 const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
 
@@ -132,13 +133,16 @@ export default function SignPage({ token }) {
   // set docState last.
   const docFetchGenerationRef = useRef({});
 
-  // Fetched as a blob (not used directly as an <iframe src>) so the "open
-  // to read" link below works as a plain same-origin blob URL — opening
-  // it in a new tab is what actually renders a PDF reliably on every
-  // device, including in-app browsers (WhatsApp/Telegram, etc.) that
-  // frequently show nothing at all for an embedded cross-origin PDF
-  // iframe, which is what a blank-screen report on a real phone almost
-  // always turns out to be.
+  // Fetched as raw bytes (arrayBuffer), never a blob: URL — a blob URL is
+  // still something the browser could be handed off to open directly
+  // (address bar, a devtools Network-tab replay, "open in new tab"),
+  // which is exactly the security bug this replaced: handing a PDF to the
+  // browser as a navigable resource lets its native viewer take over,
+  // toolbar (download/print/draw) included, regardless of what this
+  // page's own UI shows. Keeping only the raw bytes in memory and
+  // rendering them via PdfReader (plain <canvas>, see that component's
+  // own docstring) means the browser never gets a chance to recognize
+  // this as a PDF at all before signing.
   const fetchDoc = useCallback((key) => {
     const generation = (docFetchGenerationRef.current[key] || 0) + 1;
     docFetchGenerationRef.current[key] = generation;
@@ -164,18 +168,18 @@ export default function SignPage({ token }) {
         .then((res) => {
           clearTimeout(timeoutId);
           if (!res.ok) throw new Error("pdf failed");
-          return res.blob();
+          return res.arrayBuffer();
         })
-        .then((blob) => {
+        .then((buffer) => {
           if (!stillCurrent()) return;
-          setDocState((s) => ({ ...s, [key]: { url: URL.createObjectURL(blob), error: false } }));
+          setDocState((s) => ({ ...s, [key]: { data: new Uint8Array(buffer), error: false } }));
         })
         .catch(() => {
           clearTimeout(timeoutId);
           if (!stillCurrent()) return;
           attempt += 1;
           if (attempt >= DOC_RETRY_DELAYS.length) {
-            setDocState((s) => ({ ...s, [key]: { url: null, error: true } }));
+            setDocState((s) => ({ ...s, [key]: { data: null, error: true } }));
             return;
           }
           setTimeout(attemptFetch, DOC_RETRY_DELAYS[attempt]);
@@ -212,7 +216,7 @@ export default function SignPage({ token }) {
     return () => { cancelled = true; };
   }, [phase, info, fetchDoc]);
 
-  const allDocsLoaded = docTabs.length > 0 && docTabs.every((t) => docState[t.key]?.url);
+  const allDocsLoaded = docTabs.length > 0 && docTabs.every((t) => docState[t.key]?.data);
   const activeDocState = docState[activeDoc];
 
   // Sized once when the signing canvas mounts — devicePixelRatio-scaled
@@ -443,7 +447,7 @@ export default function SignPage({ token }) {
                       }`}
                     >
                       {tab.label}
-                      {state?.url && <Check size={11} className={isActive ? "text-emerald-300" : "text-emerald-600"} />}
+                      {state?.data && <Check size={11} className={isActive ? "text-emerald-300" : "text-emerald-600"} />}
                       {state?.error && <AlertTriangle size={11} className={isActive ? "text-red-300" : "text-red-500"} />}
                       {!state && <Loader2 size={11} className="animate-spin" />}
                     </button>
@@ -466,42 +470,28 @@ export default function SignPage({ token }) {
                   <RotateCcw size={13} /> Zkusit znovu
                 </button>
               </div>
-            ) : !activeDocState?.url ? (
+            ) : !activeDocState?.data ? (
               <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-10 text-[13px] text-slate-500">
                 <Loader2 size={16} className="animate-spin" /> Načítám dokument…
               </div>
             ) : (
-              <>
-                {/* The one thing that actually has to work everywhere — a
-                    same-origin blob URL opened as a normal top-level
-                    navigation, which every mobile browser (and in-app
-                    browser) knows how to hand off to its own PDF viewer. */}
-                <a
-                  href={activeDocState.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-3 text-[13.5px] font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                >
-                  <FileText size={15} /> Otevřít k přečtení ({docTabs.find((t) => t.key === activeDoc)?.label})
-                </a>
-                {/* Inline preview — a bonus on wider screens where an
-                    embedded PDF reliably renders; deliberately not shown
-                    on narrow/mobile viewports, where it's the part most
-                    likely to render blank, instead of being mistaken for
-                    the whole page failing. The link above is what's
-                    actually required to proceed either way. */}
-                <div
-                  className="mt-3 hidden md:block rounded-xl border border-slate-200 overflow-hidden bg-slate-50"
-                  style={{ height: "50vh", minHeight: 320 }}
-                >
-                  <iframe title="Náhled dokumentu k podpisu" src={activeDocState.url} className="w-full h-full" />
-                </div>
-              </>
+              // Rendered entirely as <canvas> pages (see PdfReader.jsx) —
+              // deliberately NOT an <a href>/<iframe> pointing at the PDF
+              // itself. Either of those hands the file to the browser's
+              // own native PDF viewer, which comes with its own download/
+              // print/annotate toolbar layered over the document —
+              // exactly the "read-only until signed" bypass this page
+              // used to have.
+              <PdfReader
+                data={activeDocState.data}
+                className="w-full"
+                style={{ height: "60vh", minHeight: 360 }}
+              />
             )}
 
             {!allDocsLoaded && docTabs.length > 1 && (
               <p className="mt-2 text-[11.5px] text-slate-400">
-                Načítání dokumentů: {docTabs.filter((t) => docState[t.key]?.url).length}/{docTabs.length}
+                Načítání dokumentů: {docTabs.filter((t) => docState[t.key]?.data).length}/{docTabs.length}
               </p>
             )}
 
