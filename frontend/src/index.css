@@ -281,3 +281,99 @@ body {
     signedDocItemIn .4s cubic-bezier(.16, 1, .3, 1) both,
     signedDocItemHighlight 1s ease-out both;
 }
+
+/* --------------------------------------------------------- SimpleDocFiller UX
+   Five self-contained animations for the upload -> OCR -> form -> generate
+   flow (see SimpleDocFiller.jsx). Plain CSS transitions/keyframes + a bit
+   of classList-toggling from React state — no animation library. */
+
+/* 1. Drag & drop upload zone (SimpleDocFiller.jsx's dropzone). The icon's
+   own scale/rotate is driven by a plain `transition-transform` utility
+   class already on the wrapper in JSX — toggling .dropzone-icon-active
+   on/off is enough to animate both directions (in on drag-over, back out
+   ~0.9s after a drop — see DROP_HOLD_MS in SimpleDocFiller.jsx). */
+.dropzone-icon-active {
+  transform: scale(1.15) rotate(-4deg);
+}
+
+/* 2. OCR scanning line — sweeps top to bottom over the actual uploaded
+   preview photo (step 2), not a generic placeholder box. Fades in/out at
+   the edges so it doesn't look like it's snapping back to the top. Blue
+   (#185FA5), same accent already used for this exact scan line before
+   this pass — a process-in-progress indicator, not a success signal, so
+   it stays out of the green "done" palette. */
+@keyframes ocrScanLine {
+  0%   { top: 0%;   opacity: 0; }
+  8%   { opacity: 1; }
+  92%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+.ocr-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, #185FA5, transparent);
+  box-shadow: 0 0 8px 1px rgba(24, 95, 165, .5);
+  animation: ocrScanLine 1.2s linear infinite;
+  pointer-events: none;
+}
+
+/* 3. Recognized fields appearing one at a time (step 3, person fields
+   only — the ones OCR actually fills in). Each field's animation-delay is
+   set inline per-field (idx * 0.35s) in SimpleDocFiller.jsx, so this class
+   only supplies the animation itself. Split into two classes deliberately:
+   the label wrapper's fade+slide uses `both` (it should stay at its "in"
+   state forever after), but the input's own background flash must NOT use
+   `both` — an input can carry its own bg-color (the green "verified"
+   checksum tint, the amber validation-warning tint), and pinning the
+   animation's final "transparent" frame in place would permanently hide
+   that underlying color once the flash finishes. Without `both`/`forwards`
+   there, the browser just lets the normal stylesheet cascade take back
+   over the moment the animation ends. */
+@keyframes fieldRevealIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.field-reveal-in {
+  animation: fieldRevealIn .35s cubic-bezier(.16, 1, .3, 1) both;
+}
+@keyframes fieldRevealHighlight {
+  0%   { background-color: #eaf3de; }
+  100% { background-color: transparent; }
+}
+.field-reveal-highlight {
+  animation: fieldRevealHighlight .5s ease-out;
+}
+
+/* 4. "Vytvořit dokument" button's success checkmark — a quick pop-in
+   rather than a flat swap, for the ~1.4s it shows "Hotovo" before the
+   button reverts (see GENERATE_SUCCESS_HOLD_MS in SimpleDocFiller.jsx). */
+@keyframes buttonCheckPop {
+  0%   { transform: scale(.5); opacity: 0; }
+  60%  { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.button-check-pop {
+  animation: buttonCheckPop .35s cubic-bezier(.34, 1.56, .64, 1) both;
+}
+
+/* 5. Toast notifications (Toast.jsx) — fade + slide up from the bottom
+   edge, and the reverse on the way out. Only the vertical offset is
+   animated here; the horizontal centering (left-1/2 -translate-x-1/2) is
+   a static Tailwind utility on the toast's own wrapper in Toast.jsx, kept
+   separate so this transform doesn't have to re-declare it every frame. */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(10px); }
+}
+.toast-in {
+  animation: toastIn .3s cubic-bezier(.16, 1, .3, 1) both;
+}
+.toast-out {
+  animation: toastOut .25s ease-in both;
+}

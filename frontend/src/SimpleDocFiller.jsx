@@ -7,6 +7,7 @@ import {
 
 import LoginForm from "./components/LoginForm";
 import WelcomeToast from "./components/WelcomeToast";
+import Toast from "./components/Toast";
 import AddressBuilder from "./components/AddressBuilder";
 import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
@@ -38,9 +39,26 @@ import useSignedStatus from "./hooks/useSignedStatus";
 // fill) so the gradient always points at exactly one action per screen.
 const PRIMARY_GRADIENT = { background: "var(--gradient-primary)" };
 
+// Success-only accent (see the app's color system: green means "done",
+// nowhere else) — the "Vytvořit dokument" button's brief post-click state
+// and the generation-success toast both use this same pair, and it
+// matches the "Ověřeno kontrolním součtem" badge already elsewhere in this
+// file rather than inventing a second green.
+const SUCCESS_SOLID = { background: "#639922" };
+
 // sessionStorage key for the site-wide Basic Auth header — see the
 // authHeader useState/useEffect pair below.
 const AUTH_STORAGE_KEY = "kadr_cz_auth_header";
+
+// How long the dropzone stays visually "active" (bg + icon tilt) after a
+// drop, before easing back — a drop should read as a brief confirmation,
+// not vanish the instant the mouse button is released.
+const DROP_HOLD_MS = 900;
+
+// How long "Vytvořit dokument" shows its checkmark + "Hotovo" before
+// reverting/advancing to step 4 — long enough to actually register as a
+// distinct state, short enough not to feel like an extra wait.
+const GENERATE_SUCCESS_HOLD_MS = 1400;
 
 export default function SimpleDocFiller() {
   // "single" is the original one-person flow below, untouched; "batch"
@@ -78,6 +96,36 @@ export default function SimpleDocFiller() {
   // it and StatsWidget already re-fetches on mount regardless.
   const [statsRefreshSignal, setStatsRefreshSignal] = useState(0);
   const fileInputRef = useRef(null);
+
+  // --- UX animation state (drag&drop / OCR scan / field reveal / generate
+  // button / toast — see index.css's own "SimpleDocFiller UX" section for
+  // the paired CSS) ---
+  // True while a file is being dragged over the dropzone, and held true
+  // for DROP_HOLD_MS after an actual drop (see the onDrop handler below)
+  // so the highlight reads as a confirmation rather than disappearing the
+  // instant the mouse button lifts.
+  const [dragActive, setDragActive] = useState(false);
+  const dropResetTimerRef = useRef(null);
+  // Synthetic (not the real backend OCR progress, which isn't exposed) —
+  // eases up toward 90% while step 2 is showing, then jumps to 100% right
+  // before handing off to the form once recognition actually finishes.
+  const [ocrProgress, setOcrProgress] = useState(0);
+  // Only true when step 3 was just reached via applyRecognizedResults (a
+  // real OCR/paste result) — NOT via skipUpload's blank manual entry —
+  // since the staggered reveal + green flash below is meant to read as
+  // "these values just got recognized", not decorate an empty form.
+  const [justRecognized, setJustRecognized] = useState(false);
+  // True for GENERATE_SUCCESS_HOLD_MS right after a successful /api/fill,
+  // before step flips to 4 — lets the button itself show a checkmark
+  // instead of jumping straight to the "done" screen.
+  const [generateSuccess, setGenerateSuccess] = useState(false);
+  const [toast, setToast] = useState(null); // { id, message, tone } | null
+  const toastIdRef = useRef(0);
+
+  const showToast = useCallback((message, tone = "success") => {
+    toastIdRef.current += 1;
+    setToast({ id: toastIdRef.current, message, tone });
+  }, []);
 
   // Softens the form's fields/card in the evening/night — checked once on
   // page load (no live timer, per design decision), so it doesn't shift
@@ -124,6 +172,25 @@ export default function SimpleDocFiller() {
       // sessionStorage unavailable — session just won't survive a reload
     }
   }, [authHeader]);
+
+  // Synthetic OCR progress (see ocrProgress's own comment above) — eases
+  // toward 90% while step 2 is on screen, resets the moment it isn't.
+  // handleConfirmUpload pushes it the rest of the way to 100% itself once
+  // the real request actually resolves, rather than this timer ever
+  // guessing at 100% on its own.
+  useEffect(() => {
+    if (step !== 2) {
+      setOcrProgress(0);
+      return undefined;
+    }
+    setOcrProgress(4);
+    const id = setInterval(() => {
+      setOcrProgress((p) => (p >= 90 ? p : p + Math.max(1, Math.round((90 - p) * 0.12))));
+    }, 180);
+    return () => clearInterval(id);
+  }, [step]);
+
+  useEffect(() => () => clearTimeout(dropResetTimerRef.current), []);
 
   // Every authenticated request goes through here instead of a bare
   // fetch() — attaches the Authorization header we built at login, and
@@ -246,6 +313,7 @@ export default function SimpleDocFiller() {
     setWarnings(merged.addressHint ? [...merged.warnings, merged.addressHint] : merged.warnings);
     setRawText(merged.rawText);
     setOcrMode(merged.ocrMode);
+    setJustRecognized(true);
     setStep(3);
   }, [templateId]);
 
@@ -303,6 +371,12 @@ export default function SimpleDocFiller() {
         }
         results.push(await res.json());
       }
+      // Briefly show the scan line/counter finishing at 100% instead of
+      // jumping straight from "82%" to the form the instant the request
+      // resolves — see ocrProgress's own comment for why this is
+      // synthetic in the first place.
+      setOcrProgress(100);
+      await new Promise((resolve) => setTimeout(resolve, 300));
       applyRecognizedResults(results);
     } catch (e) {
       if (e.message === "timeout") {
@@ -332,6 +406,7 @@ export default function SimpleDocFiller() {
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setPendingFiles([]);
     setPastedText("");
+    setJustRecognized(false);
     setStep(3);
   };
 
@@ -356,13 +431,20 @@ export default function SimpleDocFiller() {
       }
       const data = await res.json();
       setResult(data);
-      setStep(4);
       setStatsRefreshSignal((n) => n + 1);
+      setLoading(false);
+      // Hold the button in its "Hotovo" state for a beat before actually
+      // advancing to step 4 — see GENERATE_SUCCESS_HOLD_MS's own comment.
+      setGenerateSuccess(true);
+      showToast("Dokument vygenerován");
+      setTimeout(() => {
+        setGenerateSuccess(false);
+        setStep(4);
+      }, GENERATE_SUCCESS_HOLD_MS);
     } catch (e) {
       if (e.status !== 401) {
         setError(describeRequestError(e.status, "Nepodařilo se vygenerovat dokument."));
       }
-    } finally {
       setLoading(false);
     }
   };
@@ -417,6 +499,7 @@ export default function SimpleDocFiller() {
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
     setPendingFiles([]);
     setPastedText("");
+    setJustRecognized(false);
   };
 
   // Download tokens are single-use — the file is deleted server-side right
@@ -624,6 +707,7 @@ export default function SimpleDocFiller() {
       }}
     >
       {showWelcome && <WelcomeToast onDone={() => setShowWelcome(false)} />}
+      {toast && <Toast key={toast.id} message={toast.message} tone={toast.tone} onDone={() => setToast(null)} />}
       <div className="w-full max-w-xl md:max-w-2xl">
         {/* Header — the logo/title doubles as a "go back to the start"
             control, like clicking a site's logo does almost everywhere
@@ -732,12 +816,30 @@ export default function SimpleDocFiller() {
 
               <div
                 onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); addPendingFiles(e.dataTransfer.files); }}
-                className="mt-7 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 py-10 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-colors"
+                onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+                onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  addPendingFiles(e.dataTransfer.files);
+                  // Keep the highlight lit for DROP_HOLD_MS as a drop
+                  // confirmation, then ease back — see that constant's
+                  // own comment.
+                  clearTimeout(dropResetTimerRef.current);
+                  dropResetTimerRef.current = setTimeout(() => setDragActive(false), DROP_HOLD_MS);
+                }}
+                className={`mt-7 flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-10 cursor-pointer transition-colors duration-200 ${
+                  dragActive
+                    ? "border-[#185FA5] bg-[#EAF2FB]"
+                    : "border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-slate-50"
+                }`}
               >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white border border-slate-200">
-                  <Upload size={18} className="text-slate-400" />
+                <div
+                  className={`flex h-11 w-11 items-center justify-center rounded-full bg-white border transition-transform duration-300 ${
+                    dragActive ? "border-[#185FA5]/40 dropzone-icon-active" : "border-slate-200"
+                  }`}
+                >
+                  <Upload size={18} className={dragActive ? "text-[#185FA5]" : "text-slate-400"} />
                 </div>
                 <div className="text-center">
                   <div className="text-[13px] font-medium text-[#0B1220]">Přetáhněte soubory nebo klikněte</div>
@@ -810,19 +912,27 @@ export default function SimpleDocFiller() {
             </div>
           )}
 
-          {/* Step 2: scanning */}
+          {/* Step 2: scanning — sweeps a scan line down the actual uploaded
+              photo (previewUrls[0]), not a generic icon box, so it reads
+              as "reading this document" rather than a plain spinner. */}
           {step === 2 && (
             <div className="p-7 md:p-9">
-              <div className="flex flex-col items-center justify-center gap-4 py-14">
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 border border-slate-200 overflow-hidden">
-                  <FileText size={26} className="text-slate-300" />
-                  <div className="absolute left-0 right-0 h-0.5 bg-[#185FA5]/70 animate-[scan_1.6s_ease-in-out_infinite]" />
+              <div className="flex flex-col items-center justify-center gap-4 py-10">
+                <div className="relative mx-auto h-44 w-full max-w-[200px] overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                  {previewUrls[0]?.url ? (
+                    <img src={previewUrls[0].url} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full items-center justify-center">
+                      <FileText size={28} className="text-slate-300" />
+                    </div>
+                  )}
+                  <div className="ocr-scan-line" aria-hidden="true" />
                 </div>
-                <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220]">
-                  <Loader2 size={14} className="animate-spin text-slate-400" /> Rozpoznávám dokument…
+                <div className="flex items-center gap-2 text-[13px] font-medium text-[#0B1220] tabular-nums">
+                  <Loader2 size={14} className="animate-spin text-slate-400" />
+                  Rozpoznávání… {ocrProgress}%
                 </div>
               </div>
-              <style>{`@keyframes scan { 0% { top: 4px; } 50% { top: 60px; } 100% { top: 4px; } }`}</style>
             </div>
           )}
 
@@ -930,7 +1040,14 @@ export default function SimpleDocFiller() {
                     && !(isHppIndefinite && key === "end_date")
                 );
 
-                const renderField = ([key, label]) => {
+                // `idx`/`animate` power the post-OCR staggered reveal
+                // (see justRecognized's own comment) — only ever passed
+                // for personFields below, since those are the only fields
+                // OCR actually populates; company/rest fields render
+                // instantly regardless of how the form got here.
+                const renderField = ([key, label], idx = 0, animate = false) => {
+                  const shouldReveal = animate && justRecognized;
+                  const revealDelay = shouldReveal ? { animationDelay: `${idx * 350}ms` } : undefined;
                   const isMono = key === "doc_number" || key.includes("date") || key === "visa_number";
                   const isUppercase = ["first_name", "last_name", "company_name"].includes(key);
                   const showVerified = key === "doc_number" && docNumberVerified && fields[key];
@@ -963,13 +1080,16 @@ export default function SimpleDocFiller() {
                           [key]: isUppercase ? e.target.value.toUpperCase() : e.target.value,
                         }))
                       }
-                      style={isMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
+                      style={{
+                        ...(isMono ? { fontFamily: "'JetBrains Mono', monospace" } : null),
+                        ...revealDelay,
+                      }}
                       className={`mt-1 w-full rounded-xl border px-2.5 py-1.5 md:px-3.5 md:py-3 text-[13px] md:text-[14.5px] text-[#0B1220] focus:outline-none focus:ring-2 focus:ring-[#0B1220]/10 focus:border-slate-300
-                        ${showBadge ? "pr-8 " : ""}${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
+                        ${showBadge ? "pr-8 " : ""}${shouldReveal ? "field-reveal-highlight " : ""}${showVerified ? "border-[#97C459] bg-[#F7FBF0]" : showWarning ? "border-amber-300 bg-amber-50/40" : "border-slate-200"}`}
                     />
                   );
                   return (
-                    <label key={key} className="block">
+                    <label key={key} className={`block ${shouldReveal ? "field-reveal-in" : ""}`} style={revealDelay}>
                       <span className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
                         {label}
                         {showVerified && (
@@ -1006,9 +1126,12 @@ export default function SimpleDocFiller() {
 
                 return (
                   <>
-                    {/* 1. Person's own data first */}
+                    {/* 1. Person's own data first — the only group that
+                        animates in staggered, since it's the only group
+                        OCR actually populates (see renderField's own
+                        comment on idx/animate). */}
                     <div className="grid grid-cols-2 gap-x-4 gap-y-4 mb-[22px]">
-                      {personFields.map(renderField)}
+                      {personFields.map((entry, idx) => renderField(entry, idx, true))}
                     </div>
 
                     {/* Collapsed by default — OCR never fills this in
@@ -1109,12 +1232,18 @@ export default function SimpleDocFiller() {
                 </button>
                 <button
                   onClick={handleGenerate}
-                  disabled={loading || !templateId}
-                  style={PRIMARY_GRADIENT}
+                  disabled={loading || generateSuccess || !templateId}
+                  style={generateSuccess ? SUCCESS_SOLID : PRIMARY_GRADIENT}
                   className="inline-flex items-center gap-1.5 rounded-xl px-5 py-2.5 md:px-7 md:py-3.5 text-[13px] md:text-[14.5px] font-medium text-white transition-[filter] hover:brightness-110 disabled:opacity-60"
                 >
-                  {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-                  {loading ? "Generuji…" : "Vytvořit dokument"}
+                  {generateSuccess ? (
+                    <Check size={14} className="button-check-pop" />
+                  ) : loading ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <FileText size={14} />
+                  )}
+                  {generateSuccess ? "Hotovo" : loading ? "Generuji…" : "Vytvořit dokument"}
                 </button>
               </div>
             </div>
