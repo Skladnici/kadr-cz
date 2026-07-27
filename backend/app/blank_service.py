@@ -302,7 +302,24 @@ def _fill_bundle_docx(name: str, fields: dict) -> Optional[Path]:
         return None
 
 
-def convert_to_pdf(docx_path: Path) -> Optional[Path]:
+def convert_to_pdf(docx_path: Path, timeout: int = 20) -> Optional[Path]:
+    """`timeout` defaults to 20s — a simple one-page docx converts in a
+    couple of seconds, and 60s of headroom used to just mean a stuck/hung
+    LibreOffice process held the whole /api/fill request (and the user's
+    browser) hostage for a full minute before finally giving up. That
+    default is still right for /api/fill's own interactive, actively-
+    waited-on call. It is NOT enough for every document, though: a real
+    500 traced back to zdravotni_template.docx specifically — at 2.5MB
+    with several embedded fonts (vs. ~16KB for the other bundle docs),
+    it's plausibly slower to convert than this default accounts for,
+    especially on Render's constrained CPU, and headless LibreOffice has
+    its own known rough edges with Word's obfuscated embedded-font format
+    that could independently be part of it. get_sign_link_pdf's own
+    read-before-signing preview (backed by the frontend's already-generous
+    retry/backoff — see SignPage.jsx) passes a longer timeout here for
+    exactly that document, so a conversion that's merely slow (rather
+    than genuinely hung) gets the chance to actually finish instead of
+    being cut off at the interactive-path's tighter default."""
     import subprocess
     import shutil
 
@@ -310,18 +327,25 @@ def convert_to_pdf(docx_path: Path) -> Optional[Path]:
     if not binary:
         return None
     try:
-        # A simple one-page docx converts in a couple of seconds; 60s of
-        # headroom just meant a stuck/hung LibreOffice process held the
-        # whole /api/fill request (and the user's browser) hostage for a
-        # full minute before finally giving up and offering the .docx
-        # without a PDF anyway. 20s is still generous slack.
         subprocess.run(
             [binary, "--headless", "--convert-to", "pdf", "--outdir", str(settings.GENERATED_DIR), str(docx_path)],
-            check=True, capture_output=True, timeout=20,
+            check=True, capture_output=True, timeout=timeout,
         )
         pdf_path = docx_path.with_suffix(".pdf")
         return pdf_path if pdf_path.exists() else None
+    except subprocess.TimeoutExpired:
+        logger.warning("LibreOffice conversion timed out (%ss) for %s", timeout, docx_path.name)
+        return None
+    except subprocess.CalledProcessError as e:
+        # Not logged with exc_info — this is LibreOffice's own stderr, not
+        # a Python traceback, and it's usually the actually useful part.
+        logger.warning(
+            "LibreOffice conversion failed for %s (exit %s): %s",
+            docx_path.name, e.returncode, (e.stderr or b"").decode("utf-8", "replace")[:2000],
+        )
+        return None
     except Exception:
+        logger.exception("LibreOffice conversion raised unexpectedly for %s", docx_path.name)
         return None
 
 

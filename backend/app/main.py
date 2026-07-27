@@ -1035,7 +1035,15 @@ async def get_sign_link_pdf(request: Request, token: str, background_tasks: Back
         if docx_path is None:
             raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
 
-    pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path)
+    # Longer than convert_to_pdf's own interactive-path default (used by
+    # /api/fill) — this route is a read-only preview the frontend already
+    # retries with generous backoff (see SignPage.jsx), so a conversion
+    # that's merely slow (not hung) should get the chance to finish
+    # rather than being cut off at the tighter default. See
+    # convert_to_pdf's own docstring for the real incident this covers
+    # (zdravotni_template.docx: 2.5MB with embedded fonts, vs ~16KB for
+    # the other bundle docs).
+    pdf_path = await asyncio.to_thread(convert_to_pdf, docx_path, 45)
     docx_path.unlink(missing_ok=True)
     if pdf_path is None:
         raise HTTPException(500, "Nepodařilo se vygenerovat náhled.")
