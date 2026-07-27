@@ -306,7 +306,12 @@ export default function SignedDocsNotifier({ apiFetch }) {
           {pingBadge && <span className="signed-docs-ping-badge" aria-hidden="true" />}
         </span>
         {totals ? (
-          <span className="tabular-nums whitespace-nowrap">{totals.generated} vygenerováno · {totals.signed} podepsáno</span>
+          // Signed count only — totals.generated is still fetched (it
+          // gates hasAnyHistory above) but isn't shown here anymore:
+          // that's StatsWidget's own metric already, and showing it
+          // again in this corner made it look like two different
+          // "generated" counts rather than one shared number.
+          <span className="tabular-nums whitespace-nowrap">{totals.signed} podepsáno</span>
         ) : (
           <span className="tabular-nums">{(signedDocs || []).length}</span>
         )}
