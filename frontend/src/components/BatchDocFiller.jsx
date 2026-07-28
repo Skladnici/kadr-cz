@@ -196,16 +196,33 @@ export function canAutoMerge(a, b) {
   // happens to match too.
   if (a.rawResults.length >= 2 || b.rawResults.length >= 2) return false;
   // A residence permit / ID card / driving licence (see
-  // STANDALONE_DOC_TYPES) is already a complete document on its own —
-  // unlike a passport, it never needs (and must never silently absorb)
-  // a second file. Real report: a genuine "Povolení k pobytu" card
-  // merged with an unrelated card elsewhere in the same batch purely
-  // because their birth dates happened to coincide — birth_date alone
-  // was never enough of a signal for a document type that was never
-  // waiting on a pair in the first place.
+  // STANDALONE_DOC_TYPES) never needs pairing with a genuinely DIFFERENT
+  // document the way a passport needs its own visa — but it very much
+  // DOES need to combine with a second photo of ITSELF: these cards
+  // split their data across two sides (front: printed name/birth date/
+  // "DRUH POVOLENÍ"; back: a TD1 MRZ block with birth date, doc number,
+  // and the name again in MRZ encoding), uploaded as two separate files
+  // exactly like a passport+visa pair. A real report: front and back of
+  // the same "Povolení k pobytu" independently agreed on birth_date
+  // (label vs MRZ) and even doc_type ("Residence permit" is one of
+  // DOC_TYPE_KEYWORDS' own synonyms), yet stayed as two separate
+  // "Osoba" cards — the first version of this check blocked ANY merge
+  // touching a standalone type, when it should only block merging with
+  // a DIFFERENT one.
+  //
+  // "Neznámý dokument" (or no doc_type detected at all) is treated as a
+  // wildcard, not a mismatch — a card's back side can easily have no
+  // OCR-recognizable keyword text at all (pure MRZ, nothing printed),
+  // which must not permanently block it from ever combining with its
+  // own front side just because doc_type detection came up empty.
   const docTypeA = a.rawResults[0]?.doc_type;
   const docTypeB = b.rawResults[0]?.doc_type;
-  if (STANDALONE_DOC_TYPES.has(docTypeA) || STANDALONE_DOC_TYPES.has(docTypeB)) return false;
+  const standaloneA = STANDALONE_DOC_TYPES.has(docTypeA);
+  const standaloneB = STANDALONE_DOC_TYPES.has(docTypeB);
+  const isWildcard = (t) => !t || t === "Neznámý dokument";
+  if (standaloneA && standaloneB) return docTypeA === docTypeB;
+  if (standaloneA) return isWildcard(docTypeB);
+  if (standaloneB) return isWildcard(docTypeA);
   return true;
 }
 

@@ -14,31 +14,53 @@ function card(birthDate, docType, { alreadyPaired = false } = {}) {
   };
 }
 
-describe("canAutoMerge — real shipped function, residence permit case", () => {
-  it("Kohili Hadj Benamar Ahmed's real 'Povolení k pobytu' never merges with an unrelated card sharing its birth date", () => {
-    // Exact birth_date this real card's OCR extraction actually produces
-    // (08.03.1987 — see test_ocr_service.py's own real-sample test) and
-    // its real doc_type ("Povolení k pobytu", from DOC_TYPE_KEYWORDS).
-    const residencePermit = card("08.03.1987", "Povolení k pobytu");
-    // A completely unrelated person, birth date coinciding purely by
-    // construction — this is exactly the scenario a real production
-    // report traced the "falls apart" bug back to.
-    const unrelatedPerson = card("08.03.1987", "Neznámý dokument");
-
-    expect(canAutoMerge(residencePermit, unrelatedPerson)).toBe(false);
-    expect(canAutoMerge(unrelatedPerson, residencePermit)).toBe(false);
+describe("canAutoMerge — real shipped function, residence permit front+back", () => {
+  it("Kohili Hadj Benamar Ahmed's real 'Povolení k pobytu' front and back DO merge into one card", () => {
+    // Real report: uploaded as two separate photos (front: printed
+    // fields; back: TD1 MRZ) — both independently produced the exact
+    // same birth_date (08.03.1987 — see test_ocr_service.py's own real-
+    // sample tests) and the exact same doc_type ("Povolení k pobytu" —
+    // "residence permit" is one of DOC_TYPE_KEYWORDS' own synonyms, so
+    // the MRZ-only back side matched it too), yet stayed as two separate
+    // "Osoba" cards under the first version of this check, which blocked
+    // ANY merge touching a standalone type instead of only a DIFFERENT
+    // one.
+    const front = card("08.03.1987", "Povolení k pobytu");
+    const back = card("08.03.1987", "Povolení k pobytu");
+    expect(canAutoMerge(front, back)).toBe(true);
   });
 
-  it("still refuses even when the OTHER side is itself a passport/visa type (no birth-date exception for any pairing involving a standalone type)", () => {
+  it("also merges when the back side's doc_type came back undetected (blank/pure-MRZ back, no OCR-recognizable keyword text)", () => {
+    // "Neznámý dokument" here isn't "some other document" — it's simply
+    // what a back side with nothing but an MRZ block (no printed
+    // keyword text at all) correctly detects as. Must not permanently
+    // block it from combining with its own front side just because
+    // detection came up empty.
+    const front = card("08.03.1987", "Povolení k pobytu");
+    const undetectedBack = card("08.03.1987", "Neznámý dokument");
+    expect(canAutoMerge(front, undetectedBack)).toBe(true);
+    expect(canAutoMerge(undetectedBack, front)).toBe(true);
+  });
+
+  it("never merges with a DIFFERENT, confidently-detected standalone type sharing its birth date", () => {
+    // Genuinely different documents (not two sides of the same one) —
+    // the coincidental-birth-date-collision risk this whole check exists
+    // to guard against.
+    const residencePermit = card("08.03.1987", "Povolení k pobytu");
+    const unrelatedIdCard = card("08.03.1987", "Zaměstnanecká karta");
+    expect(canAutoMerge(residencePermit, unrelatedIdCard)).toBe(false);
+  });
+
+  it("still refuses to pair with a passport/visa type (no birth-date exception for a standalone-vs-passport/visa mismatch)", () => {
     const residencePermit = card("08.03.1987", "Zaměstnanecká karta");
     const passport = card("08.03.1987", "Cestovní pas");
     expect(canAutoMerge(residencePermit, passport)).toBe(false);
   });
 
-  it("does NOT reject two residence permits from merging on doc_type grounds alone (birth_date must actually differ) — confirms the block is real doc-type gating, not an always-false stub", () => {
+  it("still refuses two residence permits with different birth dates (confirms the doc-type wildcard isn't an always-true stub)", () => {
     const a = card("08.03.1987", "Povolení k pobytu");
     const b = card("01.01.1990", "Povolení k pobytu");
-    expect(canAutoMerge(a, b)).toBe(false); // different birth dates — correctly refused for THAT reason
+    expect(canAutoMerge(a, b)).toBe(false);
   });
 });
 

@@ -96,3 +96,47 @@ describe("mergeRecognizedResults — residence_type pass-through", () => {
     expect(merged.fields.residence_type).toBe("");
   });
 });
+
+describe("mergeRecognizedResults — residence permit front+back (Kohili Hadj Benamar Ahmed, real case)", () => {
+  it("prefers the back side's checksum-verified, clean-MRZ name/doc_number over the front side's label-parsed one", () => {
+    // Real, observed shapes: the front side's own label regex mis-parses
+    // this card's two-labels-on-one-header-row layout ("PŘÍJMENÍ Jméno"
+    // followed by two value lines) and comes back with doc_number empty
+    // (unverified); the back side's TD1 MRZ correctly self-verifies the
+    // doc_number via ICAO checksum and has a clean MRZ line. Confirms
+    // the SAME reliability ranking that already prefers a verified
+    // passport/visa MRZ read also protects this front+back case, even
+    // though the front's own local mis-parse is a real, separate bug in
+    // its own right (not fixed here — see ocr_service.py's NAME_LABEL_
+    // PATTERNS for that one).
+    const front = baseResult({
+      doc_type: "Povolení k pobytu",
+      birth_date: "08.03.1987",
+      doc_number: null,
+      doc_number_verified: false,
+      first_name: "Kohili", // mis-parsed — this is actually the surname
+      last_name: "Jméno", // mis-parsed — this is literally the OTHER field's label
+      mrz_raw: null,
+      residence_type: "PŘECHODNÝ POBYT - RP",
+    });
+    const back = baseResult({
+      doc_type: "Povolení k pobytu",
+      birth_date: "08.03.1987",
+      doc_number: "001968879",
+      doc_number_verified: true,
+      first_name: "Hadj Benamar Ahmed",
+      last_name: "Kohili",
+      mrz_raw: "IRCZE0019688796<<<<<<<<<<<<<<\n8703086M2811176DZA8703082421<9\nKOHILI<<HADJ<BENAMAR<AHMED<<",
+      residence_type: null,
+    });
+
+    const merged = mergeRecognizedResults([front, back]);
+
+    expect(merged.fields.first_name).toBe("HADJ BENAMAR AHMED");
+    expect(merged.fields.last_name).toBe("KOHILI");
+    expect(merged.fields.doc_number).toBe("001968879");
+    expect(merged.docNumberVerified).toBe(true);
+    // residence_type only the front side has — must still come through.
+    expect(merged.fields.residence_type).toBe("PŘECHODNÝ POBYT - RP");
+  });
+});
