@@ -101,6 +101,7 @@ MRZ_NATIONALITY_TO_CZECH = {
     "AUT": "Rakousko",
     "USA": "Spojené státy americké",
     "GBR": "Spojené království",
+    "DZA": "Alžírsko",
 }
 
 
@@ -186,28 +187,49 @@ def _looks_like_mrz_line(candidate: str, min_valid_ratio: float) -> bool:
     unmistakably MRZ-shaped otherwise. Requiring '<<' literally (as a
     prior version of this check did) means exactly the most-corrupted —
     and therefore most important to flag — lines silently vanish instead
-    of being recognized as MRZ at all."""
+    of being recognized as MRZ at all.
+
+    The minimum '<' count (previously 3) is now just 1 — a TD1 numeric
+    line (ICAO 9303 Part 5: birth date, sex, expiry date, nationality,
+    packed with almost no padding) can carry a single filler '<' before
+    its final check digit, versus a TD3 name line's usual wide filler
+    run. Real case: a Czech "Povolení k pobytu" residence permit's own
+    TD1 line 2 ("8703086M2811176DZA8703082421<9") has exactly one '<'
+    and was being rejected outright here before ever reaching the ratio
+    check below — which is really what distinguishes genuine MRZ from
+    ordinary printed text (spaces/punctuation aren't in _MRZ_VALID_CHARS
+    at all), not how many '<' happen to be on the line."""
     if not (20 <= len(candidate) <= 45):
         return False
     candidate = _normalize_mrz_lookalikes(candidate)
     if "<<" in candidate:
         return True
-    if candidate.count("<") < 3:
+    if candidate.count("<") < 1:
         return False
     valid = sum(1 for c in candidate if c.upper() in _MRZ_VALID_CHARS)
     return valid / len(candidate) >= min_valid_ratio
 
 
 def _parse_mrz(text: str) -> Optional[str]:
-    """Very lightweight MRZ line detector (two lines of ~44 chars).
-    Deliberately permissive (low valid_ratio floor) — this feeds
-    mrz_raw, which callers (see _normalize_mrz_text below, and the
-    frontend's MRZ-purity ranking) rely on to see the true, uncorrected
-    OCR read and judge how contaminated it is. Missing a corrupted line
-    here would hide contamination instead of surfacing it."""
+    """Very lightweight MRZ line detector. Deliberately permissive (low
+    valid_ratio floor) — this feeds mrz_raw, which callers (see
+    _normalize_mrz_text below, and the frontend's MRZ-purity ranking)
+    rely on to see the true, uncorrected OCR read and judge how
+    contaminated it is. Missing a corrupted line here would hide
+    contamination instead of surfacing it.
+
+    Returns the last 3 (not 2) MRZ-shaped lines — a passport/visa's TD3
+    format is 2 lines of ~44 chars, but an ID card / residence permit's
+    TD1 format (see _extract_fields_from_td1_mrz) is 3 lines of ~30
+    chars, with the document number sitting in the first of those three.
+    Hardcoding 2 here silently dropped that line for a TD1 document,
+    even though nothing about this function is TD3-specific otherwise —
+    it just looks for MRZ-shaped lines, whatever their format. For a
+    TD3 document (still the common case) this changes nothing: it only
+    ever has 2 such lines to begin with."""
     lines = [l.strip() for l in text.splitlines() if _looks_like_mrz_line(l.strip(), min_valid_ratio=0.6)]
     if lines:
-        return "\n".join(lines[-2:])
+        return "\n".join(lines[-3:])
     return None
 
 
@@ -233,12 +255,38 @@ def _find_labeled_date(text: str, label_patterns: list[str]) -> Optional[str]:
     """Finds a date that appears near a specific label (e.g. 'Datum narození'),
     rather than just grabbing dates in document order — much more reliable
     once real (non-MRZ) documents are involved, since dates can appear in
-    any order on the page."""
+    any order on the page.
+
+    The day/month/year separator accepts a literal space alongside the
+    usual '.'/'-'/'/' — real case: a Czech "Povolení k pobytu" residence
+    permit card prints "DATUM NAROZENÍ 08 03 1987" with no punctuation
+    between the three numbers at all, which the punctuation-only pattern
+    silently matched nothing on, no error, just an empty birth_date. A
+    literal space (not \\s, which also matches a newline) keeps this from
+    ever letting day/month/year be read off three different lines.
+
+    Always returns dot-separated ("08.03.1987"), regardless of which
+    separator the source text actually used — callers elsewhere in this
+    file (is_expired's own _parse_any_date check, in particular) only
+    recognize a fixed handful of formats, none of them space-separated;
+    normalizing here means every other caller stays none the wiser about
+    this one card style having a third separator to deal with."""
     for label in label_patterns:
-        m = re.search(label + r"[:\s]*\n?\s*(\d{1,2}[.\-/]\d{1,2}[.\-/]\d{4})", text, re.IGNORECASE)
+        m = re.search(
+            label + r"[:\s]*\n?\s*(\d{1,2})[.\-/ ](\d{1,2})[.\-/ ](\d{4})", text, re.IGNORECASE
+        )
         if m:
-            return m.group(1)
+            day, month, year = m.groups()
+            return f"{int(day):02d}.{int(month):02d}.{year}"
     return None
+
+
+def _find_labeled_value(text: str, label_pattern: str) -> Optional[str]:
+    """Same idea as _find_labeled_date, for a free-text value on the same
+    line as its label instead of a date — e.g. a residence permit's
+    "DRUH POVOLENÍ PŘECHODNÝ POBYT - RP"."""
+    m = re.search(label_pattern + r"[:\s]*\n?\s*([^\n]{2,60})", text, re.IGNORECASE)
+    return m.group(1).strip() if m else None
 
 
 DOC_NUMBER_LABELS = [
@@ -566,6 +614,89 @@ def _extract_passport_number_from_mrz(
     return (doc_number or None), verified, birth_date, expiry_date, nationality
 
 
+def _extract_fields_from_td1_mrz(
+    text: str,
+) -> tuple[Optional[str], bool, Optional[str], Optional[str], Optional[str]]:
+    """Same idea as _extract_passport_number_from_mrz, for the ICAO 9303
+    TD1 format (3 lines of ~30 chars) used by ID cards and residence
+    permit cards — a completely different fixed-field layout than a
+    passport/visa's TD3 format (2 lines of ~44 chars), which that
+    function already handles. _extract_fields_from_text tries TD3 first
+    (the existing, far more common case) and only falls back to this one
+    if that came up empty, so passport/visa behavior is unchanged.
+
+    Confirmed against a real Czech "Povolení k pobytu" (temporary
+    residence permit, holder from Algeria): its TD1 line 2
+    ("8703086M2811176DZA8703082421<9") decodes to birth date 08.03.1987,
+    expiry 17.11.2028 and nationality DZA — all three matching the
+    card's own printed "DATUM NAROZENÍ"/"PLATNOST DO"/"STÁTNÍ
+    PŘÍSLUŠNOST" fields exactly, and its document number ("001968879",
+    from the line before) self-verifies via the same ICAO checksum a
+    passport's does.
+
+    TD1 field layout (ICAO 9303 Part 5):
+      Line 1: document code(2) + issuing country(3) + doc number(9) +
+              check digit(1) + optional data(15)
+      Line 2: birth date YYMMDD(6) + check(1) + sex(1) +
+              expiry date YYMMDD(6) + check(1) + nationality(3) +
+              optional data(11) + composite check digit(1)
+      Line 3: SURNAME<<GIVEN<NAMES<< — same shape _parse_name_from_text
+              already parses for a passport/visa, so no separate name
+              extraction is needed here; the caller's existing MRZ name
+              regex matches this line just as well once _parse_mrz (see
+              its own docstring) surfaces all 3 TD1 lines instead of
+              dropping the first."""
+    normalized = _normalize_mrz_text(text)
+    lines = [l.strip() for l in normalized.splitlines() if _looks_like_mrz_line(l.strip(), min_valid_ratio=0.6)]
+    if len(lines) < 2:
+        return None, False, None, None, None
+
+    # Line 2's shape (six digits, check digit, M/F/<, six digits, check
+    # digit, three letters) is a far more specific, less ambiguous anchor
+    # to search for than line 1's doc-number field, whose leading 2-char
+    # document-code prefix varies by issuing country/subtype. Once line 2
+    # is located, line 1 (whichever matched line came immediately before
+    # it) is trusted for the document number.
+    line2_match = None
+    line2_idx = None
+    for i, line in enumerate(lines):
+        m = re.search(r"(\d{6})(\d)([MF<])(\d{6})(\d)([A-Z]{3})", line)
+        if m:
+            line2_match = m
+            line2_idx = i
+            break
+    if not line2_match:
+        return None, False, None, None, None
+
+    birth_raw, _birth_check, _sex, expiry_raw, _expiry_check, nationality_code = line2_match.groups()
+
+    def _decode(raw_digits, role):
+        try:
+            yy, mm, dd = int(raw_digits[0:2]), int(raw_digits[2:4]), int(raw_digits[4:6])
+            year = _interpret_two_digit_year(yy, role=role)
+            date(year, mm, dd)  # validate
+            return f"{dd:02d}.{mm:02d}.{year}"
+        except (ValueError, IndexError):
+            return None
+
+    birth_date = _decode(birth_raw, "birth")
+    expiry_date = _decode(expiry_raw, "expiry")
+    nationality = MRZ_NATIONALITY_TO_CZECH.get(nationality_code)
+
+    doc_number = None
+    doc_number_verified = False
+    if line2_idx > 0:
+        line1 = lines[line2_idx - 1]
+        m1 = re.search(r"[A-Z<]{2}([A-Z]{3})([A-Z0-9<]{9})(\d)", line1)
+        if m1:
+            _country, raw_doc, check = m1.groups()
+            corrected, verified = _verify_and_correct(raw_doc, check)
+            doc_number = corrected.replace("<", "").strip() or None
+            doc_number_verified = verified
+
+    return doc_number, doc_number_verified, birth_date, expiry_date, nationality
+
+
 def _find_doc_number(text: str) -> Optional[str]:
     for label in DOC_NUMBER_LABELS:
         m = re.search(label + r"[:\s]*\n?\s*([A-Z0-9]{5,12})", text, re.IGNORECASE)
@@ -652,8 +783,28 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     mrz_doc_number, doc_number_verified, mrz_birth_date, mrz_expiry_date, mrz_nationality = (
         _extract_passport_number_from_mrz(raw_text)
     )
+    if not mrz_doc_number:
+        # TD3 (passport/visa) MRZ wasn't found or didn't decode — try TD1
+        # instead. An ID card / residence permit uses that completely
+        # different 3-line, 30-char-per-line layout (see
+        # _extract_fields_from_td1_mrz's own docstring for a real
+        # confirmed example); trying it only as a fallback, never first,
+        # keeps every existing passport/visa read exactly as it was.
+        mrz_doc_number, doc_number_verified, mrz_birth_date, mrz_expiry_date, mrz_nationality = (
+            _extract_fields_from_td1_mrz(raw_text)
+        )
     doc_number = mrz_doc_number or _find_doc_number(raw_text)
     address = _find_address(raw_text)
+    # Only ever printed (labeled) on a residence-permit-style card, never
+    # on a passport/visa — e.g. "DRUH POVOLENÍ PŘECHODNÝ POBYT - RP",
+    # distinguishing the specific subtype (přechodný/trvalý pobyt, ...)
+    # the DOC_TYPE_KEYWORDS-based doc_type above only categorizes at the
+    # "this is some kind of residence permit" level. Feeds the same
+    # residence_type/"Druh pobytu" field the DPP/DPČ/HPP contract
+    # templates already have a tag for — previously only ever typed in
+    # by hand (OCR had nothing to read it from on a passport/visa), but
+    # a residence permit card genuinely prints it.
+    residence_type = _find_labeled_value(raw_text, r"DRUH POVOLEN[ÍI]")
 
     # Country/script-agnostic fallback: only kicks in once the labeled
     # and Ukrainian/CIS-bilingual-date heuristics above have both come up
@@ -751,6 +902,7 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
         "doc_number": doc_number,
         "doc_number_verified": bool(mrz_doc_number and doc_number_verified),
         "address": address,
+        "residence_type": residence_type,
         "visa_number": visa_info.get("visa_number"),
         "visa_validity": visa_info.get("visa_validity"),
         "visa_type_code": visa_info.get("visa_type_code"),

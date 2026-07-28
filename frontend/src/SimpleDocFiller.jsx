@@ -1149,15 +1149,22 @@ export default function SimpleDocFiller() {
                       {personFields.map((entry, idx) => renderField(entry, idx, true))}
                     </div>
 
-                    {/* Collapsed by default — OCR never fills this in
-                        (free text describing the residence permit
-                        category for the printed contract, not anything
-                        printed verbatim on the visa itself), so it'd
-                        otherwise sit empty on every single card. Still
+                    {/* Collapsed by default UNLESS OCR already filled it —
+                        a passport/visa never has this printed anywhere
+                        (it's free text describing the residence permit
+                        category for the contract, not anything on the
+                        document itself), so it'd otherwise sit empty on
+                        every card and stays collapsed there. A residence
+                        permit card (see ocr_service.py's "DRUH POVOLENÍ"
+                        extraction) genuinely prints it, though — auto-
+                        expanding whenever it comes back non-empty means
+                        that real, auto-detected value doesn't sit
+                        invisible behind a collapsed disclosure the admin
+                        has no particular reason to think to open. Still
                         the same "residence_type" field sent to
-                        /api/fill as DRUH_POBYTU when it *is* filled in. */}
+                        /api/fill as DRUH_POBYTU either way. */}
                     {residenceTypeDef && (
-                      <details className="mb-[22px] -mt-3">
+                      <details className="mb-[22px] -mt-3" open={Boolean(fields.residence_type)}>
                         <summary className="cursor-pointer text-[12px] text-slate-500 hover:text-[#0B1220]">
                           {residenceTypeDef[1]}
                         </summary>

@@ -76,3 +76,23 @@ describe("mergeRecognizedResults — warnings vs addressHint split", () => {
     expect(merged.nameMismatchHint).toBeNull();
   });
 });
+
+describe("mergeRecognizedResults — residence_type pass-through", () => {
+  it("carries a residence permit's OCR-detected residence_type through to fields", () => {
+    // Real gap this guards against: ocr_service.py's _extract_fields_
+    // from_text started returning residence_type for a "Povolení k
+    // pobytu" card, but this function's own returned `fields` object
+    // never listed the key at all — the value was extracted correctly
+    // on the backend and then silently dropped before it ever reached
+    // the form.
+    const merged = mergeRecognizedResults([
+      baseResult({ residence_type: "PŘECHODNÝ POBYT - RP" }),
+    ]);
+    expect(merged.fields.residence_type).toBe("PŘECHODNÝ POBYT - RP");
+  });
+
+  it("leaves residence_type empty for a passport/visa result that never has one", () => {
+    const merged = mergeRecognizedResults([baseResult()]);
+    expect(merged.fields.residence_type).toBe("");
+  });
+});

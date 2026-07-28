@@ -93,3 +93,21 @@ export const SIGNABLE_TEMPLATE_IDS = new Set(["dpp_template", "hpp_template", "d
 // alongside their main contract (see main.py's /api/podepsat/{token}/pdf
 // ?doc= and SignPage.jsx's read-before-signing document tabs).
 export const BUNDLE_TEMPLATE_IDS = new Set(["dpp_template", "hpp_template", "dpc_template"]);
+
+// Document types (see backend/app/ocr_service.py's DOC_TYPE_KEYWORDS)
+// that are already a complete, self-sufficient identity document on
+// their own — unlike a passport, which is only half the story until its
+// own visa sticker shows up as a separate upload. A residence permit
+// card, ID card, or driving licence never has (or needs) a second file
+// to pair with. Shared between BatchDocFiller.jsx's canAutoMerge (must
+// never try to pair one of these with anything, no matter what birth
+// date coincidence suggests) and PersonCard.jsx's missingDocumentLabel
+// (must never show "only passport, no visa found" on a card that was
+// never missing anything in the first place) — a real report: a
+// perfectly complete "Povolení k pobytu" card was showing exactly that
+// label, reading as broken when it wasn't.
+export const STANDALONE_DOC_TYPES = new Set([
+  "Občanský průkaz", "Zaměstnanecká karta", "Modrá karta",
+  "Povolení k pobytu", "Přechodný pobyt", "Trvalý pobyt",
+  "Kartička zdravotní pojišťovny", "Řidičský průkaz", "ID karta",
+]);

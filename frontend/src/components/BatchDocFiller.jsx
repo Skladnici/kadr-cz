@@ -4,7 +4,7 @@ import CompanyPicker from "./CompanyPicker";
 import PersonCard from "./PersonCard";
 import {
   FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE,
-  SIGNABLE_TEMPLATE_IDS,
+  SIGNABLE_TEMPLATE_IDS, STANDALONE_DOC_TYPES,
 } from "../constants/fields";
 import { composeCzAddress, composeOriginAddress } from "../utils/address";
 import { mergeRecognizedResults } from "../utils/recognizeMerge";
@@ -189,7 +189,24 @@ function applyRecognizedResult(person, result) {
 function canAutoMerge(a, b) {
   const birthA = (a.fields.birth_date || "").trim();
   const birthB = (b.fields.birth_date || "").trim();
-  return Boolean(birthA) && birthA === birthB;
+  if (!birthA || birthA !== birthB) return false;
+  // A card that's already been paired once (e.g. a passport already
+  // merged with its own visa) is already complete — never a candidate
+  // to absorb a third, unrelated file just because its birth date
+  // happens to match too.
+  if (a.rawResults.length >= 2 || b.rawResults.length >= 2) return false;
+  // A residence permit / ID card / driving licence (see
+  // STANDALONE_DOC_TYPES) is already a complete document on its own —
+  // unlike a passport, it never needs (and must never silently absorb)
+  // a second file. Real report: a genuine "Povolení k pobytu" card
+  // merged with an unrelated card elsewhere in the same batch purely
+  // because their birth dates happened to coincide — birth_date alone
+  // was never enough of a signal for a document type that was never
+  // waiting on a pair in the first place.
+  const docTypeA = a.rawResults[0]?.doc_type;
+  const docTypeB = b.rawResults[0]?.doc_type;
+  if (STANDALONE_DOC_TYPES.has(docTypeA) || STANDALONE_DOC_TYPES.has(docTypeB)) return false;
+  return true;
 }
 
 // The only merge path — automatic (see canAutoMerge/runRecognizeQueue

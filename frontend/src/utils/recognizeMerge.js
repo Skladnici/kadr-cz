@@ -143,6 +143,13 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
       // enough — no reliability ranking needed the way name/doc_number
       // have.
       visa_type_code: pick("visa_type_code"),
+      // A residence permit card prints this directly ("DRUH POVOLENÍ
+      // PŘECHODNÝ POBYT - RP" — see ocr_service.py's own
+      // _extract_fields_from_text) — unlike a passport/visa, which
+      // never has anything here for OCR to read at all. Same reasoning
+      // as visa_type_code: OCR-only, no manual-edit conflict to rank
+      // against.
+      residence_type: pick("residence_type"),
     },
     docNumberVerified: Boolean(docNumberSource?.doc_number_verified),
     warnings,

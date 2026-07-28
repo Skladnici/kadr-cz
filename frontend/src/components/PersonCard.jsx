@@ -9,6 +9,7 @@ import StrpeniWarningIcon from "./StrpeniWarningIcon";
 import FileScanThumbnails from "./FileScanThumbnails";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
+import { STANDALONE_DOC_TYPES } from "../constants/fields";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -38,10 +39,17 @@ function StatusDot({ person }) {
 // obvious just from the fields themselves. Says nothing once both are
 // found and merged — merging is now fully automatic (see canAutoMerge
 // in BatchDocFiller), so announcing that it happened is just noise the
-// person filling out paperwork doesn't need.
+// person filling out paperwork doesn't need. Also says nothing for a
+// document type that never needed a pair in the first place (see
+// STANDALONE_DOC_TYPES) — a real report: a perfectly complete "Povolení
+// k pobytu" residence permit card, uploaded alone (correctly, since it
+// IS the whole document), was showing "Pouze pas, vízum nenalezeno"
+// anyway, reading as broken when nothing was actually missing.
 function missingDocumentLabel(person) {
   if (person.status !== "done" || person.rawResults.length >= 2) return null;
-  const hasVisa = person.rawResults.some((r) => r.doc_type === "Vízum");
+  const docType = person.rawResults[0]?.doc_type;
+  if (STANDALONE_DOC_TYPES.has(docType)) return null;
+  const hasVisa = docType === "Vízum";
   return hasVisa ? "Pouze vízum, pas nenalezen" : "Pouze pas, vízum nenalezeno";
 }
 
@@ -419,13 +427,14 @@ export default function PersonCard({
               {renderIdentityField("visa_number", "Číslo víza")}
               {renderIdentityField("visa_validity", "Platnost víza do")}
             </div>
-            {/* Collapsed by default — OCR never fills this in (it's
-                free text describing the residence permit category for
-                the printed contract, not anything printed verbatim on
-                the visa itself), so it'd otherwise sit empty on every
-                single card. Still the same "residence_type" field sent
-                to /api/fill as DRUH_POBYTU when it *is* filled in. */}
-            <details className="mt-2">
+            {/* Collapsed by default UNLESS OCR already filled it in — see
+                SimpleDocFiller.jsx's identical block for the full
+                reasoning: a passport/visa never prints this (free text
+                for the contract, not on the document), but a residence
+                permit card genuinely does (ocr_service.py's "DRUH
+                POVOLENÍ" extraction), and a real, auto-detected value
+                shouldn't sit invisible behind a collapsed disclosure. */}
+            <details className="mt-2" open={Boolean(person.fields.residence_type)}>
               <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-[#0B1220]">
                 Druh pobytu na území ČR (nepovinné)
               </summary>

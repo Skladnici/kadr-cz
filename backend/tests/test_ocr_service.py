@@ -19,11 +19,13 @@ from app.ocr_service import (
     _icao_check_digit,
     _verify_and_correct,
     _extract_passport_number_from_mrz,
+    _extract_fields_from_td1_mrz,
     _interpret_two_digit_year,
     _parse_name_from_text,
     _parse_mrz,
     _extract_fields_from_text,
     _find_visa_info,
+    _find_labeled_date,
 )
 
 
@@ -379,6 +381,92 @@ def test_extract_fields_from_labeled_czech_id():
     assert fields["birth_date"] == "12.03.1994"
     assert fields["doc_number"] == "999123456"
     assert fields["is_expired"] is False
+
+
+def test_find_labeled_date_accepts_space_separated_components():
+    # Real case: a Czech "Povolení k pobytu" residence permit prints
+    # "DATUM NAROZENÍ 08 03 1987" with plain spaces, no punctuation at
+    # all between day/month/year — the punctuation-only pattern used to
+    # match nothing here, no error, just a silently empty birth_date.
+    assert _find_labeled_date("DATUM NAROZENÍ 08 03 1987", [r"Datum narození"]) == "08.03.1987"
+
+
+def test_find_labeled_date_still_normalizes_dot_separated():
+    # Always normalizes to dot-separated output regardless of the
+    # source separator, so every OTHER caller in this file (is_expired's
+    # _parse_any_date check in particular) never needs to learn about a
+    # third date format.
+    assert _find_labeled_date("Datum narození: 12.3.1994", [r"Datum narození"]) == "12.03.1994"
+
+
+def test_extract_fields_from_td1_mrz_real_residence_permit_ahmed_kohili():
+    # Real case that motivated TD1 support: a Czech "Povolení k pobytu"
+    # (temporary residence permit) for an Algerian national. Its MRZ is
+    # ICAO 9303 TD1 (3 lines of ~30 chars) — a completely different
+    # fixed-field layout than a passport/visa's TD3 (2 lines of ~44
+    # chars), which _extract_passport_number_from_mrz already handles.
+    # Before TD1 support, this document's doc_number/birth_date/
+    # expiry_date/nationality all came back empty from the MRZ path —
+    # not wrong, just silently unavailable, forcing the printed-text
+    # fallbacks to carry the whole card (which they can, once the
+    # separate space-separated-date fix above is also in place, but the
+    # MRZ path is what self-verifies via checksum).
+    line1 = "IRCZE0019688796<<<<<<<<<<<<<<"
+    line2 = "8703086M2811176DZA8703082421<9"
+    line3 = "KOHILI<<HADJ<BENAMAR<AHMED<<"
+    doc_number, verified, birth_date, expiry_date, nationality = _extract_fields_from_td1_mrz(
+        f"{line1}\n{line2}\n{line3}"
+    )
+    assert doc_number == "001968879"
+    assert verified is True
+    assert birth_date == "08.03.1987"
+    assert expiry_date == "17.11.2028"
+    assert nationality == "Alžírsko"
+
+
+def test_extract_fields_from_text_real_residence_permit_ahmed_kohili():
+    # End-to-end against the real, complete OCR text (pasted by the
+    # user) for the same card as the MRZ-only test above — confirms
+    # doc_type detection, the TD1 MRZ fallback, the space-separated
+    # labeled-date fix, and the new residence_type ("DRUH POVOLENÍ")
+    # extraction all work together on the actual raw text, not just an
+    # isolated MRZ snippet.
+    text = (
+        "CZE\n"
+        "Povolení k pobytu 001968879\n"
+        "001968879\n"
+        "PŘÍJMENÍ Jméno\n"
+        "KOHILI\n"
+        "Hadj Benamar Ahmed\n"
+        "POHLAVÍ M\n"
+        "STÁTNÍ PŘÍSLUŠNOST DZA\n"
+        "DRUH POVOLENÍ PŘECHODNÝ POBYT - RP\n"
+        "DATUM NAROZENÍ 08 03 1987\n"
+        "PLATNOST DO 17 11 2028\n"
+        "POZNÁMKY 870308/2421\n"
+        "726105\n"
+        "Residence permit POZNÁMKY\n"
+        "DATUM VYDÁNÍ - MÍSTO VYDÁNÍ\n"
+        "30 03 2026 MV ČR FRÝDEK-MÍSTEK\n"
+        "MÍSTO NAROZENÍ\n"
+        "NEDROMA DZA\n"
+        "001968879\n"
+        "\n"
+        "IRCZE0019688796<<<<<<<<<<<<<<\n"
+        "8703086M2811176DZA8703082421<9\n"
+        "KOHILI<<HADJ<BENAMAR<AHMED<<"
+    )
+    fields = _extract_fields_from_text(text, quality=100, mode="mock")
+    assert fields["doc_type"] == "Povolení k pobytu"
+    assert fields["residence_type"] == "PŘECHODNÝ POBYT - RP"
+    assert fields["birth_date"] == "08.03.1987"
+    assert fields["expiry_date"] == "17.11.2028"
+    assert fields["doc_number"] == "001968879"
+    assert fields["doc_number_verified"] is True
+    assert fields["nationality"] == "Alžírsko"
+    assert fields["is_expired"] is False
+    first, last = _parse_name_from_text(text)
+    assert (first, last) == ("Hadj Benamar Ahmed", "Kohili")
 
 
 def test_extract_fields_uses_generic_mrz_birth_date_fallback_for_passport():
