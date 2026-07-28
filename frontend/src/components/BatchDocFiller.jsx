@@ -186,7 +186,7 @@ function applyRecognizedResult(person, result) {
 // the backend consistently pulling the visa's own type/category code
 // (e.g. "TD..." — nothing resembling a passport number) rather than an
 // actual reference, so it never contributed anything real in practice.
-function canAutoMerge(a, b) {
+export function canAutoMerge(a, b) {
   const birthA = (a.fields.birth_date || "").trim();
   const birthB = (b.fields.birth_date || "").trim();
   if (!birthA || birthA !== birthB) return false;
