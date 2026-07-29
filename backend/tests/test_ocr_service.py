@@ -26,6 +26,9 @@ from app.ocr_service import (
     _extract_fields_from_text,
     _find_visa_info,
     _find_labeled_date,
+    _find_fuzzy_labeled_date,
+    _find_rodne_cislo_birth_date,
+    _levenshtein,
 )
 
 
@@ -467,6 +470,84 @@ def test_extract_fields_from_text_real_residence_permit_ahmed_kohili():
     assert fields["is_expired"] is False
     first, last = _parse_name_from_text(text)
     assert (first, last) == ("Hadj Benamar Ahmed", "Kohili")
+
+
+def test_levenshtein_matches_the_real_ocr_label_corruption():
+    # "DATUM NAROZENÍ" -> "DATUM NANOZENI" — R misread as N, one
+    # character, everything else (including case-folded diacritics)
+    # unchanged.
+    assert _levenshtein("NANOZENI", "NAROZENI") == 1
+
+
+def test_find_rodne_cislo_birth_date_decodes_yymmdd_prefix():
+    # 870308 -> 08.03.1987, the same real person's birth date this whole
+    # card's other fields independently agree on (see the real-sample
+    # tests above and below).
+    assert _find_rodne_cislo_birth_date("POZNÁMKY 870308/2421") == "08.03.1987"
+
+
+def test_find_rodne_cislo_birth_date_handles_female_month_offset():
+    # Czech rodné číslo adds 50 to the real month for a female holder —
+    # 550308 encodes a February birth (05 - 50... wait, month digits are
+    # 53 here) -> month 53-50=03, i.e. still 08.03, just via the female
+    # encoding instead of the male one the real sample used.
+    assert _find_rodne_cislo_birth_date("POZNÁMKY 875308/1234") == "08.03.1987"
+
+
+def test_find_rodne_cislo_birth_date_none_without_the_pattern():
+    assert _find_rodne_cislo_birth_date("no personal number here") is None
+
+
+def test_find_fuzzy_labeled_date_recovers_value_next_to_garbled_label():
+    # Label garbled ("NANOZENI" for "NAROZENÍ") but the date value itself
+    # DID survive on the same line — the exact scenario this fallback is
+    # for, distinct from the real broken-scan case below where the value
+    # itself never made it into the OCR text at all.
+    text = "DATUM NANOZENI 08 03 1987\nPLATNOST DO 17 11 2028"
+    assert _find_fuzzy_labeled_date(text, "narození") == "08.03.1987"
+
+
+def test_find_fuzzy_labeled_date_rejects_a_future_dated_wrong_field_match():
+    # Real, exact OCR text (pasted by the user) for Kohili's residence
+    # permit front side: the "DATUM NAROZENÍ" line's actual date value
+    # appears to have gone completely unread by OCR — the line right
+    # after the garbled label is "17 11 2028", that same card's own
+    # PLATNOST DO/expiry date, not a birth date. Confirms this function
+    # does NOT confidently return a future-dated value just because it
+    # sits next to a fuzzy-matched label — a birth date can never be in
+    # the future, full stop, so this must return None (letting the
+    # caller fall through to _find_rodne_cislo_birth_date) rather than
+    # returning 17.11.2028 as if it were a birth date.
+    real_ocr_text = (
+        "CRE O\n001968879\nPovolení k pobytu\n001968879\n"
+        "POKLAVI-STATNI POSLPSROST\nDZA\nPRECHOONY POBYT - RP\n"
+        "DATUM NANOZENI\n17 11 2028\nDOTKNET\n870308/2421\n"
+        "Residence permit\n726105"
+    )
+    assert _find_fuzzy_labeled_date(real_ocr_text, "narození") is None
+
+
+def test_extract_fields_from_text_real_broken_ocr_scan_kohili_front_side():
+    # The ACTUAL raw OCR text (not a clean hand transcription) Google
+    # Vision returned for this real card's front side, captured via
+    # temporary debug logging on a real batch upload. Two real OCR
+    # failures at once: the "DATUM NAROZENÍ" label itself misread as
+    # "DATUM NANOZENI" (R -> N), AND the date value that should follow it
+    # missing from the OCR output entirely (the very next line is
+    # "17 11 2028", that card's own expiry date, not a birth date at
+    # all) — this is what motivated both _find_fuzzy_labeled_date's
+    # future-date rejection and _find_rodne_cislo_birth_date's fallback.
+    # Confirms the two together still recover the correct birth date
+    # from this real, noisy scan.
+    real_ocr_text = (
+        "CRE O\n001968879\nPovolení k pobytu\n001968879\n"
+        "POKLAVI-STATNI POSLPSROST\nDZA\nPRECHOONY POBYT - RP\n"
+        "DATUM NANOZENI\n17 11 2028\nDOTKNET\n870308/2421\n"
+        "Residence permit\n726105"
+    )
+    fields = _extract_fields_from_text(real_ocr_text, quality=70, mode="mock")
+    assert fields["doc_type"] == "Povolení k pobytu"
+    assert fields["birth_date"] == "08.03.1987"
 
 
 def test_extract_fields_uses_generic_mrz_birth_date_fallback_for_passport():

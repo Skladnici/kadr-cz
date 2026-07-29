@@ -281,6 +281,92 @@ def _find_labeled_date(text: str, label_patterns: list[str]) -> Optional[str]:
     return None
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Plain edit distance, no extra dependency needed for the single
+    short-word fuzzy label match _find_fuzzy_labeled_date uses this for."""
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb))
+        prev = curr
+    return prev[-1]
+
+
+_DIACRITIC_MAP = str.maketrans(
+    "áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ",
+    "acdeeinorstuuyzACDEEINORSTUUYZ",
+)
+
+
+def _strip_diacritics(s: str) -> str:
+    return s.translate(_DIACRITIC_MAP)
+
+
+_FUZZY_LABEL_MAX_DISTANCE = 2
+
+
+def _find_fuzzy_labeled_date(text: str, label_word: str) -> Optional[str]:
+    """Last-resort fallback for _find_labeled_date, tried only once the
+    exact pattern there (and every other birth_date source) has come up
+    empty. Real motivating case: a residence permit's "DATUM NAROZENÍ"
+    came back from OCR as "DATUM NANOZENI" (R misread as N) — a strict
+    match on the correctly-spelled label found nothing at all, even
+    though on some scans the date value itself does survive right where
+    the label said it would be.
+
+    Deliberately conservative about what it accepts: a birth date can
+    never be in the future, full stop — rejecting one that is instead of
+    returning it means a fuzzy-matched label sitting right next to some
+    OTHER date field (not birth_date) doesn't silently return the WRONG
+    date. Real case this specifically guards against: the same
+    residence permit's OCR read put "17 11 2028" (that card's own
+    PLATNOST DO/expiry date) directly after the garbled "DATUM NANOZENI"
+    label — the actual birth-date line appears to have gone unread by
+    OCR entirely rather than just being mislabeled, so grabbing
+    "whatever date follows the fuzzy-matched label" there would have
+    confidently returned an expiry date as if it were a birth date. A
+    rejected match here just falls through to the next fallback
+    (_find_rodne_cislo_birth_date) rather than returning something wrong.
+
+    `label_word` should be the label's own distinctive last word (e.g.
+    "narození") — diacritics are stripped from both sides before
+    comparing, since OCR drops those independent of which letters are
+    otherwise right or wrong."""
+    target = _strip_diacritics(label_word).upper()
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        words = line.strip().split()
+        for wi, word in enumerate(words):
+            candidate = _strip_diacritics(word).upper().rstrip(":")
+            if len(candidate) < 5:
+                continue  # too short for a meaningful edit-distance comparison
+            if _levenshtein(candidate, target) > _FUZZY_LABEL_MAX_DISTANCE:
+                continue
+            # Value expected right after the (fuzzy-matched) label word —
+            # same line first, then the line right below it.
+            search_spots = [" ".join(words[wi + 1:])]
+            if i + 1 < len(lines):
+                search_spots.append(lines[i + 1])
+            for spot in search_spots:
+                m = re.search(r"(\d{1,2})[.\-/ ](\d{1,2})[.\-/ ](\d{4})", spot)
+                if not m:
+                    continue
+                day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if year > date.today().year:
+                    continue  # a birth date can't be in the future — wrong field
+                try:
+                    date(year, month, day)
+                except ValueError:
+                    continue
+                return f"{day:02d}.{month:02d}.{year}"
+    return None
+
+
 def _find_labeled_value(text: str, label_pattern: str) -> Optional[str]:
     """Same idea as _find_labeled_date, for a free-text value on the same
     line as its label instead of a date — e.g. a residence permit's
@@ -314,6 +400,40 @@ def _interpret_two_digit_year(yy: int, role: str) -> int:
     # issue/expiry: passports/permits are valid up to ~10-15 years —
     # anything within that window of "now" is almost certainly 20XX.
     return 2000 + yy if yy <= current_yy + 15 else 1900 + yy
+
+
+# A Czech "rodné číslo" (national ID/birth number), printed under a
+# "POZNÁMKY"-style label on Czech-issued documents including residence
+# permits, in the fixed format YYMMDD/XXXX — its own first 6 digits are
+# the SAME birth date "DATUM NAROZENÍ" prints elsewhere on the card, just
+# independently encoded. Worth trying as a last-resort birth_date source:
+# real case — a residence permit card's own "DATUM NAROZENÍ" line was
+# both mislabeled ("NANOZENI", R misread as N) AND its actual date value
+# missing from the OCR output entirely (the whole line seems to have
+# gone unread, not just mislabeled — the next line straight after the
+# garbled label was "17 11 2028", the card's PLATNOST DO/expiry date),
+# yet "870308/2421" (this same person's rodné číslo) survived intact
+# elsewhere on the very same scan. Month values above 12 mean a female
+# holder (Czech convention adds 50 to the real month) — subtracted back
+# out before validating.
+_RODNE_CISLO_RE = re.compile(r"\b(\d{2})(\d{2})(\d{2})/\d{3,4}\b")
+
+
+def _find_rodne_cislo_birth_date(text: str) -> Optional[str]:
+    m = _RODNE_CISLO_RE.search(text)
+    if not m:
+        return None
+    yy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if mm > 50:
+        mm -= 50
+    if not (1 <= mm <= 12):
+        return None
+    year = _interpret_two_digit_year(yy, role="birth")
+    try:
+        date(year, mm, dd)
+    except ValueError:
+        return None
+    return f"{dd:02d}.{mm:02d}.{year}"
 
 
 def _find_bilingual_date_tuples(text: str) -> list[tuple[int, int, int]]:
@@ -814,6 +934,24 @@ def _extract_fields_from_text(raw_text: str, quality: int, mode: str) -> dict:
     # decoded here exactly as ICAO 9303 defines it for every country.
     if not birth_date and mrz_birth_date:
         birth_date = mrz_birth_date
+
+    # Tried before the rodné-číslo catch-all below since, when it does
+    # match, it's reading the actual intended "DATUM NAROZENÍ" field
+    # rather than a secondary re-encoding of it — see
+    # _find_fuzzy_labeled_date's own docstring for why this is safe to
+    # try even though the exact label search above already failed.
+    if not birth_date:
+        birth_date = _find_fuzzy_labeled_date(raw_text, "narození")
+
+    # Very last resort, tried only once every other source (labeled text,
+    # bilingual tuples, MRZ, fuzzy label) has come up empty — see
+    # _find_rodne_cislo_birth_date's own docstring for the real case that
+    # needed it: a document number/label/date-value can all be legible
+    # elsewhere on a card while this ONE specific line simply failed to
+    # OCR at all, but the same birth date is independently re-encoded in
+    # this personal-number field too.
+    if not birth_date:
+        birth_date = _find_rodne_cislo_birth_date(raw_text)
 
     # Unlike birth_date above, this WINS over the printed-text guess
     # rather than just filling a gap — same priority _extract_fields_
