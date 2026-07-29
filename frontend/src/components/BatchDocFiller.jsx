@@ -197,9 +197,14 @@ export function canAutoMerge(a, b) {
     bRawResultsLength: b.rawResults.length,
     aDocType: a.rawResults[0]?.doc_type,
     bDocType: b.rawResults[0]?.doc_type,
-    aRawResults: a.rawResults,
-    bRawResults: b.rawResults,
   });
+  // Printed as its own plain string (not nested inside an object) so it
+  // can be selected and copied directly from the console without having
+  // to expand anything — the whole point of this debug pass is seeing
+  // the REAL OCR text a real photo produced, not a hand-retyped
+  // reconstruction of it.
+  console.log("[AUTOMERGE-DEBUG] A ocr_raw_text:\n" + (a.rawResults[0]?.ocr_raw_text || "(none)"));
+  console.log("[AUTOMERGE-DEBUG] B ocr_raw_text:\n" + (b.rawResults[0]?.ocr_raw_text || "(none)"));
   const birthA = (a.fields.birth_date || "").trim();
   const birthB = (b.fields.birth_date || "").trim();
   if (!birthA || birthA !== birthB) {
