@@ -187,14 +187,33 @@ function applyRecognizedResult(person, result) {
 // (e.g. "TD..." — nothing resembling a passport number) rather than an
 // actual reference, so it never contributed anything real in practice.
 export function canAutoMerge(a, b) {
+  // TEMP DEBUG — remove once the residence-permit front+back merge bug
+  // is confirmed fixed on a real batch upload. Search "AUTOMERGE-DEBUG"
+  // to find every line to strip.
+  console.log("[AUTOMERGE-DEBUG] canAutoMerge called:", {
+    aBirth: a.fields.birth_date,
+    bBirth: b.fields.birth_date,
+    aRawResultsLength: a.rawResults.length,
+    bRawResultsLength: b.rawResults.length,
+    aDocType: a.rawResults[0]?.doc_type,
+    bDocType: b.rawResults[0]?.doc_type,
+    aRawResults: a.rawResults,
+    bRawResults: b.rawResults,
+  });
   const birthA = (a.fields.birth_date || "").trim();
   const birthB = (b.fields.birth_date || "").trim();
-  if (!birthA || birthA !== birthB) return false;
+  if (!birthA || birthA !== birthB) {
+    console.log("[AUTOMERGE-DEBUG] -> false (birth_date mismatch or empty)", { birthA, birthB });
+    return false;
+  }
   // A card that's already been paired once (e.g. a passport already
   // merged with its own visa) is already complete — never a candidate
   // to absorb a third, unrelated file just because its birth date
   // happens to match too.
-  if (a.rawResults.length >= 2 || b.rawResults.length >= 2) return false;
+  if (a.rawResults.length >= 2 || b.rawResults.length >= 2) {
+    console.log("[AUTOMERGE-DEBUG] -> false (one side already paired)");
+    return false;
+  }
   // A residence permit / ID card / driving licence (see
   // STANDALONE_DOC_TYPES) never needs pairing with a genuinely DIFFERENT
   // document the way a passport needs its own visa — but it very much
@@ -220,9 +239,23 @@ export function canAutoMerge(a, b) {
   const standaloneA = STANDALONE_DOC_TYPES.has(docTypeA);
   const standaloneB = STANDALONE_DOC_TYPES.has(docTypeB);
   const isWildcard = (t) => !t || t === "Neznámý dokument";
-  if (standaloneA && standaloneB) return docTypeA === docTypeB;
-  if (standaloneA) return isWildcard(docTypeB);
-  if (standaloneB) return isWildcard(docTypeA);
+  console.log("[AUTOMERGE-DEBUG] doc_type check:", { docTypeA, docTypeB, standaloneA, standaloneB });
+  if (standaloneA && standaloneB) {
+    const result = docTypeA === docTypeB;
+    console.log("[AUTOMERGE-DEBUG] -> both standalone, same-type check:", result);
+    return result;
+  }
+  if (standaloneA) {
+    const result = isWildcard(docTypeB);
+    console.log("[AUTOMERGE-DEBUG] -> A standalone, B wildcard check:", result);
+    return result;
+  }
+  if (standaloneB) {
+    const result = isWildcard(docTypeA);
+    console.log("[AUTOMERGE-DEBUG] -> B standalone, A wildcard check:", result);
+    return result;
+  }
+  console.log("[AUTOMERGE-DEBUG] -> true (neither side standalone)");
   return true;
 }
 
