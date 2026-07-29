@@ -19,6 +19,7 @@ import SignedDocsNotifier from "./components/SignedDocsNotifier";
 import BatchDocFiller from "./components/BatchDocFiller";
 import FileScanThumbnails from "./components/FileScanThumbnails";
 import { FIELD_DEFS, PERSON_FIELD_KEYS, COMPANY_FIELD_KEYS, isFieldRelevant, DEFAULT_SALARY_BY_TEMPLATE, SIGNABLE_TEMPLATE_IDS } from "./constants/fields";
+import { DOC_THUMBNAIL_SIZE_CLASS } from "./constants/ui";
 import { composeCzAddress, composeOriginAddress } from "./utils/address";
 import { mergeRecognizedResults } from "./utils/recognizeMerge";
 import { isValidIco, isValidDic } from "./utils/validation";
@@ -970,7 +971,7 @@ export default function SimpleDocFiller() {
                       key={i}
                       type="button"
                       onClick={() => p.url && setLightboxUrl(p.url)}
-                      className={`relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
+                      className={`relative ${DOC_THUMBNAIL_SIZE_CLASS} rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
                       title={p.url ? "Klikněte pro zvětšení" : p.name}
                     >
                       {p.url ? (

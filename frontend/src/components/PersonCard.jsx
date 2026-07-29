@@ -11,6 +11,7 @@ import FileScanThumbnails from "./FileScanThumbnails";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
 import { STANDALONE_DOC_TYPES } from "../constants/fields";
+import { DOC_THUMBNAIL_SIZE_CLASS } from "../constants/ui";
 
 // Only these are "OCR should have found this on any ID document" — visa
 // fields are legitimately blank on a plain passport/ID card, so flagging
@@ -340,7 +341,7 @@ export default function PersonCard({
                     });
                     if (p.url) onOpenLightbox(p.url);
                   }}
-                  className={`relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
+                  className={`relative ${DOC_THUMBNAIL_SIZE_CLASS} rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 ${p.url ? "cursor-zoom-in hover:border-slate-300" : "cursor-default"}`}
                   title={p.url ? "Klikněte pro zvětšení" : p.name}
                 >
                   {p.url ? (
