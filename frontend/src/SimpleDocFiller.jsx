@@ -13,6 +13,7 @@ import CompanyPicker from "./components/CompanyPicker";
 import MinorWarningIcon from "./components/MinorWarningIcon";
 import VisaExpiredWarningIcon from "./components/VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./components/StrpeniWarningIcon";
+import NameMismatchWarningIcon from "./components/NameMismatchWarningIcon";
 import StatsWidget from "./components/StatsWidget";
 import SignedDocsNotifier from "./components/SignedDocsNotifier";
 import BatchDocFiller from "./components/BatchDocFiller";
@@ -75,6 +76,8 @@ export default function SimpleDocFiller() {
   const [originCountry, setOriginCountry] = useState("ua");
   const [originAddressParts, setOriginAddressParts] = useState({});
   const [warnings, setWarnings] = useState([]);
+  const [nameMismatchHint, setNameMismatchHint] = useState(null);
+  const [nameMismatchDetail, setNameMismatchDetail] = useState(null);
   const [rawText, setRawText] = useState("");
   const [ocrMode, setOcrMode] = useState(null);
   const [docNumberVerified, setDocNumberVerified] = useState(false);
@@ -322,6 +325,8 @@ export default function SimpleDocFiller() {
     // equivalent to batch mode's StatusDot that needs the address hint
     // kept separate (see recognizeMerge.js) — so it's folded back in here.
     setWarnings(merged.addressHint ? [...merged.warnings, merged.addressHint] : merged.warnings);
+    setNameMismatchHint(merged.nameMismatchHint);
+    setNameMismatchDetail(merged.nameMismatchDetail);
     setRawText(merged.rawText);
     setOcrMode(merged.ocrMode);
     setJustRecognized(true);
@@ -414,6 +419,8 @@ export default function SimpleDocFiller() {
     setOriginCountry("ua");
     setOriginAddressParts({});
     setWarnings([]);
+    setNameMismatchHint(null);
+    setNameMismatchDetail(null);
     setOcrMode(null);
     setDocNumberVerified(false);
     setPreviewUrls((prev) => { prev.forEach((p) => p.url && URL.revokeObjectURL(p.url)); return []; });
@@ -503,6 +510,8 @@ export default function SimpleDocFiller() {
     setOriginCountry("ua");
     setOriginAddressParts({});
     setWarnings([]);
+    setNameMismatchHint(null);
+    setNameMismatchDetail(null);
     setResult(null);
     setError(null);
     setDownloadError(null);
@@ -1084,7 +1093,13 @@ export default function SimpleDocFiller() {
                   // <details> block below), so the badge needs to live
                   // on whichever visa field is actually always visible.
                   const showStrpeniBadge = key === "visa_number" && isStrpeniWarning;
-                  const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
+                  // Same compact click-to-expand badge as the others —
+                  // see recognizeMerge.js's nameMismatchHint comment for
+                  // why a differing name across uploaded files is just a
+                  // quiet nudge to check, not an alarming inline warning.
+                  const showNameMismatchBadge =
+                    (key === "first_name" || key === "last_name") && Boolean(nameMismatchHint);
+                  const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge || showNameMismatchBadge;
                   const showWarning = showIcoWarning || showDicWarning || showBadge;
                   const inputEl = (
                     <input
@@ -1119,6 +1134,7 @@ export default function SimpleDocFiller() {
                           {showMinorBorder && <MinorWarningIcon />}
                           {showVisaExpiredBorder && <VisaExpiredWarningIcon />}
                           {showStrpeniBadge && <StrpeniWarningIcon />}
+                          {showNameMismatchBadge && <NameMismatchWarningIcon detail={nameMismatchDetail} />}
                         </div>
                       ) : (
                         inputEl

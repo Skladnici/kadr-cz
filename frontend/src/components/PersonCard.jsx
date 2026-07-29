@@ -6,6 +6,7 @@ import AddressBuilder from "./AddressBuilder";
 import MinorWarningIcon from "./MinorWarningIcon";
 import VisaExpiredWarningIcon from "./VisaExpiredWarningIcon";
 import StrpeniWarningIcon from "./StrpeniWarningIcon";
+import NameMismatchWarningIcon from "./NameMismatchWarningIcon";
 import FileScanThumbnails from "./FileScanThumbnails";
 import { calculateAge, isPastDate } from "../utils/age";
 import { isStrpeniVisaCode } from "../utils/visaStatus";
@@ -181,7 +182,12 @@ export default function PersonCard({
     // visa_number is always visible here for every visa card, so that's
     // where the badge needs to live to actually be seen.
     const showStrpeniBadge = key === "visa_number" && isStrpeniWarning;
-    const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge;
+    // Lives on whichever name field(s) actually mismatched — the badge
+    // itself always shows, first_name and last_name are independent (a
+    // person can have one, both, or neither flagged).
+    const showNameMismatchBadge =
+      (key === "first_name" || key === "last_name") && Boolean(person.nameMismatchHint) && !showEmptyWarning;
+    const showBadge = showMinorBorder || showVisaExpiredBorder || showStrpeniBadge || showNameMismatchBadge;
     return (
       <label key={key} className="block">
         <span className="text-[10.5px] md:text-[11.5px] uppercase tracking-wide text-slate-400 inline-flex items-center gap-1.5">
@@ -208,6 +214,7 @@ export default function PersonCard({
           {showMinorBorder && <MinorWarningIcon />}
           {showVisaExpiredBorder && <VisaExpiredWarningIcon />}
           {showStrpeniBadge && <StrpeniWarningIcon />}
+          {showNameMismatchBadge && <NameMismatchWarningIcon detail={person.nameMismatchDetail} />}
         </div>
       </label>
     );
@@ -274,7 +281,11 @@ export default function PersonCard({
               {person.error || "Rozpoznání se nezdařilo — údaje vyplňte prosím ručně."}
             </div>
           )}
-          {(person.warnings?.length > 0 || person.addressHint || person.nameMismatchHint) && (
+          {/* nameMismatchHint is deliberately NOT shown here — see
+              NameMismatchWarningIcon, rendered inline next to the actual
+              first_name/last_name fields above, same compact click-to-
+              expand badge as the minor/visa-expired/strpění warnings. */}
+          {(person.warnings?.length > 0 || person.addressHint) && (
             <div className="space-y-1.5">
               {person.warnings.map((w, i) => (
                 <div key={i} className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
@@ -289,17 +300,6 @@ export default function PersonCard({
               {person.addressHint && (
                 <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
                   <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {person.addressHint}
-                </div>
-              )}
-              {/* Same reasoning as addressHint just above — see
-                  recognizeMerge.js's nameMismatchHint comment. A
-                  successfully merged card routinely has a slightly
-                  differently-read name between its passport and visa;
-                  that's expected noise, not a reason to show the same
-                  amber triangle StatusDot uses for a real problem. */}
-              {person.nameMismatchHint && (
-                <div className="flex items-start gap-2 rounded-xl bg-amber-50 p-2 text-[11.5px] text-amber-700">
-                  <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {person.nameMismatchHint}
                 </div>
               )}
             </div>

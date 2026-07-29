@@ -6,18 +6,7 @@
 // through exactly the same reconciliation logic, instead of batch mode
 // inventing its own way to decide which fields "win" across documents.
 //
-// compactNameWarning: single mode leaves this off (the default) — there,
-// the person combining several uploaded files IS the identity check (no
-// automatic verification happens), so the detailed "here are the exact
-// variants found, pick the right one" warning is the only signal they
-// get if the files don't actually belong together. Batch mode passes
-// true: there, files only ever get linked into one card after an
-// independent birth-date match already ran (see BatchDocFiller's
-// canAutoMerge / the manual "Sloučit" click), so a differing name is
-// just OCR noise on an already-confirmed identity — worth a nudge to
-// eyeball it, not an alarming variant-by-variant dump telling the
-// person to go pick the "correct" one themselves.
-export function mergeRecognizedResults(results, { compactNameWarning = false } = {}) {
+export function mergeRecognizedResults(results) {
   const pick = (key) => {
     for (const r of results) {
       if (r[key] && r[key] !== "—") return r[key];
@@ -60,11 +49,15 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
   // MRZ characters, just wrong. The only remaining signal for that class
   // of error is disagreement between documents: if two uploaded files
   // both name a person, but spell it differently, at least one of them
-  // is wrong and no automatic check here can tell which. So this only
-  // warns — it never blocks or auto-picks a "winner" — leaving the final
-  // call to the person who can look at the actual photos, same as the
-  // honest photo-quality hedge above.
-  const nameMismatchMessages = [["first_name", "Jméno"], ["last_name", "Příjmení"]].flatMap(
+  // is wrong and no automatic check here can tell which. This never
+  // blocks or auto-picks a "winner" — it's surfaced as a quiet, non-
+  // alarming hint (nameMismatchHint/nameMismatchDetail below), never as
+  // a `warnings` entry — a differing name between a passport and its own
+  // visa sticker is routine OCR noise, not a sign anything is actually
+  // wrong, and showing it as a scary paragraph-length "Pozor:" warning
+  // (the original behavior here) read as a serious error to whoever saw
+  // it even on a perfectly correct merge.
+  const nameMismatches = [["first_name", "Jméno"], ["last_name", "Příjmení"]].flatMap(
     ([key, label]) => {
       const variants = [];
       results.forEach((r, i) => {
@@ -76,38 +69,24 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
         }
       });
       if (variants.length < 2) return [];
-      if (compactNameWarning) {
-        return [`${label} se liší mezi doklady — zkontrolujte.`];
-      }
       const listed = variants.map((v) => `„${v.display}" (soubor ${v.fileNumber})`).join(", ");
-      return [
-        `Pozor: ${label} bylo na nahraných dokumentech rozpoznáno odlišně — ${listed}. Zkontrolujte prosím ručně podle fotografií a vyberte správnou variantu.`,
-      ];
+      return [{ label, listed }];
     }
   );
 
-  // In compact mode (batch/merged cards), a name mismatch is *expected*
-  // OCR noise on an identity already confirmed by an independent
-  // birth-date match (see this function's own top comment) — a
-  // successful, correct merge routinely produces one (visa MRZ names
-  // often read slightly differently than a passport's). It must NOT set
-  // off the same amber-triangle "this needs a manual look" signal a real
-  // problem does (missing field, failed checksum, expired document) —
-  // real case: every auto-merged and manually-merged card was showing
-  // the warning triangle even when the merge was entirely correct,
-  // reading as "something went wrong" to whoever's reviewing the batch.
-  // Surfaced separately (like `addressHint` below) instead, purely
-  // informational. In non-compact (single) mode this stays a real
-  // `warnings` entry — there, the person combining files IS the identity
-  // check, so a differing name is the only signal they get that the
-  // files might not belong together at all.
-  const nameMismatchHint = compactNameWarning && nameMismatchMessages.length > 0
-    ? nameMismatchMessages.join(" ")
+  // Short, non-alarming label for the always-visible compact badge (see
+  // PersonCard/SimpleDocFiller) — e.g. "Jméno a příjmení se liší mezi
+  // doklady." The specific per-file variants (nameMismatchDetail) are
+  // only shown once the person clicks the badge to expand it.
+  const nameMismatchHint = nameMismatches.length > 0
+    ? `${nameMismatches.map((m) => m.label).join(" a ")} se liší mezi doklady.`
+    : null;
+  const nameMismatchDetail = nameMismatches.length > 0
+    ? nameMismatches.map((m) => `${m.label}: ${m.listed}`).join(" ")
     : null;
 
   // Actionable warnings only — backend per-file quality/checksum/expiry
-  // flags, plus (single mode only) a genuine cross-document name
-  // mismatch. Deliberately excludes the address hint below: that fires
+  // flags. Deliberately excludes the address hint below: that fires
   // whenever an address happened to appear in the OCR text, which is
   // routine on most ID documents, not a sign anything went wrong. Kept
   // separate (as `addressHint`, not folded into `warnings`) specifically
@@ -117,11 +96,9 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
   // printed on the document — a real bug found by testing two real
   // people in one batch: one had an address on their ID and got
   // flagged, the other didn't and came up clean, even though both
-  // merged without any actual problem.
-  const warnings = [
-    ...results.flatMap((r) => r.warnings || []),
-    ...(compactNameWarning ? [] : nameMismatchMessages),
-  ];
+  // merged without any actual problem. Name mismatches are excluded the
+  // same way, for the same reason (see nameMismatchHint above).
+  const warnings = results.flatMap((r) => r.warnings || []);
 
   const recognizedAddress = pick("address");
   const addressHint = recognizedAddress
@@ -155,6 +132,7 @@ export function mergeRecognizedResults(results, { compactNameWarning = false } =
     warnings,
     addressHint,
     nameMismatchHint,
+    nameMismatchDetail,
     rawText: results.map((r, i) => `--- Soubor ${i + 1} ---\n${r.ocr_raw_text || ""}`).join("\n\n"),
     ocrMode: results[0]?.ocr_mode,
   };

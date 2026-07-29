@@ -120,6 +120,7 @@ function makePersonCard(file) {
     warnings: [],
     addressHint: null,
     nameMismatchHint: null,
+    nameMismatchDetail: null,
     rawText: "",
     ocrMode: null,
     czAddressParts: {},
@@ -164,6 +165,7 @@ function applyRecognizedResult(person, result) {
     warnings: merged.warnings,
     addressHint: merged.addressHint,
     nameMismatchHint: merged.nameMismatchHint,
+    nameMismatchDetail: merged.nameMismatchDetail,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -237,7 +239,7 @@ export function canAutoMerge(a, b) {
 // merge "reason" either, so this keeps both consistent.
 function combineCards(keep, merge) {
   const combinedRawResults = [...keep.rawResults, ...merge.rawResults];
-  const merged = mergeRecognizedResults(combinedRawResults, { compactNameWarning: true });
+  const merged = mergeRecognizedResults(combinedRawResults);
   return {
     ...keep,
     files: [...keep.files, ...merge.files],
@@ -261,6 +263,7 @@ function combineCards(keep, merge) {
     warnings: merged.warnings,
     addressHint: merged.addressHint,
     nameMismatchHint: merged.nameMismatchHint,
+    nameMismatchDetail: merged.nameMismatchDetail,
     rawText: merged.rawText,
     ocrMode: merged.ocrMode,
   };
@@ -520,7 +523,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
       );
 
       const remainingResults = person.rawResults.slice(0, lastIndex);
-      const remainingMerged = mergeRecognizedResults(remainingResults, { compactNameWarning: true });
+      const remainingMerged = mergeRecognizedResults(remainingResults);
       const remainingCard = {
         ...person,
         files: person.files.slice(0, lastIndex),
@@ -541,6 +544,7 @@ export default function BatchDocFiller({ apiFetch, authHeader, blanks, onAuthExp
         warnings: remainingMerged.warnings,
         addressHint: remainingMerged.addressHint,
         nameMismatchHint: remainingMerged.nameMismatchHint,
+        nameMismatchDetail: remainingMerged.nameMismatchDetail,
         rawText: remainingMerged.rawText,
         ocrMode: remainingMerged.ocrMode,
       };

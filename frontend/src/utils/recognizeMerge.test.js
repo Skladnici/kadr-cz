@@ -42,38 +42,30 @@ describe("mergeRecognizedResults — warnings vs addressHint split", () => {
     expect(merged.addressHint).toContain("Vinohradská 45, Praha 2");
   });
 
-  it("flags a genuine name mismatch between two merged documents as a warning (single mode)", () => {
+  it("keeps a genuine name mismatch between two merged documents out of warnings — it's expected OCR noise (e.g. a passport vs. its own visa sticker), not a real problem", () => {
+    // Real bug this guards against: a differing name across uploaded
+    // files used to render as a permanently-visible, paragraph-length
+    // "Pozor: ..." warning (both in this plain `warnings` list and as
+    // batch mode's amber StatusDot triangle) even when the merge itself
+    // was entirely correct — routine OCR noise, not a sign anything went
+    // wrong. It's surfaced instead via the compact, click-to-expand
+    // nameMismatchHint/nameMismatchDetail badge (see NameMismatchWarningIcon).
     const merged = mergeRecognizedResults([
       baseResult({ first_name: "JAN" }),
       baseResult({ first_name: "JOHN" }),
     ]);
-    expect(merged.warnings.length).toBeGreaterThan(0);
-    expect(merged.warnings.some((w) => w.includes("Jméno"))).toBe(true);
-  });
-
-  it("keeps a compact-mode name mismatch out of warnings — it's expected OCR noise on an already birth-date-confirmed identity, not a real problem", () => {
-    // Real bug this guards against: every successfully auto-merged (and
-    // manually merged) batch card was showing the same amber warning
-    // triangle as a genuine failure, even though the merge itself was
-    // entirely correct — a visa's MRZ name reading slightly differently
-    // than the passport's is routine, not a sign anything went wrong.
-    const merged = mergeRecognizedResults(
-      [
-        baseResult({ first_name: "JAN" }),
-        baseResult({ first_name: "JOHN" }),
-      ],
-      { compactNameWarning: true }
-    );
     expect(merged.warnings).toEqual([]);
     expect(merged.nameMismatchHint).toContain("Jméno");
+    expect(merged.nameMismatchDetail).toContain("JAN");
+    expect(merged.nameMismatchDetail).toContain("JOHN");
   });
 
-  it("leaves nameMismatchHint null when names agree", () => {
+  it("leaves nameMismatchHint/nameMismatchDetail null when names agree", () => {
     const merged = mergeRecognizedResults(
-      [baseResult({ first_name: "JAN" }), baseResult({ first_name: "JAN" })],
-      { compactNameWarning: true }
+      [baseResult({ first_name: "JAN" }), baseResult({ first_name: "JAN" })]
     );
     expect(merged.nameMismatchHint).toBeNull();
+    expect(merged.nameMismatchDetail).toBeNull();
   });
 });
 
