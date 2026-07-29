@@ -62,6 +62,23 @@ def _cleanup_stale_generated_files() -> None:
 _templates_cache: Optional[list[dict]] = None
 _templates_cache_signature: Optional[tuple] = None
 
+# Short, uniform labels for the "Typ smlouvy" dropdown (SimpleDocFiller/
+# BatchDocFiller/PersonCard) — deliberately separate from each .docx's
+# own in-document heading (still read by _read_title below, unchanged).
+# Before this, the dropdown showed whatever the first paragraph of each
+# template happened to say verbatim — "Dohoda o provedení práce",
+# "DOHODA O PRACOVNÍ ČINNOSTI", "PRACOVNÍ SMLOUVA" — inconsistent length
+# and casing across entries. A template_id with no entry here still
+# falls back to _read_title/the prettified filename, so adding a new
+# template without updating this dict doesn't break anything.
+SHORT_TITLE_BY_TEMPLATE_ID = {
+    "dpp_template": "DPP",
+    "dpc_template": "DPČ",
+    "hpp_template": "HPP",
+    "ukonceni_pracovniho_pomeru": "Ukončení pracovního poměru",
+    "vyplatni_paska": "Výplatní páska",
+}
+
 
 def list_templates() -> list[dict]:
     """Scans the templates folder and returns available blanks.
@@ -85,7 +102,10 @@ def list_templates() -> list[dict]:
         return _templates_cache
 
     templates = [
-        {"id": p.stem, "title": _read_title(p) or p.stem.replace("_", " ").title()}
+        {
+            "id": p.stem,
+            "title": SHORT_TITLE_BY_TEMPLATE_ID.get(p.stem) or _read_title(p) or p.stem.replace("_", " ").title(),
+        }
         for p in paths
     ]
     _templates_cache = templates
