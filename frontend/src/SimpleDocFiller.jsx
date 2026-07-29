@@ -881,7 +881,7 @@ export default function SimpleDocFiller() {
               {previewUrls.length > 0 && (
                 <div className="mt-[22px] flex gap-2 flex-wrap">
                   {previewUrls.map((p, i) => (
-                    <div key={i} className="relative w-16 h-16 rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group">
+                    <div key={i} className={`relative ${DOC_THUMBNAIL_SIZE_CLASS} rounded-xl border border-slate-200 overflow-hidden bg-slate-50 shrink-0 group`}>
                       {p.url ? (
                         <img src={p.url} alt={p.name} className="w-full h-full object-cover" />
                       ) : (
