@@ -1,7 +1,11 @@
 import { FileText, Check } from "lucide-react";
+import { DOC_THUMBNAIL_SIZE_CLASS } from "../constants/ui";
 
-// One 56×56 thumbnail per uploaded file, shown side by side, instead of a
-// single large preview — used both while OCR is actively working through
+// One thumbnail per uploaded file (same DOC_THUMBNAIL_SIZE_CLASS size as
+// every other document-photo thumbnail in the app — this used to hard-
+// code its own 56px regardless, a fourth spot missed when the others
+// were enlarged to 72/88px), shown side by side, instead of a single
+// large preview — used both while OCR is actively working through
 // several files in sequence (activeIndex set, .ocr-scan-line animates on
 // whichever one is current) and, in batch mode, as a plain static row
 // once files have already been merged onto one person's card (activeIndex
@@ -17,7 +21,7 @@ import { FileText, Check } from "lucide-react";
 // indices after it as not yet started (dimmed, no badge). Omit entirely
 // (undefined) for a static "all already done" row, e.g. an
 // already-merged batch card.
-export default function FileScanThumbnails({ files, activeIndex, size = 56 }) {
+export default function FileScanThumbnails({ files, activeIndex }) {
   if (!files || files.length === 0) return null;
 
   return (
@@ -30,10 +34,9 @@ export default function FileScanThumbnails({ files, activeIndex, size = 56 }) {
           <div
             key={i}
             title={f.name}
-            className={`relative shrink-0 overflow-hidden rounded-xl border bg-slate-50 transition-opacity ${
+            className={`relative ${DOC_THUMBNAIL_SIZE_CLASS} shrink-0 overflow-hidden rounded-xl border bg-slate-50 transition-opacity ${
               isPending ? "border-slate-200 opacity-50" : "border-slate-200"
             }`}
-            style={{ width: size, height: size }}
           >
             {f.url ? (
               <img src={f.url} alt="" className="h-full w-full object-cover" />

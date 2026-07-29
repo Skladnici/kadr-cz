@@ -15,7 +15,16 @@ export default function WarningIcon({ ariaLabel, children }) {
   const expanded = hovered || pinned;
 
   return (
-    <div className="absolute right-2 top-1/2 -translate-y-1/2">
+    // `inset-y-0` (not `top-1/2 -translate-y-1/2`) so this wrapper's own
+    // box spans the *whole* input height, with the button merely
+    // flex-centered inside it — real bug this fixes: the previous
+    // top-1/2/-translate-y-1/2 wrapper was only as tall as the 16px
+    // button itself, so the popover's `top-full` below anchored to the
+    // vertical middle of the input rather than its actual bottom edge,
+    // making the expanded popover start partway through the input and
+    // spill further down than intended into the next form row —
+    // swallowing hover/click there while the popover was open.
+    <div className="absolute inset-y-0 right-2 flex items-center">
       <button
         type="button"
         aria-expanded={expanded}
