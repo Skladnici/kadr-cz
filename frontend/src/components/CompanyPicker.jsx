@@ -1,5 +1,22 @@
 import { useState, useCallback, useEffect, memo } from "react";
-import { describeRequestError } from "../utils/api";
+import { describeRequestError, apiFetchWithTimeout, API_BASE } from "../utils/api";
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// "Sdílené firmy se nepodařilo načíst" was reported as an intermittent,
+// hard-to-reproduce error — by the time anyone opened the console, the
+// one bad request was long gone. Two things address that: (1) every
+// attempt logs full technical detail to the console (status, timing,
+// timeout vs. network/CORS) as it happens, not just a generic message,
+// and (2) a transient blip (cold start, one dropped packet) gets 3
+// attempts with a growing pause before it's ever shown to the user at
+// all — only a failure that survives all of them is a real problem
+// worth surfacing, complete with the exact status/error code.
+const COMPANIES_LOAD_MAX_ATTEMPTS = 3;
+const COMPANIES_LOAD_RETRY_DELAYS_MS = [2000, 4000];
+const COMPANIES_LOAD_TIMEOUT_MS = 20000; // a hair above the backend's own 15s Supabase timeout
 
 // Saved company profiles persist server-side (Supabase, not localStorage)
 // so the same list shows up for everyone using the site, on any computer
@@ -27,28 +44,75 @@ function CompanyPicker({ company, setFields, apiFetch }) {
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [retryInfo, setRetryInfo] = useState(null); // { attempt, max } while a retry is pending, else null
 
   const loadCompanies = useCallback(async (force = false) => {
     if (!force && companiesCache) {
       setCompanies(companiesCache);
       return;
     }
-    try {
-      const res = await apiFetch("/api/companies");
-      if (!res.ok) {
-        // A 401 already made apiFetch drop back to the login form — no
-        // need to also show an error message behind it.
-        if (res.status !== 401) {
-          setError(describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst."));
+    setError(null);
+    for (let attempt = 1; attempt <= COMPANIES_LOAD_MAX_ATTEMPTS; attempt++) {
+      const startedAt = new Date().toISOString();
+      const t0 = performance.now();
+      try {
+        const res = await apiFetchWithTimeout(apiFetch, "/api/companies", {}, COMPANIES_LOAD_TIMEOUT_MS);
+        const elapsedMs = Math.round(performance.now() - t0);
+        if (!res.ok) {
+          // A 401 already made apiFetch drop back to the login form — no
+          // need to also show an error message (or retry) behind it.
+          if (res.status === 401) { setRetryInfo(null); return; }
+          console.error(
+            `[companies] GET /api/companies failed on attempt ${attempt}/${COMPANIES_LOAD_MAX_ATTEMPTS}`,
+            { url: `${API_BASE}/api/companies`, status: res.status, statusText: res.statusText, elapsedMs, startedAt }
+          );
+          if (attempt < COMPANIES_LOAD_MAX_ATTEMPTS) {
+            setRetryInfo({ attempt: attempt + 1, max: COMPANIES_LOAD_MAX_ATTEMPTS });
+            await sleep(COMPANIES_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+            continue;
+          }
+          setRetryInfo(null);
+          setError(
+            `${describeRequestError(res.status, "Sdílené firmy se nepodařilo načíst.")} ` +
+            `[HTTP ${res.status}${res.statusText ? " " + res.statusText : ""}, po ${COMPANIES_LOAD_MAX_ATTEMPTS} pokusech]`
+          );
+          return;
         }
+        const data = await res.json();
+        console.info(
+          `[companies] GET /api/companies OK on attempt ${attempt}/${COMPANIES_LOAD_MAX_ATTEMPTS} in ${elapsedMs}ms`
+        );
+        companiesCache = data;
+        setCompanies(data);
+        setError(null);
+        setRetryInfo(null);
+        return;
+      } catch (e) {
+        const elapsedMs = Math.round(performance.now() - t0);
+        // A bare fetch() throws the same generic TypeError for a real
+        // network failure and for a CORS rejection — browsers
+        // deliberately don't expose which, for security reasons — so
+        // "network-or-cors" is as precise as this can honestly get.
+        // apiFetchWithTimeout normalizes its own abort into
+        // `Error("timeout")`, which *is* distinguishable.
+        const kind = e?.message === "timeout" ? "timeout" : "network-or-cors";
+        console.error(
+          `[companies] GET /api/companies threw on attempt ${attempt}/${COMPANIES_LOAD_MAX_ATTEMPTS}`,
+          { url: `${API_BASE}/api/companies`, kind, name: e?.name, message: e?.message, elapsedMs, startedAt }
+        );
+        if (attempt < COMPANIES_LOAD_MAX_ATTEMPTS) {
+          setRetryInfo({ attempt: attempt + 1, max: COMPANIES_LOAD_MAX_ATTEMPTS });
+          await sleep(COMPANIES_LOAD_RETRY_DELAYS_MS[attempt - 1]);
+          continue;
+        }
+        setRetryInfo(null);
+        setError(
+          kind === "timeout"
+            ? `Sdílené firmy se nepodařilo načíst — vypršel časový limit (${COMPANIES_LOAD_TIMEOUT_MS / 1000}s) po ${COMPANIES_LOAD_MAX_ATTEMPTS} pokusech.`
+            : `Sdílené firmy se nepodařilo načíst — chyba sítě/CORS po ${COMPANIES_LOAD_MAX_ATTEMPTS} pokusech (${e?.message || "unknown"}).`
+        );
         return;
       }
-      const data = await res.json();
-      companiesCache = data;
-      setCompanies(data);
-      setError(null);
-    } catch {
-      setError("Sdílené firmy se nepodařilo načíst — zkontrolujte připojení k internetu.");
     }
   }, [apiFetch]);
 
@@ -156,6 +220,12 @@ function CompanyPicker({ company, setFields, apiFetch }) {
   return (
     <div className="rounded-xl border border-slate-200 p-3 md:p-6 bg-slate-50/40 mb-4">
       <div className="text-[11px] md:text-[12px] uppercase tracking-wide text-slate-400 mb-2">Sdílené firmy</div>
+      {retryInfo && (
+        <p className="mb-2 text-[11.5px] text-amber-600 flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+          Načítání se nezdařilo, zkouším znovu… (pokus {retryInfo.attempt}/{retryInfo.max})
+        </p>
+      )}
       {error && <p className="mb-2 text-[11.5px] text-red-600">{error}</p>}
       <div className="flex gap-2 items-center flex-wrap">
         <select

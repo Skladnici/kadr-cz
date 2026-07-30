@@ -460,17 +460,57 @@ async def _supabase_companies_request(
 ):
     """Every /api/companies* route below does exactly this — build
     headers, call the Supabase REST API, surface its error text on
-    failure — with only the HTTP method/params/body actually differing."""
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.request(
-            method,
-            f"{settings.SUPABASE_URL}/rest/v1/companies",
-            headers={**_supabase_headers(), **(extra_headers or {})},
-            params=params,
-            json=json,
+    failure — with only the HTTP method/params/body actually differing.
+
+    "Sdílené firmy se nepodařilo načíst" was reported as an intermittent,
+    unreproducible frontend error. Before this, a network-level failure
+    here (timeout, DNS hiccup, connection reset) was never caught —  it
+    propagated as an unhandled exception, which Starlette's default
+    error middleware turns into a bare 500 with no detail and logs
+    outside our configured logging format, i.e. exactly invisible in
+    Render logs. Every attempt (success or failure) is now logged with
+    start time + elapsed time + outcome so the *next* occurrence leaves
+    a precise trail instead of requiring another guess.
+    """
+    log = logging.getLogger(__name__)
+    started_at = datetime.now(timezone.utc).isoformat()
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.request(
+                method,
+                f"{settings.SUPABASE_URL}/rest/v1/companies",
+                headers={**_supabase_headers(), **(extra_headers or {})},
+                params=params,
+                json=json,
+            )
+    except httpx.TimeoutException as e:
+        elapsed = time.monotonic() - start
+        log.error(
+            "companies %s: TIMEOUT after %.2fs (started %s): %s",
+            method, elapsed, started_at, e,
         )
+        raise HTTPException(504, f"Supabase neodpovědělo včas (timeout po {elapsed:.1f}s): {e}")
+    except httpx.RequestError as e:
+        elapsed = time.monotonic() - start
+        log.error(
+            "companies %s: NETWORK ERROR after %.2fs (started %s): %s: %s",
+            method, elapsed, started_at, type(e).__name__, e,
+        )
+        raise HTTPException(502, f"Chyba připojení k Supabase ({type(e).__name__}): {e}")
+
+    elapsed = time.monotonic() - start
     if resp.status_code >= 400:
-        raise HTTPException(502, f"Supabase chyba: {resp.text}")
+        log.error(
+            "companies %s: HTTP %s after %.2fs (started %s): %s",
+            method, resp.status_code, elapsed, started_at, resp.text,
+        )
+        raise HTTPException(502, f"Supabase chyba (HTTP {resp.status_code}): {resp.text}")
+
+    log.info(
+        "companies %s: OK — HTTP %s in %.2fs (started %s)",
+        method, resp.status_code, elapsed, started_at,
+    )
     return resp
 
 

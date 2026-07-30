@@ -128,3 +128,43 @@ def test_deleted_company_disappears_from_list(fake_supabase):
     list_resp = client.get("/api/companies", auth=AUTH)
     names = [c["name"] for c in list_resp.json()]
     assert names == ["Keep Co"], f"deleted company still present, or wrong row removed: {names}"
+
+
+# "Sdílené firmy se nepodařilo načíst" was reported as an intermittent,
+# unreproducible frontend error. Before _supabase_companies_request wrapped
+# the httpx call in a try/except, a network-level failure here (simulated
+# below by monkeypatching httpx.AsyncClient.request to raise, the same way
+# a real DNS hiccup or a bad SUPABASE_URL would) propagated as an unhandled
+# exception: Starlette's default error middleware turned it into a bare 500
+# with no detail, logged outside our configured format — invisible in
+# Render logs. These prove both halves of the fix: the client gets a
+# specific status + message instead of a blank 500, and the failure is
+# actually captured by `logging` (caplog only sees records that went
+# through the `logging` module, so this also confirms nothing here is
+# silently print()'d or swallowed).
+def test_network_error_returns_502_and_is_logged(monkeypatch, fake_supabase, caplog):
+    async def raise_connect_error(self, method, url, *, headers=None, params=None, json=None):
+        raise httpx.ConnectError("[Errno 11001] getaddrinfo failed", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", raise_connect_error)
+
+    with caplog.at_level("ERROR"):
+        resp = client.get("/api/companies", auth=AUTH)
+
+    assert resp.status_code == 502
+    assert "ConnectError" in resp.json()["detail"]
+    assert any("NETWORK ERROR" in r.message and "ConnectError" in r.message for r in caplog.records)
+
+
+def test_timeout_returns_504_and_is_logged(monkeypatch, fake_supabase, caplog):
+    async def raise_timeout(self, method, url, *, headers=None, params=None, json=None):
+        raise httpx.ConnectTimeout("timed out", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", raise_timeout)
+
+    with caplog.at_level("ERROR"):
+        resp = client.get("/api/companies", auth=AUTH)
+
+    assert resp.status_code == 504
+    assert "timeout" in resp.json()["detail"].lower()
+    assert any("TIMEOUT" in r.message for r in caplog.records)
